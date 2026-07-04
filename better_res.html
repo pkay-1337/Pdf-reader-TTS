@@ -2,6 +2,7 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <!-- Mobile-friendly viewport -->
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
     <title>Local AI PDF Reader</title>
 
@@ -9,7 +10,7 @@
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf_viewer.min.css">
 
     <style>
-        /* ---------- Color variables ---------- */
+        /* ---------- Color variables (light & dark) ---------- */
         :root {
             --bg-color: #f0f4f8;
             --text-color: #1e293b;
@@ -25,7 +26,6 @@
             --canvas-shadow: rgba(0, 0, 0, 0.08);
             --text-muted: #64748b;
             --overlay-bg: rgba(0, 0, 0, 0.4);
-            --mobile-bar-height: 56px;
         }
 
         [data-theme="dark"] {
@@ -81,7 +81,7 @@
         /* Reader screen layout */
         #reader-screen { flex-direction: row; }
 
-        /* Sidebar (desktop) */
+        /* Sidebar – desktop default */
         .sidebar {
             position: relative; flex: 0 0 260px; width: 260px; height: 100vh;
             background: var(--sidebar-bg); border-right: 1px solid var(--sidebar-border);
@@ -164,7 +164,7 @@
         #pdf-container {
             position: relative; background: var(--canvas-bg); box-shadow: 0 20px 25px -5px var(--canvas-shadow);
             border-radius: 8px; overflow: hidden;
-            flex-shrink: 0;
+            flex-shrink: 0; /* allow natural size on desktop */
             transition: filter 0.3s ease;
         }
         [data-theme="dark"] #pdf-container { filter: invert(0.9) hue-rotate(180deg); }
@@ -196,61 +196,43 @@
         .textLayer span { cursor: pointer; border-radius: 2px; transition: background-color 0.1s ease; }
         .textLayer span:hover { background-color: rgba(37, 99, 235, 0.15); }
 
-        /* Sidebar overlay (mobile) */
+        /* ---------- Mobile toggle button & overlay ---------- */
+        .mobile-sidebar-toggle {
+            display: none; /* hidden on desktop */
+            position: fixed; bottom: 24px; right: 24px; z-index: 30;
+            background: var(--primary-accent); color: white; border: none;
+            width: 56px; height: 56px; border-radius: 50%; font-size: 26px;
+            box-shadow: 0 10px 20px rgba(0,0,0,0.25); cursor: pointer;
+            align-items: center; justify-content: center;
+            transition: background 0.2s ease, transform 0.15s ease;
+        }
+        .mobile-sidebar-toggle:active { transform: scale(0.95); }
+
         .sidebar-overlay {
             display: none; position: fixed; inset: 0; background: var(--overlay-bg);
             z-index: 15; opacity: 0; transition: opacity 0.3s ease;
         }
 
-        /* ---------- Mobile navigation bar ---------- */
-        .mobile-nav-bar {
-            display: none; /* hidden on desktop */
-            position: fixed; bottom: 0; left: 0; right: 0;
-            height: var(--mobile-bar-height); background: var(--sidebar-bg);
-            border-top: 1px solid var(--sidebar-border);
-            z-index: 25;
-            align-items: center; justify-content: space-around;
-            padding: 0 8px;
-        }
-        .mobile-nav-btn {
-            background: var(--panel-bg); border: 1px solid var(--btn-border);
-            color: var(--text-color); font-size: 20px; font-weight: 600;
-            padding: 8px 16px; border-radius: 8px; cursor: pointer;
-            line-height: 1; transition: background 0.15s;
-        }
-        .mobile-nav-btn:active { background: var(--secondary-accent); }
-        #mobile-page-info {
-            font-size: 16px; font-weight: 700; color: var(--brand-color);
-            background: var(--secondary-accent); padding: 6px 12px; border-radius: 8px;
-            text-align: center; border: 1px solid var(--btn-border);
-        }
-
-        /* ---------- Responsive styles ---------- */
+        /* ---------- Mobile responsive styles ---------- */
         @media (max-width: 768px) {
             .sidebar {
                 position: fixed; left: 0; top: 0; height: 100vh; width: 280px;
-                transform: translateX(-100%);
+                transform: translateX(-100%); /* hidden off-screen */
                 z-index: 20;
                 box-shadow: 4px 0 20px rgba(0,0,0,0.2);
             }
             .sidebar.open { transform: translateX(0); }
             .sidebar-overlay.show { display: block; opacity: 1; }
+            .mobile-sidebar-toggle { display: flex; }
 
-            /* Show the mobile bottom bar */
-            .mobile-nav-bar {
-                display: flex;
-            }
-
-            /* Adjust viewer area to avoid being covered by the bar */
             .pdf-viewer-area {
-                padding: 12px;
-                padding-bottom: calc(var(--mobile-bar-height) + 12px);
+                padding: 8px;  /* slight reduction for mobile */
                 width: 100%;
             }
 
-            /* Allow PDF to be wider than viewport for readability */
+            /* On mobile allow PDF to be wider than viewport for readable text */
             #pdf-container {
-                max-width: none;
+                max-width: none;   /* disable any width restriction */
                 height: auto;
             }
 
@@ -272,7 +254,7 @@
 
     <!-- Reader Screen -->
     <div id="reader-screen" class="screen">
-        <!-- Sidebar with all controls -->
+        <!-- Sidebar (all controls) -->
         <aside class="sidebar" id="sidebar">
             <div class="sidebar-top">
                 <div class="brand">
@@ -280,6 +262,7 @@
                     <div class="brand-name">AI PDF Reader</div>
                 </div>
 
+                <!-- Dark mode toggle -->
                 <div class="theme-toggle-container">
                     <span class="theme-toggle-label">Dark Mode</span>
                     <label class="switch">
@@ -290,6 +273,7 @@
 
                 <button id="close-file" class="close-btn">Close Document</button>
 
+                <!-- Zoom controls -->
                 <div class="control-panel">
                     <label for="zoom-slider">Zoom <span id="zoom-val">150%</span></label>
                     <input type="range" id="zoom-slider" min="0.5" max="3.0" step="0.1" value="1.5">
@@ -300,6 +284,7 @@
                     </div>
                 </div>
 
+                <!-- TTS Engine -->
                 <div class="control-panel">
                     <label>TTS Engine</label>
                     <select id="voice-selector" class="voice-selector">
@@ -375,10 +360,10 @@
             </div>
         </aside>
 
-        <!-- Overlay for mobile sidebar -->
+        <!-- Overlay (for mobile sidebar) -->
         <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
-        <!-- PDF viewer -->
+        <!-- PDF viewing area -->
         <main class="pdf-viewer-area" id="pdf-viewer-area">
             <div id="pdf-container">
                 <canvas id="pdf-canvas"></canvas>
@@ -386,20 +371,15 @@
             </div>
         </main>
 
-        <!-- Mobile bottom navigation bar -->
-        <div id="mobile-nav-bar" class="mobile-nav-bar">
-            <button id="mobile-prev-page" class="mobile-nav-btn">←</button>
-            <span id="mobile-page-info">Page 0 / 0</span>
-            <button id="mobile-next-page" class="mobile-nav-btn">→</button>
-            <button id="mobile-sidebar-toggle-btn" class="mobile-nav-btn">☰</button>
-        </div>
+        <!-- Mobile sidebar toggle button -->
+        <button class="mobile-sidebar-toggle" id="mobile-sidebar-toggle" aria-label="Toggle sidebar">☰</button>
     </div>
 
     <script>
-        // PDF.js worker
+        // ---------- PDF.js worker ----------
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
-        // State
+        // ---------- State ----------
         let isPlaying = false;
         let isAutoContinuing = false; 
         let pdfDoc = null;
@@ -408,7 +388,7 @@
         let pageNumPending = null;
         let scale = 1.5;
 
-        // DOM references
+        // ---------- DOM references ----------
         const welcomeScreen = document.getElementById('welcome-screen');
         const readerScreen = document.getElementById('reader-screen');
         const fileInput = document.getElementById('pdf-upload');
@@ -425,14 +405,9 @@
 
         const sidebar = document.getElementById('sidebar');
         const sidebarOverlay = document.getElementById('sidebar-overlay');
+        const mobileToggleBtn = document.getElementById('mobile-sidebar-toggle');
 
-        // Mobile nav bar elements
-        const mobilePrevBtn = document.getElementById('mobile-prev-page');
-        const mobileNextBtn = document.getElementById('mobile-next-page');
-        const mobilePageInfo = document.getElementById('mobile-page-info');
-        const mobileToggleBtn = document.getElementById('mobile-sidebar-toggle-btn');
-
-        // Dark mode
+        // ---------- Dark mode ----------
         const themeToggleCheckbox = document.getElementById('theme-toggle-checkbox');
         const currentTheme = localStorage.getItem('theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
         if (currentTheme === 'dark') {
@@ -449,7 +424,7 @@
             }
         });
 
-        // Sidebar toggle for mobile
+        // ---------- Mobile sidebar toggle ----------
         function openSidebar() {
             sidebar.classList.add('open');
             sidebarOverlay.classList.add('show');
@@ -463,16 +438,7 @@
         });
         sidebarOverlay.addEventListener('click', closeSidebar);
 
-        // Sync page info to mobile bar
-        function updateMobilePageInfo() {
-            if (pdfDoc) {
-                mobilePageInfo.textContent = `Page ${pageNum} / ${pdfDoc.numPages}`;
-            } else {
-                mobilePageInfo.textContent = 'Page 0 / 0';
-            }
-        }
-
-        // IndexedDB persistence
+        // ---------- IndexedDB persistence ----------
         let db;
         const dbName = "LocalPDFReaderDB";
         const request = indexedDB.open(dbName, 1);
@@ -532,7 +498,7 @@
             };
         }
 
-        // Zoom
+        // ---------- Zoom ----------
         function setZoom(newScale, { rerender = true } = {}) {
             newScale = Math.min(3.0, Math.max(0.5, newScale));
             newScale = Math.round(newScale * 10) / 10; 
@@ -562,8 +528,9 @@
         zoomOutBtn.addEventListener('click', () => setZoom(scale - 0.1));
         zoomResetBtn.addEventListener('click', () => setZoom(1.0));
 
-        // TTS
+        // ---------- TTS Audio Pipeline ----------
         const playBtn = document.getElementById('play-page-btn');
+        const voiceSelector = document.getElementById('voice-selector'); 
         const audioPlayer = document.getElementById('tts-audio-player');
         const ttsStatus = document.getElementById('tts-status');
         const ttsProgressFill = document.getElementById('tts-progress-fill');
@@ -711,10 +678,11 @@
             ttsStatus.classList.remove('active');
         }
 
-        // Highlighting
+        // ---------- Highlighting (original, proven logic) ----------
         function highlightActiveSentence(sentenceIndex, allSentences) {
             const allSpans = Array.from(document.querySelectorAll('.textLayer span'));
 
+            // Reset spans to original text
             allSpans.forEach(span => {
                 if (span.dataset.originalText === undefined) {
                     span.dataset.originalText = span.textContent;
@@ -798,7 +766,7 @@
             }
         }
 
-        // PDF loading
+        // ---------- PDF loading & rendering ----------
         async function loadPDF(file, startingPage = 1) {
             const fileUrl = URL.createObjectURL(file);
             welcomeScreen.classList.remove('active');
@@ -809,13 +777,18 @@
                 pdfDoc = await loadingTask.promise;
                 document.getElementById('page-count').textContent = pdfDoc.numPages;
 
-                // Mobile scale adjustment
+                // On mobile, set a sensible default scale so text is readable.
                 if (window.innerWidth <= 768) {
-                    const viewerWidth = viewerArea.clientWidth - 16;
+                    // Use a scale that fits the width, but never smaller than 0.9 to keep text legible.
+                    const viewerWidth = viewerArea.clientWidth - 16; // 8px padding each side
                     const firstPage = await pdfDoc.getPage(1);
                     const originalViewport = firstPage.getViewport({ scale: 1 });
                     let newScale = viewerWidth / originalViewport.width;
-                    newScale = Math.min(3.0, Math.max(0.9, newScale));
+                    const MIN_SCALE = 0.9;
+                    if (newScale < MIN_SCALE) {
+                        newScale = MIN_SCALE;
+                    }
+                    newScale = Math.min(3.0, Math.max(0.5, newScale));
                     scale = Math.round(newScale * 10) / 10;
                     zoomSlider.value = scale;
                     zoomVal.textContent = Math.round(scale * 100) + '%';
@@ -823,8 +796,8 @@
 
                 pageNum = startingPage;
                 renderPage(pageNum);
-                updateMobilePageInfo();
 
+                // Auto-close sidebar on mobile to show the PDF
                 if (window.innerWidth <= 768) {
                     closeSidebar();
                 }
@@ -884,6 +857,7 @@
 
                 const textContent = await page.getTextContent();
 
+                // Build readable text for TTS
                 const bracketedNumberPattern = /^[\[\(\{"'\-–—•·\s]*(\d+(?:[.,]\d+)*)[\]\)\}"'\-–—•·\s]*$/;
                 const decorativeOnlyPattern = /^[\[\]\(\)\{\}"'\-–—•·|_=~^]+$/;
                 currentPageText = textContent.items.reduce((acc, item) => {
@@ -913,7 +887,6 @@
                 document.getElementById('page-num').textContent = num;
                 prevPageBtn.disabled = num <= 1;
                 nextPageBtn.disabled = num >= pdfDoc.numPages;
-                updateMobilePageInfo();
 
                 pageIsRendering = false;
 
@@ -971,11 +944,8 @@
             viewerArea.scrollTo({ top: 0, behavior: 'smooth' });
         }
 
-        // Navigation listeners (sidebar + mobile bar)
         prevPageBtn.addEventListener('click', () => goToPage(-1));
         nextPageBtn.addEventListener('click', () => goToPage(1));
-        mobilePrevBtn.addEventListener('click', () => goToPage(-1));
-        mobileNextBtn.addEventListener('click', () => goToPage(1));
 
         document.addEventListener('keydown', (event) => {
             if (event.key === 'Escape') {
@@ -1033,7 +1003,7 @@
             return finalChunks;
         }
 
-        // Click-to-play
+        // ---------- Click-to-play a sentence ----------
         document.getElementById('text-layer').addEventListener('click', (e) => {
             let targetSpan = e.target;
             if (targetSpan.tagName.toLowerCase() === 'mark') {
