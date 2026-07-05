@@ -3,171 +3,648 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
-    <title>Local AI PDF Reader</title>
+    <title>DocReader Pro</title>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf_viewer.min.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 
     <style>
-        /* ---------- Color variables ---------- */
+        /* ─── Design Tokens ─── */
         :root {
-            --bg-color: #f0f4f8;
-            --text-color: #1e293b;
-            --sidebar-bg: white;
-            --sidebar-border: #e2e8f0;
-            --card-bg: white;
-            --panel-bg: #f8fafc;
-            --brand-color: #1e3a8a;
-            --primary-accent: #2563eb;
-            --secondary-accent: #eff6ff;
-            --btn-border: #cbd5e1;
-            --canvas-bg: white;
-            --canvas-shadow: rgba(0, 0, 0, 0.08);
-            --text-muted: #64748b;
-            --overlay-bg: rgba(0, 0, 0, 0.4);
-            --mobile-bar-height: 56px;
+            --bg:           #f6f7f9;
+            --surface:      #ffffff;
+            --surface-2:    #f0f2f5;
+            --border:       #e4e7ec;
+            --border-focus: #2563eb;
+            --brand:        #1d3a6b;
+            --accent:       #2563eb;
+            --accent-soft:  #eff6ff;
+            --accent-glow:  rgba(37,99,235,0.12);
+            --text-primary: #111827;
+            --text-secondary:#6b7280;
+            --text-tertiary:#9ca3af;
+            --danger:       #ef4444;
+            --danger-soft:  #fef2f2;
+            --success:      #10b981;
+            --warning:      #f59e0b;
+            --shadow-sm:    0 1px 3px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04);
+            --shadow-md:    0 4px 6px -1px rgba(0,0,0,0.07), 0 2px 4px -1px rgba(0,0,0,0.04);
+            --shadow-lg:    0 10px 15px -3px rgba(0,0,0,0.08), 0 4px 6px -2px rgba(0,0,0,0.03);
+            --sidebar-w:    300px;
+            --topbar-h:     54px;
+            --radius-sm:    6px;
+            --radius-md:    10px;
+            --radius-lg:    14px;
+            --transition:   0.2s cubic-bezier(0.4,0,0.2,1);
         }
 
         [data-theme="dark"] {
-            --bg-color: #0f172a;
-            --text-color: #f1f5f9;
-            --sidebar-bg: #1e293b;
-            --sidebar-border: #334155;
-            --card-bg: #1e293b;
-            --panel-bg: #334155;
-            --brand-color: #38bdf8;
-            --primary-accent: #38bdf8;
-            --secondary-accent: #0f172a;
-            --btn-border: #475569;
-            --canvas-bg: #1e293b;
-            --canvas-shadow: rgba(0, 0, 0, 0.5);
-            --text-muted: #94a3b8;
-            --overlay-bg: rgba(0, 0, 0, 0.7);
+            --bg:           #0d1117;
+            --surface:      #161b22;
+            --surface-2:    #21262d;
+            --border:       #30363d;
+            --border-focus: #58a6ff;
+            --brand:        #79c0ff;
+            --accent:       #58a6ff;
+            --accent-soft:  #0d1117;
+            --accent-glow:  rgba(88,166,255,0.12);
+            --text-primary: #e6edf3;
+            --text-secondary:#8b949e;
+            --text-tertiary:#6e7681;
+            --danger:       #f85149;
+            --danger-soft:  #160b0b;
+            --success:      #3fb950;
+            --warning:      #d29922;
+            --shadow-sm:    0 1px 3px rgba(0,0,0,0.3);
+            --shadow-md:    0 4px 6px -1px rgba(0,0,0,0.4);
+            --shadow-lg:    0 10px 15px -3px rgba(0,0,0,0.5);
         }
 
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body {
-            background-color: var(--bg-color);
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            color: var(--text-color);
-            height: 100vh;
+
+        html, body {
+            height: 100%;
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            font-size: 14px;
+            color: var(--text-primary);
+            background: var(--bg);
             overflow: hidden;
-            transition: background-color 0.3s ease, color 0.3s ease;
+            transition: background var(--transition), color var(--transition);
         }
 
+        /* ─── Screens ─── */
         .screen { display: none; width: 100%; height: 100vh; }
         .screen.active { display: flex; }
 
-        /* Welcome screen */
-        #welcome-screen { justify-content: center; align-items: center; padding: 40px; }
-        .upload-card {
-            background: var(--card-bg); padding: 60px 40px; border-radius: 16px;
-            box-shadow: 0 10px 25px -5px rgba(30, 41, 59, 0.08); text-align: center;
-            border: 1px solid var(--sidebar-border); max-width: 500px; width: 100%;
+        /* ─── Welcome Screen ─── */
+        #welcome-screen {
+            justify-content: center;
+            align-items: center;
+            background: var(--bg);
+            position: relative;
+            overflow: hidden;
         }
-        .upload-card h1 { font-size: 24px; font-weight: 600; margin-bottom: 10px; color: var(--brand-color); }
-        .upload-card p { color: var(--text-muted); margin-bottom: 30px; line-height: 1.5; }
+
+        #welcome-screen::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: radial-gradient(ellipse 70% 50% at 50% -10%, var(--accent-glow), transparent);
+            pointer-events: none;
+        }
+
+        .welcome-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 52px 44px;
+            max-width: 480px;
+            width: calc(100% - 32px);
+            text-align: center;
+            box-shadow: var(--shadow-lg);
+            position: relative;
+        }
+
+        .welcome-logo {
+            width: 56px;
+            height: 56px;
+            background: linear-gradient(135deg, var(--accent) 0%, #1d4ed8 100%);
+            border-radius: var(--radius-md);
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            margin-bottom: 24px;
+            box-shadow: 0 8px 20px var(--accent-glow);
+        }
+
+        .welcome-logo svg { width: 28px; height: 28px; color: white; }
+
+        .welcome-card h1 {
+            font-size: 24px;
+            font-weight: 700;
+            color: var(--text-primary);
+            letter-spacing: -0.4px;
+            margin-bottom: 10px;
+        }
+
+        .welcome-card p {
+            color: var(--text-secondary);
+            line-height: 1.65;
+            font-size: 14px;
+            margin-bottom: 36px;
+        }
+
+        .drop-zone {
+            border: 2px dashed var(--border);
+            border-radius: var(--radius-md);
+            padding: 32px;
+            cursor: pointer;
+            transition: all var(--transition);
+            background: var(--surface-2);
+            margin-bottom: 0;
+        }
+        .drop-zone:hover, .drop-zone.dragging {
+            border-color: var(--accent);
+            background: var(--accent-soft);
+        }
+        .drop-zone p { color: var(--text-secondary); margin-bottom: 16px; }
+        .drop-zone .drop-icon { font-size: 36px; margin-bottom: 12px; display: block; }
 
         input[type="file"] { display: none; }
-        .upload-btn {
-            display: inline-block; background-color: var(--primary-accent); color: white;
-            padding: 12px 28px; border-radius: 8px; font-size: 16px; font-weight: 500;
-            cursor: pointer; transition: all 0.2s ease;
-            box-shadow: 0 4px 6px -1px rgba(37, 99, 235, 0.2);
+
+        .btn-primary {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            background: var(--accent);
+            color: #fff;
+            padding: 11px 24px;
+            border-radius: var(--radius-sm);
+            font-size: 14px;
+            font-weight: 600;
+            cursor: pointer;
+            border: none;
+            outline: none;
+            transition: all var(--transition);
+            box-shadow: 0 1px 3px rgba(37,99,235,0.3);
         }
-        .upload-btn:hover { filter: brightness(1.1); transform: translateY(-1px); }
-        .upload-btn:active { transform: translateY(1px); }
+        .btn-primary:hover { filter: brightness(1.08); transform: translateY(-1px); }
+        .btn-primary:active { transform: translateY(0); }
 
-        /* Reader screen layout */
-        #reader-screen { flex-direction: row; }
+        /* ─── Reader Layout ─── */
+        #reader-screen { flex-direction: column; overflow: hidden; }
 
-        /* Sidebar (desktop) */
-        .sidebar {
-            position: relative; flex: 0 0 260px; width: 260px; height: 100vh;
-            background: var(--sidebar-bg); border-right: 1px solid var(--sidebar-border);
-            padding: 28px 20px; display: flex; flex-direction: column; justify-content: space-between;
-            box-shadow: 4px 0 24px rgba(30, 41, 59, 0.03); z-index: 10;
-            overflow-y: auto; transition: transform 0.3s ease;
-        }
-        .sidebar-top { display: flex; flex-direction: column; gap: 18px; }
-        .sidebar-bottom { display: flex; flex-direction: column; align-items: center; gap: 10px; }
-
-        .brand { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
-        .brand-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--primary-accent); box-shadow: 0 0 0 4px rgba(37,99,235,0.15); }
-        .brand-name { font-size: 13px; font-weight: 700; color: var(--brand-color); letter-spacing: 0.03em; text-transform: uppercase; }
-
-        .theme-toggle-container {
-            display: flex; align-items: center; justify-content: space-between;
-            background: var(--panel-bg); padding: 10px 15px; border-radius: 10px;
-            border: 1px solid var(--sidebar-border); margin-bottom: 4px;
-        }
-        .theme-toggle-label { font-size: 12px; font-weight: 700; color: var(--text-color); text-transform: uppercase; letter-spacing: 0.06em; }
-        .switch { position: relative; display: inline-block; width: 44px; height: 24px; }
-        .switch input { opacity: 0; width: 0; height: 0; }
-        .slider { position: absolute; cursor: pointer; inset: 0; background-color: #cbd5e1; transition: .3s; border-radius: 24px; }
-        .slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; transition: .3s; border-radius: 50%; }
-        input:checked + .slider { background-color: var(--primary-accent); }
-        input:checked + .slider:before { transform: translateX(20px); }
-
-        .control-panel {
-            display: flex; flex-direction: column; gap: 10px;
-            background: var(--panel-bg); padding: 15px; border-radius: 10px; border: 1px solid var(--sidebar-border);
-        }
-        .control-panel label { font-size: 12px; font-weight: 700; color: var(--text-color); display: flex; justify-content: space-between; text-transform: uppercase; letter-spacing: 0.06em; }
-        .control-panel label span { color: var(--primary-accent); font-weight: 700; }
-
-        input[type="range"] { width: 100%; cursor: pointer; accent-color: var(--primary-accent); }
-
-        .zoom-btn-row { display: flex; gap: 8px; }
-        .zoom-btn { flex: 1; background: var(--sidebar-bg); border: 1px solid var(--btn-border); color: var(--text-color); padding: 6px 0; border-radius: 6px; font-size: 15px; font-weight: 600; cursor: pointer; transition: all 0.15s ease; line-height: 1; }
-        .zoom-btn:hover { background: var(--secondary-accent); }
-        .zoom-btn:active { transform: translateY(1px); }
-
-        #play-page-btn {
-            background: var(--primary-accent); color: white; border: none; padding: 12px;
-            border-radius: 8px; font-weight: 600; font-size: 14px; cursor: pointer;
-            transition: all 0.2s ease; width: 100%; box-shadow: 0 2px 4px rgba(37, 99, 235, 0.15);
-        }
-        #play-page-btn:hover { filter: brightness(1.1); }
-        #play-page-btn:active { transform: translateY(1px); }
-
-        .tts-status { display: none; flex-direction: column; gap: 6px; margin-top: 2px; }
-        .tts-status.active { display: flex; }
-        .tts-progress-track { width: 100%; height: 6px; border-radius: 999px; background: var(--sidebar-border); overflow: hidden; }
-        .tts-progress-fill { height: 100%; width: 0%; border-radius: 999px; background: linear-gradient(90deg, #60a5fa, var(--primary-accent)); transition: width 0.25s ease; }
-        .tts-status-text { font-size: 12px; color: var(--text-muted); text-align: center; display: flex; align-items: center; justify-content: center; gap: 6px; }
-        .tts-status-text::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--primary-accent); animation: tts-pulse 1.2s ease-in-out infinite; }
-        @keyframes tts-pulse { 0%, 100% { opacity: 0.3; transform: scale(0.85); } 50% { opacity: 1; transform: scale(1); } }
-
-        .page-info { font-size: 17px; font-weight: 700; color: var(--brand-color); background: var(--secondary-accent); padding: 10px 16px; border-radius: 8px; width: 100%; text-align: center; border: 1px solid var(--btn-border); }
-        .page-nav-row { display: flex; gap: 8px; width: 100%; }
-        .page-nav-btn { flex: 1; background: var(--sidebar-bg); border: 1px solid var(--btn-border); color: var(--text-color); padding: 8px 0; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.15s ease; }
-        .page-nav-btn:hover:not(:disabled) { background: var(--secondary-accent); }
-        .page-nav-btn:disabled { opacity: 0.4; cursor: not-allowed; }
-
-        .keyboard-hint { font-size: 12px; color: var(--text-muted); text-align: center; margin-top: 4px; line-height: 1.4; }
-
-        button.close-btn {
-            padding: 10px 16px; cursor: pointer; border: 1px solid #fca5a5;
-            border-radius: 8px; background: var(--sidebar-bg); color: #ef4444; font-weight: 600;
-            font-size: 14px; transition: all 0.2s ease; width: 100%;
-        }
-        button.close-btn:hover { background: #fef2f2; border-color: #ef4444; }
-        [data-theme="dark"] button.close-btn:hover { background: #7f1d1d; color: #fca5a5; }
-
-        /* PDF viewer area */
-        .pdf-viewer-area {
-            flex: 1 1 auto; height: 100vh; padding: 40px;
-            display: flex; justify-content: center; align-items: flex-start;
-            overflow: auto; background: var(--bg-color);
-        }
-        #pdf-container {
-            position: relative; background: var(--canvas-bg); box-shadow: 0 20px 25px -5px var(--canvas-shadow);
-            border-radius: 8px; overflow: hidden;
+        /* ─── Top Bar ─── */
+        .topbar {
+            height: var(--topbar-h);
+            background: var(--surface);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 0 16px;
             flex-shrink: 0;
-            transition: filter 0.3s ease;
+            z-index: 30;
+            box-shadow: var(--shadow-sm);
         }
-        [data-theme="dark"] #pdf-container { filter: invert(0.9) hue-rotate(180deg); }
+
+        .topbar-brand {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-right: 4px;
+        }
+
+        .topbar-logo {
+            width: 30px;
+            height: 30px;
+            background: linear-gradient(135deg, var(--accent) 0%, #1d4ed8 100%);
+            border-radius: 7px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+        .topbar-logo svg { width: 16px; height: 16px; color: white; }
+        .topbar-name {
+            font-size: 14px;
+            font-weight: 700;
+            color: var(--brand);
+            letter-spacing: -0.2px;
+        }
+
+        .topbar-divider {
+            width: 1px;
+            height: 22px;
+            background: var(--border);
+            flex-shrink: 0;
+        }
+
+        .topbar-filename {
+            font-size: 13px;
+            color: var(--text-secondary);
+            max-width: 240px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            font-weight: 500;
+        }
+
+        .topbar-spacer { flex: 1; }
+
+        /* Search bar in topbar */
+        .search-container {
+            position: relative;
+            display: flex;
+            align-items: center;
+        }
+
+        .search-input-wrap {
+            position: relative;
+            display: flex;
+            align-items: center;
+        }
+
+        .search-icon {
+            position: absolute;
+            left: 10px;
+            color: var(--text-tertiary);
+            pointer-events: none;
+            z-index: 1;
+        }
+
+        #search-input {
+            width: 220px;
+            padding: 7px 10px 7px 32px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            background: var(--surface-2);
+            color: var(--text-primary);
+            font-size: 13px;
+            font-family: inherit;
+            outline: none;
+            transition: all var(--transition);
+        }
+        #search-input:focus {
+            border-color: var(--border-focus);
+            background: var(--surface);
+            box-shadow: 0 0 0 3px var(--accent-glow);
+            width: 260px;
+        }
+        #search-input::placeholder { color: var(--text-tertiary); }
+
+        .search-count {
+            position: absolute;
+            right: 8px;
+            font-size: 11px;
+            color: var(--text-tertiary);
+            font-variant-numeric: tabular-nums;
+            pointer-events: none;
+        }
+
+        .search-nav-btns {
+            display: flex;
+            gap: 2px;
+            margin-left: 4px;
+        }
+
+        .icon-btn {
+            width: 32px;
+            height: 32px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            background: var(--surface);
+            color: var(--text-secondary);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            cursor: pointer;
+            transition: all var(--transition);
+            flex-shrink: 0;
+            outline: none;
+        }
+        .icon-btn:hover:not(:disabled) {
+            background: var(--surface-2);
+            color: var(--text-primary);
+            border-color: var(--border-focus);
+        }
+        .icon-btn:disabled { opacity: 0.35; cursor: not-allowed; }
+        .icon-btn svg { width: 15px; height: 15px; }
+        .icon-btn.active {
+            background: var(--accent-soft);
+            border-color: var(--accent);
+            color: var(--accent);
+        }
+
+        /* ─── Main Body ─── */
+        .reader-body {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+            position: relative;
+        }
+
+        /* ─── Sidebar ─── */
+        .sidebar {
+            width: var(--sidebar-w);
+            flex-shrink: 0;
+            background: var(--surface);
+            border-right: 1px solid var(--border);
+            display: flex;
+            flex-direction: column;
+            height: 100%;
+            overflow: hidden;
+            transition: width var(--transition), opacity var(--transition);
+            z-index: 20;
+        }
+
+        .sidebar.collapsed {
+            width: 0;
+            opacity: 0;
+            border-right-width: 0;
+        }
+
+        .sidebar-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 14px 16px;
+            border-bottom: 1px solid var(--border);
+            flex-shrink: 0;
+        }
+
+        .sidebar-tabs {
+            display: flex;
+            gap: 2px;
+            background: var(--surface-2);
+            border-radius: var(--radius-sm);
+            padding: 3px;
+        }
+
+        .sidebar-tab {
+            padding: 5px 12px;
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            border-radius: 4px;
+            cursor: pointer;
+            transition: all var(--transition);
+            border: none;
+            background: transparent;
+            outline: none;
+            white-space: nowrap;
+        }
+        .sidebar-tab.active {
+            background: var(--surface);
+            color: var(--text-primary);
+            box-shadow: var(--shadow-sm);
+        }
+
+        .sidebar-content {
+            flex: 1;
+            overflow-y: auto;
+            overflow-x: hidden;
+        }
+        .sidebar-content::-webkit-scrollbar { width: 4px; }
+        .sidebar-content::-webkit-scrollbar-track { background: transparent; }
+        .sidebar-content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+        /* ─── TOC Panel ─── */
+        #toc-panel { display: block; }
+        #controls-panel { display: none; }
+
+        .toc-empty {
+            padding: 32px 20px;
+            text-align: center;
+            color: var(--text-tertiary);
+            font-size: 13px;
+            line-height: 1.6;
+        }
+        .toc-empty svg { width: 32px; height: 32px; margin-bottom: 12px; opacity: 0.4; display: block; margin-inline: auto; }
+
+        .toc-item {
+            display: flex;
+            align-items: flex-start;
+            gap: 8px;
+            padding: 8px 16px;
+            cursor: pointer;
+            transition: background var(--transition);
+            border-left: 2px solid transparent;
+            text-decoration: none;
+        }
+        .toc-item:hover { background: var(--surface-2); }
+        .toc-item.active {
+            background: var(--accent-soft);
+            border-left-color: var(--accent);
+        }
+
+        .toc-item-num {
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            color: var(--text-tertiary);
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 2px 5px;
+            flex-shrink: 0;
+            margin-top: 1px;
+            min-width: 32px;
+            text-align: center;
+            font-weight: 500;
+        }
+        .toc-item.active .toc-item-num {
+            background: var(--accent);
+            border-color: var(--accent);
+            color: white;
+        }
+
+        .toc-item-label {
+            font-size: 12.5px;
+            color: var(--text-secondary);
+            line-height: 1.5;
+            word-break: break-word;
+        }
+        .toc-item.active .toc-item-label { color: var(--accent); font-weight: 500; }
+        .toc-item[data-level="2"] { padding-left: 28px; }
+        .toc-item[data-level="3"] { padding-left: 40px; }
+        .toc-item[data-level="4"] { padding-left: 52px; }
+
+        /* ─── Controls Panel ─── */
+        .control-section {
+            padding: 16px;
+            border-bottom: 1px solid var(--border);
+        }
+        .control-section:last-child { border-bottom: none; }
+
+        .control-label {
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.06em;
+            text-transform: uppercase;
+            color: var(--text-tertiary);
+            margin-bottom: 10px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        .control-label span { font-weight: 700; color: var(--accent); letter-spacing: 0; text-transform: none; font-size: 13px; }
+
+        .slider-row { display: flex; flex-direction: column; gap: 8px; }
+
+        input[type="range"] {
+            width: 100%;
+            cursor: pointer;
+            accent-color: var(--accent);
+            height: 4px;
+        }
+
+        .btn-row { display: flex; gap: 6px; }
+
+        .btn-sm {
+            flex: 1;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            color: var(--text-secondary);
+            padding: 7px 0;
+            border-radius: var(--radius-sm);
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all var(--transition);
+            outline: none;
+        }
+        .btn-sm:hover { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+        .btn-sm:active { transform: translateY(1px); }
+
+        select.styled-select {
+            width: 100%;
+            padding: 8px 10px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            background: var(--surface-2);
+            color: var(--text-primary);
+            font-size: 13px;
+            font-family: inherit;
+            cursor: pointer;
+            outline: none;
+            transition: all var(--transition);
+        }
+        select.styled-select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+
+        .toggle-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 3px 0;
+        }
+        .toggle-label { font-size: 13px; color: var(--text-secondary); }
+        .switch { position: relative; display: inline-block; width: 38px; height: 22px; }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider { position: absolute; cursor: pointer; inset: 0; background: var(--border); transition: .3s; border-radius: 22px; }
+        .slider:before { position: absolute; content: ""; height: 16px; width: 16px; left: 3px; bottom: 3px; background: white; transition: .3s; border-radius: 50%; }
+        input:checked + .slider { background: var(--accent); }
+        input:checked + .slider:before { transform: translateX(16px); }
+
+        .btn-play {
+            width: 100%;
+            background: var(--accent);
+            color: white;
+            border: none;
+            padding: 11px;
+            border-radius: var(--radius-sm);
+            font-weight: 600;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all var(--transition);
+            outline: none;
+        }
+        .btn-play:hover { filter: brightness(1.08); }
+        .btn-play:active { transform: translateY(1px); }
+
+        .tts-status { display: none; flex-direction: column; gap: 6px; margin-top: 10px; }
+        .tts-status.active { display: flex; }
+        .tts-progress-track { width: 100%; height: 4px; border-radius: 999px; background: var(--border); overflow: hidden; }
+        .tts-progress-fill { height: 100%; width: 0%; border-radius: 999px; background: linear-gradient(90deg, #93c5fd, var(--accent)); transition: width 0.25s ease; }
+        .tts-status-text { font-size: 11px; color: var(--text-tertiary); display: flex; align-items: center; gap: 6px; }
+        .tts-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); animation: pulse 1.2s ease-in-out infinite; flex-shrink: 0; }
+        @keyframes pulse { 0%,100%{opacity:.3;transform:scale(.85)} 50%{opacity:1;transform:scale(1)} }
+
+        audio { display: none; }
+
+        /* ─── Page Navigation (sidebar bottom) ─── */
+        .sidebar-footer {
+            padding: 14px 16px;
+            border-top: 1px solid var(--border);
+            flex-shrink: 0;
+        }
+
+        .page-nav {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .page-info-badge {
+            flex: 1;
+            text-align: center;
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-primary);
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 7px;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .page-jump-wrap {
+            margin-top: 10px;
+            display: flex;
+            gap: 6px;
+        }
+
+        #page-jump-input {
+            flex: 1;
+            padding: 7px 10px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            background: var(--surface-2);
+            color: var(--text-primary);
+            font-size: 13px;
+            font-family: inherit;
+            outline: none;
+            text-align: center;
+        }
+        #page-jump-input:focus { border-color: var(--border-focus); }
+
+        .btn-jump {
+            padding: 7px 14px;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            color: var(--text-secondary);
+            font-size: 13px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all var(--transition);
+        }
+        .btn-jump:hover { background: var(--accent-soft); color: var(--accent); border-color: var(--accent); }
+
+        .keyboard-hint {
+            margin-top: 8px;
+            font-size: 11px;
+            color: var(--text-tertiary);
+            text-align: center;
+            line-height: 1.5;
+        }
+
+        /* ─── PDF Viewer Area ─── */
+        .pdf-viewer-area {
+            flex: 1;
+            height: 100%;
+            overflow: auto;
+            background: var(--bg);
+            display: flex;
+            justify-content: center;
+            align-items: flex-start;
+            padding: 32px;
+        }
+        .pdf-viewer-area::-webkit-scrollbar { width: 8px; height: 8px; }
+        .pdf-viewer-area::-webkit-scrollbar-track { background: transparent; }
+        .pdf-viewer-area::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+        #pdf-container {
+            position: relative;
+            background: white;
+            box-shadow: var(--shadow-lg), 0 0 0 1px rgba(0,0,0,0.04);
+            border-radius: 4px;
+            overflow: hidden;
+            flex-shrink: 0;
+            transition: filter var(--transition);
+        }
+        [data-theme="dark"] #pdf-container { filter: invert(0.88) hue-rotate(180deg); }
 
         canvas { display: block; }
 
@@ -179,1055 +656,2211 @@
             position: absolute; white-space: pre; transform-origin: 0% 0%;
             color: transparent; cursor: text;
         }
-        ::selection { background: rgba(37, 99, 235, 0.35); }
-        .textLayer ::selection { background: rgba(37, 99, 235, 0.35); }
+        .textLayer span { border-radius: 2px; transition: background-color 0.1s ease; }
+        .textLayer span:hover { background-color: rgba(37,99,235,0.12); }
 
+        /* Text selection */
+        ::selection { background: rgba(37,99,235,0.3); }
+        .textLayer ::selection { background: rgba(37,99,235,0.3); }
+
+        /* TTS highlight */
         mark.reading-highlight {
-            background-color: rgba(59, 130, 246, 0.32) !important;
-            mix-blend-mode: multiply; border-radius: 2px; color: transparent !important;
-        }
-        .voice-selector {
-            width: 100%; padding: 8px 12px; border: 1px solid var(--btn-border);
-            border-radius: 6px; background-color: var(--sidebar-bg); color: var(--text-color);
-            font-size: 13px; font-weight: 600; cursor: pointer; outline: none;
-            transition: all 0.2s ease; margin-bottom: 4px;
-        }
-        .voice-selector:focus { border-color: var(--primary-accent); box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1); }
-        .textLayer span { cursor: pointer; border-radius: 2px; transition: background-color 0.1s ease; }
-        .textLayer span:hover { background-color: rgba(37, 99, 235, 0.15); }
-
-        /* Sidebar overlay (mobile) */
-        .sidebar-overlay {
-            display: none; position: fixed; inset: 0; background: var(--overlay-bg);
-            z-index: 15; opacity: 0; transition: opacity 0.3s ease;
+            background-color: rgba(59,130,246,0.3) !important;
+            mix-blend-mode: multiply;
+            border-radius: 2px;
+            color: transparent !important;
         }
 
-        /* ---------- Mobile navigation bar ---------- */
+        /* Search highlight */
+        .search-highlight {
+            background-color: rgba(251,191,36,0.45) !important;
+            color: transparent !important;
+            border-radius: 2px;
+        }
+        .search-highlight.current {
+            background-color: rgba(239,68,68,0.45) !important;
+        }
+
+        /* PDF Links layer */
+        .annotationLayer {
+            position: absolute;
+            inset: 0;
+            overflow: hidden;
+            pointer-events: none;
+        }
+        .annotationLayer .linkAnnotation {
+            position: absolute;
+            pointer-events: all;
+        }
+        .annotationLayer .linkAnnotation a {
+            display: block;
+            width: 100%;
+            height: 100%;
+            cursor: pointer;
+            background: transparent;
+            border: 1px solid transparent;
+            border-radius: 2px;
+            transition: background var(--transition), border-color var(--transition);
+        }
+        .annotationLayer .linkAnnotation a:hover {
+            background: rgba(37,99,235,0.12);
+            border-color: rgba(37,99,235,0.4);
+        }
+
+        /* ─── Search Results Dropdown ─── */
+        .search-results-panel {
+            position: absolute;
+            top: calc(var(--topbar-h) + 4px);
+            left: 50%;
+            transform: translateX(-50%);
+            width: 440px;
+            max-height: 360px;
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            box-shadow: var(--shadow-lg);
+            overflow-y: auto;
+            z-index: 200;
+            display: none;
+        }
+        .search-results-panel.visible { display: block; }
+
+        .search-results-header {
+            padding: 10px 14px;
+            border-bottom: 1px solid var(--border);
+            font-size: 12px;
+            font-weight: 600;
+            color: var(--text-secondary);
+            background: var(--surface-2);
+            border-radius: var(--radius-md) var(--radius-md) 0 0;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .search-result-item {
+            padding: 10px 14px;
+            cursor: pointer;
+            border-bottom: 1px solid var(--border);
+            transition: background var(--transition);
+            display: flex;
+            align-items: flex-start;
+            gap: 10px;
+        }
+        .search-result-item:last-child { border-bottom: none; }
+        .search-result-item:hover { background: var(--surface-2); }
+        .search-result-item.active { background: var(--accent-soft); }
+
+        .result-page-badge {
+            font-size: 10px;
+            font-family: 'JetBrains Mono', monospace;
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 2px 6px;
+            color: var(--text-secondary);
+            flex-shrink: 0;
+            margin-top: 1px;
+            font-weight: 500;
+        }
+
+        .result-text {
+            font-size: 12px;
+            color: var(--text-secondary);
+            line-height: 1.5;
+        }
+        .result-text em {
+            font-style: normal;
+            background: rgba(251,191,36,0.4);
+            color: var(--text-primary);
+            border-radius: 2px;
+            padding: 0 2px;
+            font-weight: 600;
+        }
+
+        /* ─── Close Btn ─── */
+        .btn-danger {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            background: transparent;
+            border: 1px solid var(--border);
+            color: var(--danger);
+            padding: 7px 14px;
+            border-radius: var(--radius-sm);
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all var(--transition);
+            outline: none;
+        }
+        .btn-danger:hover { background: var(--danger-soft); border-color: var(--danger); }
+
+        /* ─── Loading Overlay ─── */
+        .loading-overlay {
+            position: fixed;
+            inset: 0;
+            background: rgba(0,0,0,0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 999;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity var(--transition);
+        }
+        .loading-overlay.visible { opacity: 1; pointer-events: all; }
+
+        .loading-card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-lg);
+            padding: 32px 40px;
+            text-align: center;
+            box-shadow: var(--shadow-lg);
+        }
+
+        .spinner {
+            width: 36px;
+            height: 36px;
+            border: 3px solid var(--border);
+            border-top-color: var(--accent);
+            border-radius: 50%;
+            animation: spin 0.8s linear infinite;
+            margin: 0 auto 14px;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        .loading-card p { font-size: 14px; font-weight: 500; color: var(--text-secondary); }
+
+        /* ─── Download / Cache Panel ─── */
+        .download-panel {
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            padding: 14px;
+            margin-top: 12px;
+        }
+        .download-panel-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 10px;
+        }
+        .download-panel-title {
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            color: var(--text-tertiary);
+        }
+        .cache-badge {
+            font-size: 10px;
+            font-weight: 600;
+            padding: 2px 7px;
+            border-radius: 99px;
+            background: var(--success);
+            color: white;
+            display: none;
+        }
+        .cache-badge.visible { display: inline-block; }
+
+        .toggle-row-spaced {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 4px 0;
+            gap: 8px;
+        }
+        .toggle-label-stack {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .toggle-label-stack .tl-main {
+            font-size: 13px;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+        .toggle-label-stack .tl-sub {
+            font-size: 11px;
+            color: var(--text-tertiary);
+        }
+
+        .page-range-row {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+            margin-top: 10px;
+        }
+        .page-range-row label {
+            font-size: 12px;
+            color: var(--text-secondary);
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        .page-range-input {
+            flex: 1;
+            padding: 6px 8px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            background: var(--surface);
+            color: var(--text-primary);
+            font-size: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            outline: none;
+            min-width: 0;
+        }
+        .page-range-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+        .page-range-input::placeholder { color: var(--text-tertiary); }
+
+        .btn-download {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            width: 100%;
+            background: linear-gradient(135deg, #10b981, #059669);
+            color: white;
+            border: none;
+            padding: 10px;
+            border-radius: var(--radius-sm);
+            font-weight: 600;
+            font-size: 12px;
+            cursor: pointer;
+            margin-top: 10px;
+            transition: all var(--transition);
+            outline: none;
+        }
+        .btn-download:hover { filter: brightness(1.08); transform: translateY(-1px); }
+        .btn-download:active { transform: translateY(0); }
+        .btn-download:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+        .download-progress {
+            display: none;
+            flex-direction: column;
+            gap: 5px;
+            margin-top: 8px;
+        }
+        .download-progress.active { display: flex; }
+        .dl-progress-track { width: 100%; height: 4px; border-radius: 999px; background: var(--border); overflow: hidden; }
+        .dl-progress-fill { height: 100%; width: 0%; border-radius: 999px; background: linear-gradient(90deg, #6ee7b7, #10b981); transition: width 0.3s ease; }
+        .dl-status-text { font-size: 11px; color: var(--text-tertiary); display: flex; align-items: center; gap: 6px; }
+        .dl-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); animation: pulse 1.2s ease-in-out infinite; flex-shrink: 0; }
+
+        /* ─── Mobile ─── */
         .mobile-nav-bar {
-            display: none; /* hidden on desktop */
-            position: fixed; bottom: 0; left: 0; right: 0;
-            height: var(--mobile-bar-height); background: var(--sidebar-bg);
-            border-top: 1px solid var(--sidebar-border);
+            display: none;
+            position: fixed;
+            bottom: 0; left: 0; right: 0;
+            height: 64px;
+            background: var(--surface);
+            border-top: 1px solid var(--border);
             z-index: 25;
-            align-items: center; justify-content: space-around;
-            padding: 0 8px;
-        }
-        .mobile-nav-btn {
-            background: var(--panel-bg); border: 1px solid var(--btn-border);
-            color: var(--text-color); font-size: 20px; font-weight: 600;
-            padding: 8px 16px; border-radius: 8px; cursor: pointer;
-            line-height: 1; transition: background 0.15s;
-        }
-        .mobile-nav-btn:active { background: var(--secondary-accent); }
-        #mobile-page-info {
-            font-size: 16px; font-weight: 700; color: var(--brand-color);
-            background: var(--secondary-accent); padding: 6px 12px; border-radius: 8px;
-            text-align: center; border: 1px solid var(--btn-border);
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 16px;
+            gap: 10px;
+            box-shadow: 0 -2px 8px rgba(0,0,0,0.08);
         }
 
-        /* ---------- Responsive styles ---------- */
+        .mobile-nav-btn {
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            font-size: 16px;
+            min-width: 48px;
+            height: 44px;
+            padding: 0 16px;
+            border-radius: var(--radius-md);
+            cursor: pointer;
+            transition: background var(--transition), border-color var(--transition);
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+        .mobile-nav-btn:active { background: var(--accent-soft); border-color: var(--accent); }
+
+        .mobile-play-btn {
+            flex: 1;
+            background: var(--accent);
+            border: none;
+            color: white;
+            font-size: 13px;
+            height: 44px;
+            padding: 0 12px;
+            border-radius: var(--radius-md);
+            cursor: pointer;
+            transition: filter var(--transition);
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            max-width: 160px;
+        }
+        .mobile-play-btn:active { filter: brightness(1.15); }
+
+        #mobile-page-info {
+            font-size: 13px;
+            font-weight: 600;
+            color: var(--text-primary);
+            text-align: center;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+
+        .mobile-menu-btn {
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            font-size: 18px;
+            min-width: 44px;
+            height: 44px;
+            border-radius: var(--radius-md);
+            cursor: pointer;
+            transition: background var(--transition);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+        .mobile-menu-btn:active { background: var(--accent-soft); }
+
+        .sidebar-overlay {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background: rgba(0,0,0,0.45);
+            z-index: 15; opacity: 0;
+            transition: opacity var(--transition);
+        }
+
         @media (max-width: 768px) {
+            :root {
+                --topbar-h: 52px;
+                --mobile-nav-h: 64px;
+            }
+
+            .topbar { padding: 0 12px; gap: 8px; }
+            .topbar-logo { display: none; }
+            .topbar-divider { display: none; }
+
+            /* Sidebar slides in below topbar, above bottom nav — nothing gets hidden */
             .sidebar {
-                position: fixed; left: 0; top: 0; height: 100vh; width: 280px;
+                position: fixed;
+                left: 0;
+                top: var(--topbar-h);
+                height: calc(100vh - var(--topbar-h) - var(--mobile-nav-h));
+                width: min(var(--sidebar-w), 92vw) !important;
                 transform: translateX(-100%);
                 z-index: 20;
-                box-shadow: 4px 0 20px rgba(0,0,0,0.2);
+                box-shadow: var(--shadow-lg);
+                opacity: 1 !important;
+                border-radius: 0 var(--radius-lg) var(--radius-lg) 0;
             }
             .sidebar.open { transform: translateX(0); }
-            .sidebar-overlay.show { display: block; opacity: 1; }
+            .sidebar.collapsed { transform: translateX(-100%); }
 
-            /* Show the mobile bottom bar */
-            .mobile-nav-bar {
-                display: flex;
+            /* Overlay also only covers the space between the two bars */
+            .sidebar-overlay.show {
+                display: block;
+                opacity: 1;
+                top: var(--topbar-h);
+                height: calc(100vh - var(--topbar-h) - var(--mobile-nav-h));
             }
 
-            /* Adjust viewer area to avoid being covered by the bar */
-            .pdf-viewer-area {
-                padding: 12px;
-                padding-bottom: calc(var(--mobile-bar-height) + 12px);
-                width: 100%;
+            /* Sidebar inner: header is fixed-height, footer is fixed-height,
+               content in the middle scrolls freely */
+            .sidebar-header { flex-shrink: 0; }
+            .sidebar-content {
+                flex: 1;
+                overflow-y: auto;
+                -webkit-overflow-scrolling: touch;
+                min-height: 0;        /* needed for flex children to scroll */
             }
+            .sidebar-footer { flex-shrink: 0; }
 
-            /* Allow PDF to be wider than viewport for readability */
-            #pdf-container {
-                max-width: none;
-                height: auto;
-            }
+            .mobile-nav-bar { display: flex; }
+            .pdf-viewer-area { padding: 8px; padding-bottom: calc(var(--mobile-nav-h) + 8px); }
+            #search-input { width: 130px; }
+            #search-input:focus { width: 170px; }
+            .topbar-name { display: none; }
+            .topbar-filename { max-width: 140px; font-size: 12px; }
+            .search-results-panel { width: calc(100vw - 16px); left: 8px; transform: none; }
+            .btn-danger span { display: none; }
+            .btn-danger { padding: 7px 10px; }
+        }
 
-            .upload-card { padding: 36px 20px; }
+        @media (max-width: 480px) {
+            .topbar-filename { display: none; }
+            #search-input { width: 100px; }
+            #search-input:focus { width: 140px; }
+            .search-nav-btns { display: none; }
+        }
+
+        /* Very short screens (landscape phone) — tighten controls */
+        @media (max-height: 500px) and (max-width: 900px) {
+            :root { --mobile-nav-h: 56px; }
+            .control-section { padding: 10px 14px; }
+            .sidebar-footer { padding: 8px 14px; }
+            .download-panel { padding: 10px; }
         }
     </style>
 </head>
 <body>
 
-    <!-- Welcome Screen -->
-    <div id="welcome-screen" class="screen active">
-        <div class="upload-card">
-            <h1>AI PDF Reader</h1>
-            <p>Select a document to begin. Your files remain completely private and are processed locally.</p>
-            <label for="pdf-upload" class="upload-btn">Choose PDF File</label>
+<!-- Welcome Screen -->
+<div id="welcome-screen" class="screen active">
+    <div class="welcome-card">
+        <div class="welcome-logo">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                <polyline points="14 2 14 8 20 8"/>
+                <line x1="16" y1="13" x2="8" y2="13"/>
+                <line x1="16" y1="17" x2="8" y2="17"/>
+                <polyline points="10 9 9 9 8 9"/>
+            </svg>
+        </div>
+        <h1>DocReader Pro</h1>
+        <p>A private, powerful PDF reader with full-text search, chapter navigation, and text-to-speech. Your files never leave your device.</p>
+        <div class="drop-zone" id="drop-zone">
+            <span class="drop-icon">📄</span>
+            <p>Drop a PDF here or click to browse</p>
+            <label for="pdf-upload" class="btn-primary" style="cursor:pointer">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" width="15" height="15"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+                Choose File
+            </label>
             <input type="file" id="pdf-upload" accept="application/pdf">
         </div>
     </div>
+</div>
 
-    <!-- Reader Screen -->
-    <div id="reader-screen" class="screen">
-        <!-- Sidebar with all controls -->
+<!-- Reader Screen -->
+<div id="reader-screen" class="screen">
+
+    <!-- Top Bar -->
+    <header class="topbar">
+        <!-- Sidebar toggle -->
+        <button class="icon-btn" id="sidebar-toggle-btn" title="Toggle sidebar (S)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/></svg>
+        </button>
+
+        <div class="topbar-brand">
+            <div class="topbar-logo">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+                    <polyline points="14 2 14 8 20 8"/>
+                </svg>
+            </div>
+            <span class="topbar-name">DocReader</span>
+        </div>
+
+        <div class="topbar-divider"></div>
+        <span class="topbar-filename" id="topbar-filename">No document</span>
+
+        <div class="topbar-spacer"></div>
+
+        <!-- Search -->
+        <div class="search-container" id="search-container">
+            <div class="search-input-wrap">
+                <svg class="search-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+                <input type="text" id="search-input" placeholder="Search document…" autocomplete="off">
+                <span class="search-count" id="search-count"></span>
+            </div>
+            <div class="search-nav-btns">
+                <button class="icon-btn" id="search-prev-btn" title="Previous match" disabled>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+                </button>
+                <button class="icon-btn" id="search-next-btn" title="Next match" disabled>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+                </button>
+                <button class="icon-btn" id="search-clear-btn" title="Clear search" style="display:none">
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                </button>
+            </div>
+        </div>
+
+        <!-- Dark mode -->
+        <button class="icon-btn" id="theme-toggle-btn" title="Toggle dark mode">
+            <svg id="theme-icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/></svg>
+            <svg id="theme-icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display:none"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
+        </button>
+
+        <!-- Close file -->
+        <button class="btn-danger" id="close-file" title="Close document">
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+            <span>Close</span>
+        </button>
+    </header>
+
+    <!-- Search Results Panel -->
+    <div class="search-results-panel" id="search-results-panel">
+        <div class="search-results-header">
+            <span id="results-header-text">Results</span>
+            <span style="font-size:11px;color:var(--text-tertiary)">Click to navigate</span>
+        </div>
+        <div id="search-results-list"></div>
+    </div>
+
+    <!-- Body -->
+    <div class="reader-body">
+
+        <!-- Sidebar -->
         <aside class="sidebar" id="sidebar">
-            <div class="sidebar-top">
-                <div class="brand">
-                    <div class="brand-dot"></div>
-                    <div class="brand-name">AI PDF Reader</div>
-                </div>
 
-                <div class="theme-toggle-container">
-                    <span class="theme-toggle-label">Dark Mode</span>
-                    <label class="switch">
-                        <input type="checkbox" id="theme-toggle-checkbox">
-                        <span class="slider"></span>
-                    </label>
-                </div>
-
-                <button id="close-file" class="close-btn">Close Document</button>
-
-                <div class="control-panel">
-                    <label for="zoom-slider">Zoom <span id="zoom-val">150%</span></label>
-                    <input type="range" id="zoom-slider" min="0.5" max="3.0" step="0.1" value="1.5">
-                    <div class="zoom-btn-row">
-                        <button id="zoom-out-btn" class="zoom-btn" title="Zoom out">−</button>
-                        <button id="zoom-reset-btn" class="zoom-btn" title="Reset to 100%">100%</button>
-                        <button id="zoom-in-btn" class="zoom-btn" title="Zoom in">+</button>
-                    </div>
-                </div>
-
-                <div class="control-panel">
-                    <label>TTS Engine</label>
-                    <select id="voice-selector" class="voice-selector">
-                        <optgroup label="🇺🇸 US Female">
-                            <option value="af_heart">Heart (Default)</option>
-                            <option value="af_alloy">Alloy</option>
-                            <option value="af_aoede">Aoede</option>
-                            <option value="af_bella">Bella</option>
-                            <option value="af_jessica">Jessica</option>
-                            <option value="af_kore">Kore</option>
-                            <option value="af_nicole">Nicole</option>
-                            <option value="af_nova">Nova</option>
-                            <option value="af_river">River</option>
-                            <option value="af_sarah">Sarah</option>
-                            <option value="af_sky">Sky</option>
-                        </optgroup>
-                        <optgroup label="🇺🇸 US Male">
-                            <option value="am_adam">Adam</option>
-                            <option value="am_echo">Echo</option>
-                            <option value="am_eric">Eric</option>
-                            <option value="am_fenrir">Fenrir</option>
-                            <option value="am_liam">Liam</option>
-                            <option value="am_michael">Michael</option>
-                            <option value="am_onyx">Onyx</option>
-                            <option value="am_puck">Puck</option>
-                            <option value="am_santa">Santa</option>
-                        </optgroup>
-                        <optgroup label="🇬🇧 UK Female">
-                            <option value="bf_alice">Alice</option>
-                            <option value="bf_emma">Emma</option>
-                            <option value="bf_isabella">Isabella</option>
-                            <option value="bf_lily">Lily</option>
-                        </optgroup>
-                        <optgroup label="🇬🇧 UK Male">
-                            <option value="bm_daniel">Daniel</option>
-                            <option value="bm_fable">Fable</option>
-                            <option value="bm_george">George</option>
-                            <option value="bm_lewis">Lewis</option>
-                        </optgroup>
-                    </select>
-
-                    <label for="speed-slider" style="margin-top: 4px;">Speed <span id="speed-val">1.0x</span></label>
-                    <input type="range" id="speed-slider" min="0.5" max="2.0" step="0.1" value="1.0">
-
-                    <div style="display: flex; align-items: center; gap: 8px; margin-top: 4px;">
-                        <input type="checkbox" id="auto-read-next" checked style="cursor: pointer; accent-color: var(--primary-accent); width: 14px; height: 14px;">
-                        <label for="auto-read-next" style="text-transform: none; letter-spacing: normal; font-size: 13px; cursor: pointer; display: inline; color: var(--text-color);">Auto-turn to next page</label>
-                    </div>
-
-                    <button id="play-page-btn" style="margin-top: 8px;">▶ Play Current Page</button>
-                    
-                    <div id="tts-status" class="tts-status">
-                        <div class="tts-progress-track">
-                            <div id="tts-progress-fill" class="tts-progress-fill"></div>
-                        </div>
-                        <div id="tts-status-text" class="tts-status-text">Reading sentence 1 / 1</div>
-                    </div>
-                    <audio id="tts-audio-player" style="display: none;"></audio>
+            <div class="sidebar-header">
+                <div class="sidebar-tabs">
+                    <button class="sidebar-tab active" id="tab-toc">Contents</button>
+                    <button class="sidebar-tab" id="tab-controls">Controls</button>
                 </div>
             </div>
 
-            <div class="sidebar-bottom">
-                <div class="page-info">
-                    Page <span id="page-num">0</span> / <span id="page-count">0</span>
+            <div class="sidebar-content" id="sidebar-content">
+
+                <!-- TOC Panel -->
+                <div id="toc-panel">
+                    <div class="toc-empty" id="toc-empty">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M4 6h16M4 12h16M4 18h7"/></svg>
+                        No outline detected.<br>Chapters and headings will<br>appear here when available.
+                    </div>
+                    <div id="toc-list"></div>
                 </div>
-                <div class="page-nav-row">
-                    <button id="prev-page-btn" class="page-nav-btn">← Prev</button>
-                    <button id="next-page-btn" class="page-nav-btn">Next →</button>
+
+                <!-- Controls Panel -->
+                <div id="controls-panel">
+                    <!-- Zoom -->
+                    <div class="control-section">
+                        <div class="control-label">Zoom <span id="zoom-val">150%</span></div>
+                        <div class="slider-row">
+                            <input type="range" id="zoom-slider" min="0.5" max="3.0" step="0.1" value="1.5">
+                        </div>
+                        <div class="btn-row" style="margin-top:8px">
+                            <button id="zoom-out-btn" class="btn-sm" title="Zoom out">−</button>
+                            <button id="zoom-reset-btn" class="btn-sm" title="Reset zoom">100%</button>
+                            <button id="zoom-in-btn" class="btn-sm" title="Zoom in">+</button>
+                        </div>
+                    </div>
+
+                    <!-- TTS -->
+                    <div class="control-section">
+                        <div class="control-label">Text-to-Speech</div>
+                        <select id="voice-selector" class="styled-select">
+                            <optgroup label="🇺🇸 US Female">
+                                <option value="af_heart">Heart (Default)</option>
+                                <option value="af_alloy">Alloy</option>
+                                <option value="af_aoede">Aoede</option>
+                                <option value="af_bella">Bella</option>
+                                <option value="af_jessica">Jessica</option>
+                                <option value="af_kore">Kore</option>
+                                <option value="af_nicole">Nicole</option>
+                                <option value="af_nova">Nova</option>
+                                <option value="af_river">River</option>
+                                <option value="af_sarah">Sarah</option>
+                                <option value="af_sky">Sky</option>
+                            </optgroup>
+                            <optgroup label="🇺🇸 US Male">
+                                <option value="am_adam">Adam</option>
+                                <option value="am_echo">Echo</option>
+                                <option value="am_eric">Eric</option>
+                                <option value="am_fenrir">Fenrir</option>
+                                <option value="am_liam">Liam</option>
+                                <option value="am_michael">Michael</option>
+                                <option value="am_onyx">Onyx</option>
+                                <option value="am_puck">Puck</option>
+                                <option value="am_santa">Santa</option>
+                            </optgroup>
+                            <optgroup label="🇬🇧 UK Female">
+                                <option value="bf_alice">Alice</option>
+                                <option value="bf_emma">Emma</option>
+                                <option value="bf_isabella">Isabella</option>
+                                <option value="bf_lily">Lily</option>
+                            </optgroup>
+                            <optgroup label="🇬🇧 UK Male">
+                                <option value="bm_daniel">Daniel</option>
+                                <option value="bm_fable">Fable</option>
+                                <option value="bm_george">George</option>
+                                <option value="bm_lewis">Lewis</option>
+                            </optgroup>
+                        </select>
+
+                        <div class="control-label" style="margin-top:12px">Speed <span id="speed-val">1.0×</span></div>
+                        <input type="range" id="speed-slider" min="0.5" max="2.0" step="0.1" value="1.0">
+
+                        <div class="toggle-row" style="margin-top:10px">
+                            <span class="toggle-label">Auto-advance pages</span>
+                            <label class="switch">
+                                <input type="checkbox" id="auto-read-next" checked>
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+
+                        <button id="play-page-btn" class="btn-play" style="margin-top:12px">▶ Play Page</button>
+
+                        <div id="tts-status" class="tts-status">
+                            <div class="tts-progress-track">
+                                <div id="tts-progress-fill" class="tts-progress-fill"></div>
+                            </div>
+                            <div class="tts-status-text">
+                                <span class="tts-dot"></span>
+                                <span id="tts-status-text">Reading…</span>
+                            </div>
+                        </div>
+                        <audio id="tts-audio-player"></audio>
+
+                        <!-- Audio Cache / Download -->
+                        <div class="download-panel">
+                            <div class="download-panel-header">
+                                <span class="download-panel-title">Audio Cache</span>
+                                <span class="cache-badge" id="cache-badge">Saved</span>
+                            </div>
+
+                            <div class="toggle-row-spaced">
+                                <div class="toggle-label-stack">
+                                    <span class="tl-main">Save audio to disk</span>
+                                    <span class="tl-sub">Cache lines for offline use</span>
+                                </div>
+                                <label class="switch">
+                                    <input type="checkbox" id="save-audio-toggle">
+                                    <span class="slider"></span>
+                                </label>
+                            </div>
+
+                            <div id="save-range-row" class="page-range-row" style="display:none">
+                                <label>Pages</label>
+                                <input type="text" id="page-range-input" class="page-range-input" placeholder="e.g. 5-10">
+                                <button id="download-range-btn" class="btn-download" style="margin-top:0;width:auto;padding:6px 12px">
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                    Go
+                                </button>
+                            </div>
+
+                            <div class="download-progress" id="dl-progress">
+                                <div class="dl-progress-track">
+                                    <div class="dl-progress-fill" id="dl-progress-fill"></div>
+                                </div>
+                                <div class="dl-status-text">
+                                    <span class="dl-dot"></span>
+                                    <span id="dl-status-text">Generating…</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Appearance -->
+                    <div class="control-section">
+                        <div class="control-label">Appearance</div>
+                        <div class="toggle-row">
+                            <span class="toggle-label">Dark mode</span>
+                            <label class="switch">
+                                <input type="checkbox" id="theme-toggle-checkbox">
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+                    </div>
                 </div>
-                <div class="keyboard-hint">
-                    Navigate with ← / →<br>or H / L keys
+
+            </div>
+
+            <!-- Sidebar Footer: Page Nav -->
+            <div class="sidebar-footer">
+                <div class="page-nav">
+                    <button id="prev-page-btn" class="icon-btn" title="Previous page">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+                    </button>
+                    <div class="page-info-badge">
+                        <span id="page-num">0</span> / <span id="page-count">0</span>
+                    </div>
+                    <button id="next-page-btn" class="icon-btn" title="Next page">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="9 18 15 12 9 6"/></svg>
+                    </button>
                 </div>
+                <div class="page-jump-wrap">
+                    <input type="number" id="page-jump-input" placeholder="Go to page…" min="1">
+                    <button class="btn-jump" id="page-jump-btn">Go</button>
+                </div>
+                <div class="keyboard-hint">← / → or H / L to navigate</div>
             </div>
         </aside>
 
-        <!-- Overlay for mobile sidebar -->
+        <!-- Overlay (mobile) -->
         <div class="sidebar-overlay" id="sidebar-overlay"></div>
 
-        <!-- PDF viewer -->
+        <!-- PDF Viewer -->
         <main class="pdf-viewer-area" id="pdf-viewer-area">
             <div id="pdf-container">
                 <canvas id="pdf-canvas"></canvas>
                 <div id="text-layer" class="textLayer"></div>
+                <div id="annotation-layer" class="annotationLayer"></div>
             </div>
         </main>
 
-        <!-- Mobile bottom navigation bar -->
-        <div id="mobile-nav-bar" class="mobile-nav-bar">
-            <button id="mobile-prev-page" class="mobile-nav-btn">←</button>
-            <span id="mobile-page-info">Page 0 / 0</span>
-            <button id="mobile-next-page" class="mobile-nav-btn">→</button>
-            <button id="mobile-sidebar-toggle-btn" class="mobile-nav-btn">☰</button>
-        </div>
+    </div><!-- /.reader-body -->
+
+    <!-- Mobile Nav Bar -->
+    <div id="mobile-nav-bar" class="mobile-nav-bar">
+        <button id="mobile-prev-page" class="mobile-nav-btn" title="Previous page">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+        </button>
+        <button id="mobile-play-btn" class="mobile-play-btn" title="Play / Stop">
+            <svg id="mobile-play-icon" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            <span id="mobile-play-label">Play</span>
+        </button>
+        <span id="mobile-page-info">0 / 0</span>
+        <button id="mobile-next-page" class="mobile-nav-btn" title="Next page">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+        </button>
+        <button id="mobile-sidebar-toggle-btn" class="mobile-menu-btn" title="Menu">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        </button>
     </div>
 
-    <script>
-        // PDF.js worker
-        pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+</div><!-- /#reader-screen -->
 
-        // State
-        let isPlaying = false;
-        let isAutoContinuing = false; 
-        let pdfDoc = null;
-        let pageNum = 1;
-        let pageIsRendering = false;
-        let pageNumPending = null;
-        let scale = 1.5;
+<!-- Loading Overlay -->
+<div class="loading-overlay" id="loading-overlay">
+    <div class="loading-card">
+        <div class="spinner"></div>
+        <p id="loading-text">Loading document…</p>
+    </div>
+</div>
 
-        // DOM references
-        const welcomeScreen = document.getElementById('welcome-screen');
-        const readerScreen = document.getElementById('reader-screen');
-        const fileInput = document.getElementById('pdf-upload');
-        const viewerArea = document.getElementById('pdf-viewer-area');
+<script>
+    pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
-        const zoomSlider = document.getElementById('zoom-slider');
-        const zoomVal = document.getElementById('zoom-val');
-        const zoomInBtn = document.getElementById('zoom-in-btn');
-        const zoomOutBtn = document.getElementById('zoom-out-btn');
-        const zoomResetBtn = document.getElementById('zoom-reset-btn');
+    /* ─── State ─── */
+    let pdfDoc = null;
+    let pageNum = 1;
+    let pageIsRendering = false;
+    let pageNumPending = null;
+    let scale = 1.5;
+    let isPlaying = false;
+    let isAutoContinuing = false;
+    let sentences = [];
+    let currentIndex = 0;
+    let audioCache = {};
+    let inFlight = 0;
+    let hasStartedPlaying = false;
+    let currentPageText = '';
+    let sidebarOpen = true;
+    let pdfOutline = null;
+    let searchMatches = [];
+    let searchCurrentMatch = -1;
+    let searchAllPageTexts = {};
+    let currentFile = null;
 
-        const prevPageBtn = document.getElementById('prev-page-btn');
-        const nextPageBtn = document.getElementById('next-page-btn');
+    /* ─── Cache / Download state ─── */
+    let saveAudioEnabled   = false;   // mirrors the toggle
+    let currentFileName    = '';      // PDF file name (set when PDF loads)
+    let isDownloadingRange = false;   // true while batch pre-gen is running
 
-        const sidebar = document.getElementById('sidebar');
-        const sidebarOverlay = document.getElementById('sidebar-overlay');
+    /* TTS constants */
+    const BUFFER_DEPTH = 10;
+    const MAX_CONCURRENT_FETCHES = 1;
+    const REQUIRED_START_BUFFER = 5;
 
-        // Mobile nav bar elements
-        const mobilePrevBtn = document.getElementById('mobile-prev-page');
-        const mobileNextBtn = document.getElementById('mobile-next-page');
-        const mobilePageInfo = document.getElementById('mobile-page-info');
-        const mobileToggleBtn = document.getElementById('mobile-sidebar-toggle-btn');
+    /* ─── DOM ─── */
+    const welcomeScreen     = document.getElementById('welcome-screen');
+    const readerScreen      = document.getElementById('reader-screen');
+    const fileInput         = document.getElementById('pdf-upload');
+    const viewerArea        = document.getElementById('pdf-viewer-area');
+    const sidebar           = document.getElementById('sidebar');
+    const sidebarOverlay    = document.getElementById('sidebar-overlay');
+    const sidebarToggleBtn  = document.getElementById('sidebar-toggle-btn');
+    const zoomSlider        = document.getElementById('zoom-slider');
+    const zoomVal           = document.getElementById('zoom-val');
+    const zoomInBtn         = document.getElementById('zoom-in-btn');
+    const zoomOutBtn        = document.getElementById('zoom-out-btn');
+    const zoomResetBtn      = document.getElementById('zoom-reset-btn');
+    const prevPageBtn       = document.getElementById('prev-page-btn');
+    const nextPageBtn       = document.getElementById('next-page-btn');
+    const playBtn           = document.getElementById('play-page-btn');
+    const audioPlayer       = document.getElementById('tts-audio-player');
+    const ttsStatus         = document.getElementById('tts-status');
+    const ttsProgressFill   = document.getElementById('tts-progress-fill');
+    const ttsStatusText     = document.getElementById('tts-status-text');
+    const mobilePrevBtn     = document.getElementById('mobile-prev-page');
+    const mobileNextBtn     = document.getElementById('mobile-next-page');
+    const mobilePageInfo    = document.getElementById('mobile-page-info');
+    const mobileToggleBtn   = document.getElementById('mobile-sidebar-toggle-btn');
+    const topbarFilename    = document.getElementById('topbar-filename');
+    const loadingOverlay    = document.getElementById('loading-overlay');
+    const loadingText       = document.getElementById('loading-text');
+    const searchInput       = document.getElementById('search-input');
+    const searchCount       = document.getElementById('search-count');
+    const searchPrevBtn     = document.getElementById('search-prev-btn');
+    const searchNextBtn     = document.getElementById('search-next-btn');
+    const searchClearBtn    = document.getElementById('search-clear-btn');
+    const searchResultsPanel= document.getElementById('search-results-panel');
+    const searchResultsList = document.getElementById('search-results-list');
+    const resultsHeaderText = document.getElementById('results-header-text');
+    const tocList           = document.getElementById('toc-list');
+    const tocEmpty          = document.getElementById('toc-empty');
+    const tocPanel          = document.getElementById('toc-panel');
+    const controlsPanel     = document.getElementById('controls-panel');
+    const tabToc            = document.getElementById('tab-toc');
+    const tabControls       = document.getElementById('tab-controls');
+    const pageJumpInput     = document.getElementById('page-jump-input');
+    const pageJumpBtn       = document.getElementById('page-jump-btn');
+    const speedSlider       = document.getElementById('speed-slider');
+    const speedVal          = document.getElementById('speed-val');
 
-        // Dark mode
-        const themeToggleCheckbox = document.getElementById('theme-toggle-checkbox');
-        const currentTheme = localStorage.getItem('theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-        if (currentTheme === 'dark') {
-            document.documentElement.setAttribute('data-theme', 'dark');
-            themeToggleCheckbox.checked = true;
-        }
-        themeToggleCheckbox.addEventListener('change', (e) => {
-            if (e.target.checked) {
-                document.documentElement.setAttribute('data-theme', 'dark');
-                localStorage.setItem('theme', 'dark');
-            } else {
-                document.documentElement.setAttribute('data-theme', 'light');
-                localStorage.setItem('theme', 'light');
-            }
-        });
+    /* cache panel */
+    const saveAudioToggle   = document.getElementById('save-audio-toggle');
+    const saveRangeRow      = document.getElementById('save-range-row');
+    const pageRangeInput    = document.getElementById('page-range-input');
+    const downloadRangeBtn  = document.getElementById('download-range-btn');
+    const dlProgress        = document.getElementById('dl-progress');
+    const dlProgressFill    = document.getElementById('dl-progress-fill');
+    const dlStatusText      = document.getElementById('dl-status-text');
+    const cacheBadge        = document.getElementById('cache-badge');
 
-        // Sidebar toggle for mobile
-        function openSidebar() {
-            sidebar.classList.add('open');
-            sidebarOverlay.classList.add('show');
-        }
-        function closeSidebar() {
-            sidebar.classList.remove('open');
-            sidebarOverlay.classList.remove('show');
-        }
-        mobileToggleBtn.addEventListener('click', () => {
-            sidebar.classList.contains('open') ? closeSidebar() : openSidebar();
-        });
-        sidebarOverlay.addEventListener('click', closeSidebar);
+    /* mobile play */
+    const mobilePlayBtn     = document.getElementById('mobile-play-btn');
+    const mobilePlayLabel   = document.getElementById('mobile-play-label');
 
-        // Sync page info to mobile bar
-        function updateMobilePageInfo() {
-            if (pdfDoc) {
-                mobilePageInfo.textContent = `Page ${pageNum} / ${pdfDoc.numPages}`;
-            } else {
-                mobilePageInfo.textContent = 'Page 0 / 0';
-            }
-        }
-
-        // IndexedDB persistence
-        let db;
-        const dbName = "LocalPDFReaderDB";
-        const request = indexedDB.open(dbName, 1);
-        request.onupgradeneeded = (event) => {
-            db = event.target.result;
-            db.createObjectStore("documents");
-        };
-        request.onsuccess = (event) => {
-            db = event.target.result;
-            loadSavedDocument();
-        };
-        request.onerror = (event) => console.error("IndexedDB error:", event.target.error);
-
-        function saveToDB(file, page, currentScale, sentenceIndex = 0) {
-            if (!db) return;
-            const transaction = db.transaction(["documents"], "readwrite");
-            const store = transaction.objectStore("documents");
-            store.put({ file: file, page: page, scale: currentScale, sentenceIndex: sentenceIndex }, "lastSession");
-        }
-
-        function updateSavedSession(page, currentScale, sentenceIndex = currentIndex) {
-            if (!db) return;
-            const transaction = db.transaction(["documents"], "readwrite");
-            const store = transaction.objectStore("documents");
-            const getReq = store.get("lastSession");
-            getReq.onsuccess = (e) => {
-                const data = e.target.result;
-                if (data) {
-                    data.page = page;
-                    data.scale = currentScale;
-                    data.sentenceIndex = sentenceIndex;
-                    store.put(data, "lastSession");
-                }
-            };
-        }
-
-        function clearSavedDocument() {
-            if (!db) return;
-            const transaction = db.transaction(["documents"], "readwrite");
-            const store = transaction.objectStore("documents");
-            store.delete("lastSession");
-        }
-
-        function loadSavedDocument() {
-            const transaction = db.transaction(["documents"], "readonly");
-            const store = transaction.objectStore("documents");
-            const getReq = store.get("lastSession");
-            getReq.onsuccess = (e) => {
-                const data = e.target.result;
-                if (data && data.file) {
-                    scale = data.scale || 1.5;
-                    currentIndex = data.sentenceIndex || 0; 
-                    zoomSlider.value = scale;
-                    zoomVal.textContent = Math.round(scale * 100) + '%';
-                    loadPDF(data.file, data.page);
-                }
-            };
-        }
-
-        // Zoom
-        function setZoom(newScale, { rerender = true } = {}) {
-            newScale = Math.min(3.0, Math.max(0.5, newScale));
-            newScale = Math.round(newScale * 10) / 10; 
-            scale = newScale;
-            zoomSlider.value = scale;
-            zoomVal.textContent = Math.round(scale * 100) + '%';
-
-            if (pdfDoc && rerender) {
-                queueRenderPage(pageNum);
-                updateSavedSession(pageNum, scale, currentIndex);
-            }
-        }
-
-        const speedSlider = document.getElementById('speed-slider');
-        const speedVal = document.getElementById('speed-val');
-        speedSlider.addEventListener('input', (e) => {
-            speedVal.textContent = parseFloat(e.target.value).toFixed(1) + 'x';
-        });
-
-        zoomSlider.addEventListener('input', (e) => {
-            zoomVal.textContent = Math.round(parseFloat(e.target.value) * 100) + '%';
-        });
-        zoomSlider.addEventListener('change', (e) => {
-            setZoom(parseFloat(e.target.value));
-        });
-        zoomInBtn.addEventListener('click', () => setZoom(scale + 0.1));
-        zoomOutBtn.addEventListener('click', () => setZoom(scale - 0.1));
-        zoomResetBtn.addEventListener('click', () => setZoom(1.0));
-
-        // TTS
-        const playBtn = document.getElementById('play-page-btn');
-        const audioPlayer = document.getElementById('tts-audio-player');
-        const ttsStatus = document.getElementById('tts-status');
-        const ttsProgressFill = document.getElementById('tts-progress-fill');
-        const ttsStatusText = document.getElementById('tts-status-text');
-
-        let sentences = [];
-        let currentIndex = 0;   
-        let audioCache = {};    
-        let inFlight = 0;       
-		// --- TTS STATE VARIABLES ---
-		const BUFFER_DEPTH = 10;               // Keep this at 5 to not overwhelm the server queue
-		const MAX_CONCURRENT_FETCHES = 1;     // STRICTLY 1 for slow/local servers
-		const REQUIRED_START_BUFFER = 5;      // Start playing after exactly 1 sentence is ready
-		let hasStartedPlaying = false;        
-		// (Keep your other variables: sentences, currentIndex, etc.)
-        let currentPageText = "";
-
-        function updateTtsStatus() {
-            if (!sentences.length) return;
-            const displayIndex = Math.min(currentIndex + 1, sentences.length);
-            ttsProgressFill.style.width = Math.round((displayIndex / sentences.length) * 100) + '%';
-            ttsStatusText.textContent = `Reading sentence ${displayIndex} / ${sentences.length}`;
-        }
-
-
-function startReadingPage(startIndex = 0) {
-    if (!pdfDoc || !currentPageText.trim() || sentences.length === 0) return;
-    if (isPlaying) stopPipeline(); 
-
-    // Notice we DO NOT clear audioCache here anymore!
-
-    currentIndex = startIndex;
-    isPlaying = true;
-    hasStartedPlaying = false;
-
-    playBtn.textContent = "⏹ Stop Reading";
-    ttsStatus.classList.add('active');
-    
-    // Check if the required buffer is already cached
-    const required = Math.min(REQUIRED_START_BUFFER, sentences.length - currentIndex);
-    let readyCount = 0;
-    for (let i = currentIndex; i < currentIndex + required; i++) {
-        if (audioCache[i] && audioCache[i] !== 'fetching') readyCount++;
+    /* ─── Loading overlay ─── */
+    function showLoading(msg = 'Loading…') {
+        loadingText.textContent = msg;
+        loadingOverlay.classList.add('visible');
     }
-    
-    if (readyCount >= required) {
-        // Audio is already cached, play immediately!
-        hasStartedPlaying = true;
-        playNextChunk();
-    } else {
-        // Needs buffering
-        ttsStatusText.textContent = `Generating audio... ${readyCount} / ${required}`;
-    }
-    
-    // Always trigger the queue to fetch upcoming missing sentences
-    preloadQueue();
-}
-        playBtn.addEventListener('click', () => {
-            if (isPlaying) {
-                stopPipeline();
-            } else {
-                if (!pdfDoc || !currentPageText.trim()) {
-                    alert("No text found on this page.");
-                    return;
-                }
-                let startIndex = currentIndex;
-                if (startIndex >= sentences.length) startIndex = 0;
-                startReadingPage(startIndex);
-            }
-        });
+    function hideLoading() { loadingOverlay.classList.remove('visible'); }
 
-function preloadQueue() {
-    if (!isPlaying) return;
-    
-    // Scan ahead up to BUFFER_DEPTH starting from the current sentence
-    const lookaheadLimit = Math.min(currentIndex + BUFFER_DEPTH, sentences.length);
-    
-    for (let i = currentIndex; i < lookaheadLimit; i++) {
-        if (inFlight >= MAX_CONCURRENT_FETCHES) break;
-        
-        if (audioCache[i] === undefined) {
-            inFlight++;
-            audioCache[i] = 'fetching'; // Mark as fetching to prevent duplicate requests
-            fetchSentenceAudio(i);
-        }
-    }
-}
+    /* ─── Theme ─── */
+    const themeCheckbox = document.getElementById('theme-toggle-checkbox');
+    const themeToggleBtn = document.getElementById('theme-toggle-btn');
+    const themeIconSun = document.getElementById('theme-icon-sun');
+    const themeIconMoon = document.getElementById('theme-icon-moon');
 
-async function fetchSentenceAudio(indexToFetch) {
-    try {
-        const rawText = sentences[indexToFetch];
-        const isBareShortNumber = /^\d{1,2}$/.test(rawText.trim());
-        const textToSend = isBareShortNumber ? `Page ${rawText.trim()}.` : rawText;
-
-        const selectedVoice = document.getElementById('voice-selector').value;
-        const selectedSpeed = parseFloat(document.getElementById('speed-slider').value); 
-        
-        const response = await fetch('http://127.0.0.1:8000/synthesize', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ text: textToSend, voice: selectedVoice, speed: selectedSpeed })
-        });
-
-        if (!response.ok) throw new Error(`Backend error ${response.status}`);
-
-        const blob = await response.blob();
-        
-        // Ensure the cache wasn't cleared (e.g., page changed) while we were fetching
-        if (audioCache[indexToFetch] === 'fetching') {
-            audioCache[indexToFetch] = URL.createObjectURL(blob);
-        }
-    } catch (error) {
-        console.error(`Failed to generate sentence ${indexToFetch}`, error);
-        if (audioCache[indexToFetch] === 'fetching') {
-            audioCache[indexToFetch] = null; // Mark failed so it doesn't block forever
-        }
-    } finally {
-        inFlight--;
-        
-        if (isPlaying) {
-            if (!hasStartedPlaying) {
-                const required = Math.min(REQUIRED_START_BUFFER, sentences.length - currentIndex);
-                let continuousReadyCount = 0;
-                for (let i = currentIndex; i < currentIndex + required; i++) {
-                    if (audioCache[i] && audioCache[i] !== 'fetching') continuousReadyCount++;
-                }
-                
-                ttsStatusText.textContent = `Generating audio... ${continuousReadyCount} / ${required}`;
-                
-                if (continuousReadyCount >= required) {
-                    hasStartedPlaying = true;
-                    playNextChunk(); 
-                }
-            } else {
-                if (indexToFetch === currentIndex && audioPlayer.paused) {
-                    playNextChunk();
-                }
-            }
-        }
-        
-        preloadQueue(); 
-    }
-}
-
-
-function playNextChunk() {
-    if (!isPlaying) return;
-    if (currentIndex >= sentences.length) {
-        const autoContinue = document.getElementById('auto-read-next').checked;
-        if (autoContinue && pageNum < pdfDoc.numPages) {
-            stopPipeline();
-            isAutoContinuing = true; 
-            goToPage(1, true);       
-        } else {
-            stopPipeline();
-        }
-        return;
+    function applyTheme(dark) {
+        document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+        themeCheckbox.checked = dark;
+        themeIconSun.style.display = dark ? 'none' : '';
+        themeIconMoon.style.display = dark ? '' : 'none';
+        localStorage.setItem('theme', dark ? 'dark' : 'light');
     }
 
-    const nextAudioUrl = audioCache[currentIndex];
-    if (nextAudioUrl && nextAudioUrl !== 'fetching') { // Added 'fetching' check
-        highlightActiveSentence(currentIndex, sentences);
-        updateTtsStatus();
-        audioPlayer.src = nextAudioUrl;
-        audioPlayer.play();
-        audioPlayer.onended = () => {
-            // REMOVED: URL.revokeObjectURL(nextAudioUrl);
-            // REMOVED: delete audioCache[currentIndex];
-            
-            currentIndex++;
-            updateSavedSession(pageNum, scale, currentIndex);
-            preloadQueue();
-            playNextChunk();
-        };
-    } else if (nextAudioUrl === null) {
-        currentIndex++;
-        playNextChunk();
-    }
-}
-        function stopPipeline() {
-            isPlaying = false;
-            audioPlayer.pause();
-            playBtn.textContent = "▶ Play Current Page";
-            ttsStatus.classList.remove('active');
-        }
+    const savedTheme = localStorage.getItem('theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+    applyTheme(savedTheme === 'dark');
 
-        // Highlighting
-        function highlightActiveSentence(sentenceIndex, allSentences) {
-            const allSpans = Array.from(document.querySelectorAll('.textLayer span'));
+    themeCheckbox.addEventListener('change', e => applyTheme(e.target.checked));
+    themeToggleBtn.addEventListener('click', () => applyTheme(document.documentElement.getAttribute('data-theme') !== 'dark'));
 
-            allSpans.forEach(span => {
-                if (span.dataset.originalText === undefined) {
-                    span.dataset.originalText = span.textContent;
-                }
-                span.textContent = span.dataset.originalText;
-            });
-
-            if (sentenceIndex < 0 || sentenceIndex >= allSentences.length) return;
-
-            const normalize = (str) => str.toLowerCase().replace(/[^a-z0-9]/g, '');
-
-            let fullPageNorm = "";
-            let spanMappings = [];
-            allSpans.forEach((span) => {
-                let rawText = span.dataset.originalText;
-                let normText = normalize(rawText);
-                let startPos = fullPageNorm.length;
-                fullPageNorm += normText;
-                spanMappings.push({
-                    element: span,
-                    rawText: rawText,
-                    start: startPos,
-                    end: fullPageNorm.length,
-                    validChars: normText.length
-                });
-            });
-
-            let currentCursor = 0;
-            let matchIndex = -1;
-            let targetNorm = "";
-            for (let i = 0; i <= sentenceIndex; i++) {
-                targetNorm = normalize(allSentences[i]);
-                if (!targetNorm) continue;
-                matchIndex = fullPageNorm.indexOf(targetNorm, currentCursor);
-                if (matchIndex === -1) matchIndex = fullPageNorm.indexOf(targetNorm, 0);
-                if (matchIndex !== -1) {
-                    currentCursor = matchIndex + targetNorm.length;
-                }
-            }
-
-            if (matchIndex === -1) return;
-            const matchEnd = matchIndex + targetNorm.length;
-
-            const escapeHTML = (str) => str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            let firstHighlightEl = null;
-
-            spanMappings.forEach(map => {
-                let overlapAlphaStart = Math.max(map.start, matchIndex);
-                let overlapAlphaEnd = Math.min(map.end, matchEnd);
-                if (overlapAlphaStart < overlapAlphaEnd) {
-                    let alphaCount = map.start;
-                    let rawStart = 0;
-                    let rawEnd = map.rawText.length;
-                    for (let i = 0; i < map.rawText.length; i++) {
-                        if (/[a-z0-9]/i.test(map.rawText[i])) {
-                            if (alphaCount === overlapAlphaStart) rawStart = i;
-                            alphaCount++;
-                            if (alphaCount === overlapAlphaEnd) { rawEnd = i + 1; break; }
-                        }
-                    }
-                    let before = escapeHTML(map.rawText.substring(0, rawStart));
-                    let highlight = escapeHTML(map.rawText.substring(rawStart, rawEnd));
-                    let after = escapeHTML(map.rawText.substring(rawEnd));
-                    map.element.innerHTML = `${before}<mark class="reading-highlight">${highlight}</mark>${after}`;
-                    if (!firstHighlightEl) {
-                        firstHighlightEl = map.element.querySelector('mark.reading-highlight');
-                    }
-                }
-            });
-
-            if (firstHighlightEl && viewerArea) {
-                const containerRect = viewerArea.getBoundingClientRect();
-                const highlightRect = firstHighlightEl.getBoundingClientRect();
-                const relativeTop = highlightRect.top - containerRect.top;
-                const relativeBottom = highlightRect.bottom - containerRect.top;
-                const viewHeight = containerRect.height;
-                if (relativeTop < viewHeight * 0.2 || relativeBottom > viewHeight * 0.8) {
-                    const targetScrollTop = viewerArea.scrollTop + (relativeTop - viewHeight / 3);
-                    viewerArea.scrollTo({ top: targetScrollTop, behavior: 'smooth' });
-                }
-            }
-        }
-
-        // PDF loading
-        async function loadPDF(file, startingPage = 1) {
-            const fileUrl = URL.createObjectURL(file);
-            welcomeScreen.classList.remove('active');
-            readerScreen.classList.add('active');
-
-            try {
-                const loadingTask = pdfjsLib.getDocument(fileUrl);
-                pdfDoc = await loadingTask.promise;
-                document.getElementById('page-count').textContent = pdfDoc.numPages;
-
-                // Mobile scale adjustment
-                if (window.innerWidth <= 768) {
-                    const viewerWidth = viewerArea.clientWidth - 16;
-                    const firstPage = await pdfDoc.getPage(1);
-                    const originalViewport = firstPage.getViewport({ scale: 1 });
-                    let newScale = viewerWidth / originalViewport.width;
-                    newScale = Math.min(3.0, Math.max(0.9, newScale));
-                    scale = Math.round(newScale * 10) / 10;
-                    zoomSlider.value = scale;
-                    zoomVal.textContent = Math.round(scale * 100) + '%';
-                }
-
-                pageNum = startingPage;
-                renderPage(pageNum);
-                updateMobilePageInfo();
-
-                if (window.innerWidth <= 768) {
-                    closeSidebar();
-                }
-            } catch (error) {
-                console.error("Error loading PDF:", error);
-                alert("Failed to load PDF.");
-                resetUI();
-            }
-        }
-
-        fileInput.addEventListener('change', function(event) {
-            const file = event.target.files[0];
-            if (file && file.type === 'application/pdf') {
-                saveToDB(file, 1, scale, 0);
-                loadPDF(file, 1);
-            }
-        });
-
-        document.getElementById('close-file').addEventListener('click', resetUI);
-
-function resetUI() {
-    stopPipeline();
-    // --> ADD THIS LINE <--
-    clearPageAudioCache(); 
-    
-    pdfDoc = null;
-    fileInput.value = '';
-    clearSavedDocument();
-    readerScreen.classList.remove('active');
-    welcomeScreen.classList.add('active');
-    document.getElementById('text-layer').innerHTML = '';
-}
-        async function renderPage(num) {
-            pageIsRendering = true;
-            try {
-                const page = await pdfDoc.getPage(num);
-                const viewport = page.getViewport({ scale: scale });
-
-                const canvas = document.getElementById('pdf-canvas');
-                const context = canvas.getContext('2d');
-                const outputScale = window.devicePixelRatio || 1;
-                const cssWidth = Math.floor(viewport.width);
-                const cssHeight = Math.floor(viewport.height);
-
-                canvas.width = Math.floor(viewport.width * outputScale);
-                canvas.height = Math.floor(viewport.height * outputScale);
-                canvas.style.width = cssWidth + 'px';
-                canvas.style.height = cssHeight + 'px';
-
-                const transform = outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : null;
-                const renderContext = { canvasContext: context, viewport: viewport, transform: transform };
-                await page.render(renderContext).promise;
-
-                const textLayerDiv = document.getElementById('text-layer');
-                textLayerDiv.innerHTML = '';
-                textLayerDiv.style.height = cssHeight + 'px';
-                textLayerDiv.style.width = cssWidth + 'px';
-                textLayerDiv.style.setProperty('--scale-factor', viewport.scale);
-
-                const textContent = await page.getTextContent();
-
-				// --- HEURISTIC ENGINE START ---
-                
-                // 1. Calculate the base (median) font size of the document
-                const fontSizes = textContent.items
-                    .map(item => Math.abs(item.transform[3]))
-                    .filter(size => size > 0)
-                    .sort((a, b) => a - b);
-                const baseFontSize = fontSizes.length > 0 ? fontSizes[Math.floor(fontSizes.length / 2)] : 12;
-
-                // 2. Group items into logical lines based on Y-coordinates
-                let lines = [];
-                const Y_TOLERANCE = 5; // Slightly increased tolerance for subscript/superscript
-                
-                // Sort by Y descending (top to bottom), then X ascending (left to right)
-                const sortedItems = [...textContent.items].sort((a, b) => {
-                    const yA = a.transform[5];
-                    const yB = b.transform[5];
-                    if (Math.abs(yA - yB) > Y_TOLERANCE) {
-                        return yB - yA; 
-                    }
-                    return a.transform[4] - b.transform[4]; 
-                });
-
-                let currentLine = { y: null, items: [] };
-                sortedItems.forEach(item => {
-                    if (!item.str.trim()) return; 
-                    const y = item.transform[5];
-                    
-                    if (currentLine.y === null || Math.abs(currentLine.y - y) > Y_TOLERANCE) {
-                        if (currentLine.items.length > 0) lines.push(currentLine);
-                        currentLine = { y: y, items: [item] };
-                    } else {
-                        currentLine.items.push(item);
-                    }
-                });
-                if (currentLine.items.length > 0) lines.push(currentLine);
-
-                // 3. Process lines and safely stitch sentences together
-                let structuredText = "";
-                const unscaledHeight = viewport.viewBox ? viewport.viewBox[3] : 800; 
-                let previousY = null;
-
-                lines.forEach(line => {
-                    let lineText = line.items.map(i => i.str).join(' ').replace(/\s+/g, ' ').trim();
-                    if (!lineText) return;
-
-                    const avgFontSize = line.items.reduce((sum, i) => sum + Math.abs(i.transform[3]), 0) / line.items.length;
-                    
-                    // A. Page Numbers
-                    const isVeryTop = line.y > (unscaledHeight - 60);
-                    const isVeryBottom = line.y < 60;
-                    const isJustNumber = /^[\[\(\-–—\s]*\d+[\]\)\-–—\s]*$/.test(lineText);
-                    if ((isVeryTop || isVeryBottom) && isJustNumber) return; 
-
-                    // B. Structure Detection
-                    // Increased threshold to 20% to prevent false headers
-                    const isHeader = avgFontSize > (baseFontSize * 1.20); 
-                    const isListItem = /^[\u2022\u25E6\u25A0\-\*]\s/.test(lineText) || /^\d+\.\s/.test(lineText);
-
-                    // C. Paragraph Gap Detection
-                    let isNewParagraph = false;
-                    if (previousY !== null) {
-                        const gap = previousY - line.y;
-                        // If the vertical gap between lines is larger than 1.5x the font size, it's a new block of text
-                        if (gap > (baseFontSize * 1.5)) {
-                            isNewParagraph = true;
-                        }
-                    }
-                    previousY = line.y;
-
-                    // D. Text Stitching
-                    if (isHeader || isListItem) {
-                        // Force a hard stop for structural elements
-                        structuredText += `\n${lineText}.\n`; 
-                    } else {
-                        // It's normal paragraph text. Let's stitch it carefully.
-                        if (isNewParagraph) {
-                            // If it's a new paragraph, check if the previous one forgot a period
-                            if (structuredText.trim().length > 0 && !structuredText.trim().match(/[.!?]$/)) {
-                                structuredText += ".\n" + lineText;
-                            } else {
-                                structuredText += "\n" + lineText;
-                            }
-                        } else {
-                            // Same paragraph, glue it to the previous line!
-                            if (structuredText.endsWith('-')) {
-                                // Fix hyphenated line breaks (e.g., "func-" + "tion")
-                                structuredText = structuredText.slice(0, -1) + lineText;
-                            } else if (structuredText.endsWith('\n') || structuredText.length === 0) {
-                                structuredText += lineText;
-                            } else {
-                                // Standard space continuation
-                                structuredText += " " + lineText;
-                            }
-                        }
-                    }
-                });
-
-                currentPageText = structuredText;
-                // --- HEURISTIC ENGINE END ---
-                
-                sentences = splitIntoTTSChunks(currentPageText, 150);
-
-                await pdfjsLib.renderTextLayer({
-                    textContentSource: textContent,
-                    container: textLayerDiv,
-                    viewport,
-                    textDivs: [],
-                    enhanceTextSelection: true
-                }).promise;
-
-                document.getElementById('page-num').textContent = num;
-                prevPageBtn.disabled = num <= 1;
-                nextPageBtn.disabled = num >= pdfDoc.numPages;
-                updateMobilePageInfo();
-
-                pageIsRendering = false;
-
-                if (pageNumPending !== null) {
-                    const pending = pageNumPending;
-                    pageNumPending = null;
-                    renderPage(pending);
-                    return;
-                }
-
-                if (currentIndex < sentences.length) {
-                    highlightActiveSentence(currentIndex, sentences);
-                }
-
-                if (isAutoContinuing) {
-                    isAutoContinuing = false; 
-                    setTimeout(() => {
-                        if (currentPageText.trim()) {
-                            startReadingPage();
-                        } else if (pageNum < pdfDoc.numPages) {
-                            isAutoContinuing = true;
-                            goToPage(1, true);
-                        } else {
-                            stopPipeline();
-                        }
-                    }, 600);
-                }
-            } catch (error) {
-                console.error("Error rendering page:", error);
-                pageIsRendering = false;
-            }
-        }
-
-        function queueRenderPage(num) {
-            if (pageIsRendering) {
-                pageNumPending = num;
-            } else {
-                renderPage(num);
-            }
-        }
-
-function goToPage(delta, isAutoTurn = false) {
-    if (!pdfDoc) return;
-    const target = pageNum + delta;
-    if (target < 1 || target > pdfDoc.numPages) return;
-
-    if (!isAutoTurn) {
-        stopPipeline();
-        isAutoContinuing = false; 
-    }
-    
-    // --> ADD THIS LINE <--
-    clearPageAudioCache(); 
-
-    currentIndex = 0;
-    pageNum = target;
-    queueRenderPage(pageNum);
-    updateSavedSession(pageNum, scale, currentIndex);
-    viewerArea.scrollTo({ top: 0, behavior: 'smooth' });
-}
-        // Navigation listeners (sidebar + mobile bar)
-        prevPageBtn.addEventListener('click', () => goToPage(-1));
-        nextPageBtn.addEventListener('click', () => goToPage(1));
-        mobilePrevBtn.addEventListener('click', () => goToPage(-1));
-        mobileNextBtn.addEventListener('click', () => goToPage(1));
-
-        document.addEventListener('keydown', (event) => {
-            if (event.key === 'Escape') {
-                resetUI();
-                return;
-            }
-            if (!pdfDoc) return;
-            if (event.key === 'ArrowLeft' || event.key.toLowerCase() === 'h') {
-                goToPage(-1);
-            }
-            if (event.key === 'ArrowRight' || event.key.toLowerCase() === 'l') {
-                goToPage(1);
-            }
-        });
-
-        function splitIntoTTSChunks(text, maxLength = 120) {
-            let initialChunks = text
-                .split('\n')
-                .flatMap(chunk => chunk.split(/(?<=[.!?])\s+/))
-                .map(s => s.trim())
-                .filter(s => s.length > 0);
-
-            let finalChunks = [];
-            initialChunks.forEach(chunk => {
-                if (chunk.length <= maxLength) {
-                    finalChunks.push(chunk);
-                    return;
-                }
-                let subChunks = chunk.split(/(?<=[,;:\-—])\s+/);
-                let currentStr = "";
-                subChunks.forEach(sub => {
-                    if ((currentStr.length + sub.length) <= maxLength) {
-                        currentStr += (currentStr ? " " : "") + sub;
-                    } else {
-                        if (currentStr) finalChunks.push(currentStr.trim());
-                        if (sub.length > maxLength) {
-                            let words = sub.split(/\s+/);
-                            let wordStr = "";
-                            words.forEach(w => {
-                                if ((wordStr.length + w.length) <= maxLength) {
-                                    wordStr += (wordStr ? " " : "") + w;
-                                } else {
-                                    if (wordStr) finalChunks.push(wordStr.trim());
-                                    wordStr = w;
-                                }
-                            });
-                            currentStr = wordStr;
-                        } else {
-                            currentStr = sub;
-                        }
-                    }
-                });
-                if (currentStr) finalChunks.push(currentStr.trim());
-            });
-            return finalChunks;
-        }
-
-		// Click-to-play
-document.getElementById('text-layer').addEventListener('click', (e) => {
-    let targetSpan = e.target;
-    if (targetSpan.tagName.toLowerCase() === 'mark') {
-        targetSpan = targetSpan.parentElement; 
-    }
-    if (targetSpan.tagName.toLowerCase() !== 'span') return;
-    if (!sentences || sentences.length === 0) return;
-
-    const allSpans = Array.from(document.querySelectorAll('.textLayer span'));
-    const targetIndex = allSpans.indexOf(targetSpan);
-    if (targetIndex === -1) return;
-
-    const normalize = (str) => (str || "").toLowerCase().replace(/[^a-z0-9]/g, '');
-    let fullPageNorm = "";
-    let spanOffsets = [];
-    
-    allSpans.forEach(span => {
-        let rawText = span.dataset.originalText !== undefined ? span.dataset.originalText : span.textContent;
-        spanOffsets.push(fullPageNorm.length);
-        fullPageNorm += normalize(rawText);
+    /* ─── Sidebar Tabs ─── */
+    tabToc.addEventListener('click', () => {
+        tabToc.classList.add('active');
+        tabControls.classList.remove('active');
+        tocPanel.style.display = 'block';
+        controlsPanel.style.display = 'none';
+    });
+    tabControls.addEventListener('click', () => {
+        tabControls.classList.add('active');
+        tabToc.classList.remove('active');
+        controlsPanel.style.display = 'block';
+        tocPanel.style.display = 'none';
     });
 
-    const clickedOffset = spanOffsets[targetIndex];
-    let currentCursor = 0;
-    let matchIndex = -1;
-    let foundIndex = -1;
-    
-    for (let i = 0; i < sentences.length; i++) {
-        let targetNorm = normalize(sentences[i]);
-        if (!targetNorm) continue;
-        
-        matchIndex = fullPageNorm.indexOf(targetNorm, currentCursor);
-        
-        // Fallback: If not found at cursor, it means the PDF layer rendered this out of visual order. Search from top.
-        if (matchIndex === -1) matchIndex = fullPageNorm.indexOf(targetNorm, 0);
-        
-        if (matchIndex !== -1) {
-            let matchEnd = matchIndex + targetNorm.length;
-            
-            // FIXED: STRICT BOUNDARY CHECK
-            // We now explicitly check if the click falls inside this specific sentence window
-            if (clickedOffset >= matchIndex && clickedOffset < matchEnd) {
-                foundIndex = i;
-                break;
-            }
-            currentCursor = matchEnd;
+    /* ─── Sidebar Toggle ─── */
+    function toggleSidebar() {
+        sidebarOpen = !sidebarOpen;
+        if (window.innerWidth <= 768) {
+            sidebarOpen ? openMobileSidebar() : closeMobileSidebar();
+        } else {
+            sidebar.classList.toggle('collapsed', !sidebarOpen);
+            sidebarToggleBtn.classList.toggle('active', sidebarOpen);
         }
     }
-    
-    if (foundIndex !== -1) {
-        startReadingPage(foundIndex);
+
+    function openMobileSidebar() {
+        sidebar.classList.add('open');
+        sidebarOverlay.classList.add('show');
     }
-});
-		function clearPageAudioCache() {
-			if (audioCache) {
-					Object.values(audioCache).forEach(val => {
-						// Only revoke if it's an actual blob URL, not a 'fetching' state or null
-						if (val && typeof val === 'string' && val.startsWith('blob:')) {
-							URL.revokeObjectURL(val);
-						}
-					});
-				}
-				audioCache = {};
-				inFlight = 0;
-			}
-    </script>
+    function closeMobileSidebar() {
+        sidebar.classList.remove('open');
+        sidebarOverlay.classList.remove('show');
+        sidebarOpen = false;
+    }
+
+    sidebarToggleBtn.addEventListener('click', toggleSidebar);
+    mobileToggleBtn.addEventListener('click', () => { sidebarOpen ? closeMobileSidebar() : openMobileSidebar(); sidebarOpen = !sidebarOpen; });
+    sidebarOverlay.addEventListener('click', closeMobileSidebar);
+    sidebarToggleBtn.classList.add('active');
+
+    /* ─── Mobile Page Info ─── */
+    function updateMobilePageInfo() {
+        mobilePageInfo.textContent = pdfDoc ? `${pageNum} / ${pdfDoc.numPages}` : '0 / 0';
+        updateCacheBadge();
+    }
+
+    /* ─── Page Jump ─── */
+    pageJumpBtn.addEventListener('click', jumpToPage);
+    pageJumpInput.addEventListener('keydown', e => { if (e.key === 'Enter') jumpToPage(); });
+
+    function jumpToPage() {
+        if (!pdfDoc) return;
+        const n = parseInt(pageJumpInput.value, 10);
+        if (!n || n < 1 || n > pdfDoc.numPages) return;
+        goToAbsolutePage(n);
+        pageJumpInput.value = '';
+    }
+
+    /* ─── IndexedDB ─── */
+    let db;
+    const dbReq = indexedDB.open('DocReaderProDB', 1);
+    dbReq.onupgradeneeded = e => {
+        db = e.target.result;
+        db.createObjectStore('documents');
+    };
+    dbReq.onsuccess = e => {
+        db = e.target.result;
+        loadSavedDocument();
+    };
+
+    function saveToDB(file, page, s, si = 0) {
+        if (!db) return;
+        db.transaction(['documents'], 'readwrite').objectStore('documents').put({ file, page, scale: s, sentenceIndex: si }, 'lastSession');
+    }
+    function updateSavedSession(page, s, si = currentIndex) {
+        if (!db) return;
+        const store = db.transaction(['documents'], 'readwrite').objectStore('documents');
+        const req = store.get('lastSession');
+        req.onsuccess = e => {
+            const d = e.target.result;
+            if (d) { d.page = page; d.scale = s; d.sentenceIndex = si; store.put(d, 'lastSession'); }
+        };
+    }
+    function clearSavedDocument() {
+        if (!db) return;
+        db.transaction(['documents'], 'readwrite').objectStore('documents').delete('lastSession');
+    }
+    function loadSavedDocument() {
+        if (!db) return;
+        db.transaction(['documents'], 'readonly').objectStore('documents').get('lastSession').onsuccess = e => {
+            const d = e.target.result;
+            if (d && d.file) {
+                scale = d.scale || 1.5;
+                currentIndex = d.sentenceIndex || 0;
+                zoomSlider.value = scale;
+                zoomVal.textContent = Math.round(scale * 100) + '%';
+                loadPDF(d.file, d.page);
+            }
+        };
+    }
+
+    /* ─── Zoom ─── */
+    function setZoom(v, rerender = true) {
+        v = Math.round(Math.min(3.0, Math.max(0.5, v)) * 10) / 10;
+        scale = v;
+        zoomSlider.value = scale;
+        zoomVal.textContent = Math.round(scale * 100) + '%';
+        if (pdfDoc && rerender) { queueRenderPage(pageNum); updateSavedSession(pageNum, scale, currentIndex); }
+    }
+
+    zoomSlider.addEventListener('input', e => { zoomVal.textContent = Math.round(parseFloat(e.target.value) * 100) + '%'; });
+    zoomSlider.addEventListener('change', e => setZoom(parseFloat(e.target.value)));
+    zoomInBtn.addEventListener('click', () => setZoom(scale + 0.1));
+    zoomOutBtn.addEventListener('click', () => setZoom(scale - 0.1));
+    zoomResetBtn.addEventListener('click', () => setZoom(1.0));
+    speedSlider.addEventListener('input', e => { speedVal.textContent = parseFloat(e.target.value).toFixed(1) + '×'; });
+
+    /* ─── PDF Load ─── */
+    async function loadPDF(file, startPage = 1) {
+        showLoading('Loading document…');
+        currentFile = file;
+        const fileUrl = URL.createObjectURL(file);
+
+        welcomeScreen.classList.remove('active');
+        readerScreen.classList.add('active');
+
+        try {
+            const task = pdfjsLib.getDocument(fileUrl);
+            pdfDoc = await task.promise;
+
+            currentFileName = file.name || 'Document';
+            topbarFilename.textContent = currentFileName;
+            document.title = `DocReader Pro — ${currentFileName}`;
+
+            document.getElementById('page-count').textContent = pdfDoc.numPages;
+            pageJumpInput.max = pdfDoc.numPages;
+
+            // Mobile scale
+            if (window.innerWidth <= 768) {
+                const vw = viewerArea.clientWidth - 16;
+                const fp = await pdfDoc.getPage(1);
+                const ov = fp.getViewport({ scale: 1 });
+                scale = Math.round(Math.min(3.0, Math.max(0.9, vw / ov.width)) * 10) / 10;
+                zoomSlider.value = scale;
+                zoomVal.textContent = Math.round(scale * 100) + '%';
+            }
+
+            pageNum = startPage;
+            await renderPage(pageNum);
+            updateMobilePageInfo();
+
+            // Load outline (TOC)
+            loadOutline();
+
+            // Pre-index all page texts for search
+            indexAllPagesForSearch();
+
+            if (window.innerWidth <= 768) closeMobileSidebar();
+
+        } catch (err) {
+            console.error(err);
+            alert('Failed to load PDF.');
+            resetUI();
+        } finally {
+            hideLoading();
+        }
+    }
+
+    /* ─── PDF Outline / TOC ─── */
+    async function loadOutline() {
+        try {
+            pdfOutline = await pdfDoc.getOutline();
+        } catch (e) {
+            pdfOutline = null;
+        }
+
+        tocList.innerHTML = '';
+
+        if (!pdfOutline || pdfOutline.length === 0) {
+            tocEmpty.style.display = 'block';
+            return;
+        }
+
+        tocEmpty.style.display = 'none';
+
+        function addItems(items, level) {
+            items.forEach(item => {
+                const el = document.createElement('div');
+                el.className = 'toc-item';
+                el.dataset.level = level;
+
+                const num = document.createElement('span');
+                num.className = 'toc-item-num';
+                num.textContent = '—';
+                el.appendChild(num);
+
+                const label = document.createElement('span');
+                label.className = 'toc-item-label';
+                label.textContent = item.title;
+                el.appendChild(label);
+
+                el.addEventListener('click', async () => {
+                    if (!item.dest) return;
+                    try {
+                        let dest = item.dest;
+                        if (typeof dest === 'string') {
+                            dest = await pdfDoc.getDestination(dest);
+                        }
+                        if (!dest) return;
+                        const ref = dest[0];
+                        const pageIdx = await pdfDoc.getPageIndex(ref);
+                        const targetPage = pageIdx + 1;
+
+                        // Update num badge
+                        num.textContent = targetPage;
+                        el.dataset.page = targetPage;
+
+                        stopPipeline();
+                        goToAbsolutePage(targetPage);
+
+                        // Highlight active
+                        document.querySelectorAll('.toc-item').forEach(i => i.classList.remove('active'));
+                        el.classList.add('active');
+
+                        if (window.innerWidth <= 768) closeMobileSidebar();
+                    } catch (e) {
+                        console.warn('TOC navigation error:', e);
+                    }
+                });
+
+                tocList.appendChild(el);
+
+                if (item.items && item.items.length) {
+                    addItems(item.items, level + 1);
+                }
+            });
+        }
+
+        addItems(pdfOutline, 1);
+
+        // Resolve page numbers for visible items
+        resolveOutlinePageNumbers(pdfOutline, tocList.querySelectorAll('.toc-item'));
+    }
+
+    async function resolveOutlinePageNumbers(outline, elements) {
+        let idx = 0;
+        async function resolve(items) {
+            for (const item of items) {
+                const el = elements[idx++];
+                if (!el) break;
+                const numBadge = el.querySelector('.toc-item-num');
+                if (item.dest) {
+                    try {
+                        let dest = item.dest;
+                        if (typeof dest === 'string') dest = await pdfDoc.getDestination(dest);
+                        if (dest) {
+                            const pageIdx = await pdfDoc.getPageIndex(dest[0]);
+                            numBadge.textContent = pageIdx + 1;
+                            el.dataset.page = pageIdx + 1;
+                        }
+                    } catch (e) {}
+                }
+                if (item.items && item.items.length) await resolve(item.items);
+            }
+        }
+        await resolve(outline);
+    }
+
+    /* Update active TOC item when page changes */
+    function updateActiveTocItem() {
+        const items = tocList.querySelectorAll('.toc-item[data-page]');
+        let activeEl = null;
+        let bestPage = 0;
+
+        items.forEach(el => {
+            const p = parseInt(el.dataset.page, 10);
+            if (p <= pageNum && p > bestPage) {
+                bestPage = p;
+                activeEl = el;
+            }
+        });
+
+        items.forEach(el => el.classList.remove('active'));
+        if (activeEl) {
+            activeEl.classList.add('active');
+            // Scroll TOC item into view
+            activeEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+        }
+    }
+
+    /* ─── Search ─── */
+    async function indexAllPagesForSearch() {
+        searchAllPageTexts = {};
+        // Index pages lazily (we'll add pages as they're searched or as we preload)
+        // For now, index current page immediately; others on demand
+    }
+
+    async function getPageText(pageIndex) {
+        if (searchAllPageTexts[pageIndex] !== undefined) return searchAllPageTexts[pageIndex];
+        try {
+            const page = await pdfDoc.getPage(pageIndex);
+            const tc = await page.getTextContent();
+            const text = tc.items.map(i => i.str).join(' ');
+            searchAllPageTexts[pageIndex] = text;
+            return text;
+        } catch (e) {
+            return '';
+        }
+    }
+
+    let searchDebounceTimer = null;
+
+    searchInput.addEventListener('input', () => {
+        clearTimeout(searchDebounceTimer);
+        searchDebounceTimer = setTimeout(performSearch, 320);
+    });
+
+    searchInput.addEventListener('keydown', e => {
+        if (e.key === 'Enter') { e.shiftKey ? prevSearchMatch() : nextSearchMatch(); }
+        if (e.key === 'Escape') clearSearch();
+    });
+
+    searchPrevBtn.addEventListener('click', prevSearchMatch);
+    searchNextBtn.addEventListener('click', nextSearchMatch);
+    searchClearBtn.addEventListener('click', clearSearch);
+
+    async function performSearch() {
+        const query = searchInput.value.trim();
+        if (!query || !pdfDoc) {
+            clearSearch();
+            return;
+        }
+
+        searchClearBtn.style.display = '';
+        searchCount.textContent = '…';
+        searchResultsPanel.classList.add('visible');
+        searchResultsList.innerHTML = '<div style="padding:14px 16px;color:var(--text-tertiary);font-size:13px">Searching…</div>';
+
+        searchMatches = [];
+        const lowerQuery = query.toLowerCase();
+
+        showLoading('Searching document…');
+
+        for (let p = 1; p <= pdfDoc.numPages; p++) {
+            const text = await getPageText(p);
+            const lowerText = text.toLowerCase();
+            let pos = 0;
+            while (true) {
+                const idx = lowerText.indexOf(lowerQuery, pos);
+                if (idx === -1) break;
+                const context = text.slice(Math.max(0, idx - 40), idx + query.length + 60);
+                searchMatches.push({ page: p, index: idx, context, query });
+                pos = idx + 1;
+            }
+        }
+
+        hideLoading();
+
+        if (searchMatches.length === 0) {
+            searchCount.textContent = '0';
+            searchResultsList.innerHTML = '<div class="toc-empty">No results found for <strong>"' + query + '"</strong></div>';
+            searchCurrentMatch = -1;
+            searchPrevBtn.disabled = true;
+            searchNextBtn.disabled = true;
+            return;
+        }
+
+        searchCount.textContent = searchMatches.length;
+        resultsHeaderText.textContent = `${searchMatches.length} result${searchMatches.length !== 1 ? 's' : ''}`;
+
+        // Render results list
+        searchResultsList.innerHTML = '';
+        searchMatches.forEach((m, i) => {
+            const item = document.createElement('div');
+            item.className = 'search-result-item';
+            item.dataset.index = i;
+
+            const badge = document.createElement('span');
+            badge.className = 'result-page-badge';
+            badge.textContent = 'p.' + m.page;
+
+            const text = document.createElement('span');
+            text.className = 'result-text';
+            const hi = m.context.toLowerCase().indexOf(m.query.toLowerCase());
+            if (hi >= 0) {
+                text.innerHTML =
+                    escapeHtml(m.context.slice(0, hi)) +
+                    '<em>' + escapeHtml(m.context.slice(hi, hi + m.query.length)) + '</em>' +
+                    escapeHtml(m.context.slice(hi + m.query.length));
+            } else {
+                text.textContent = m.context;
+            }
+
+            item.appendChild(badge);
+            item.appendChild(text);
+            item.addEventListener('click', () => goToSearchMatch(i));
+            searchResultsList.appendChild(item);
+        });
+
+        searchCurrentMatch = -1;
+        searchPrevBtn.disabled = false;
+        searchNextBtn.disabled = false;
+        nextSearchMatch();
+    }
+
+    function goToSearchMatch(idx) {
+        if (idx < 0 || idx >= searchMatches.length) return;
+        searchCurrentMatch = idx;
+
+        const match = searchMatches[idx];
+        searchCount.textContent = `${idx + 1}/${searchMatches.length}`;
+
+        // Highlight active result in list
+        document.querySelectorAll('.search-result-item').forEach((el, i) => {
+            el.classList.toggle('active', i === idx);
+        });
+        document.querySelectorAll('.search-result-item')[idx]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+
+        // Navigate to page
+        if (match.page !== pageNum) {
+            goToAbsolutePage(match.page, () => highlightSearchOnPage(match.query));
+        } else {
+            highlightSearchOnPage(match.query);
+        }
+    }
+
+    function nextSearchMatch() {
+        goToSearchMatch(searchCurrentMatch + 1 < searchMatches.length ? searchCurrentMatch + 1 : 0);
+    }
+    function prevSearchMatch() {
+        goToSearchMatch(searchCurrentMatch - 1 >= 0 ? searchCurrentMatch - 1 : searchMatches.length - 1);
+    }
+
+    function clearSearch() {
+        searchInput.value = '';
+        searchCount.textContent = '';
+        searchMatches = [];
+        searchCurrentMatch = -1;
+        searchPrevBtn.disabled = true;
+        searchNextBtn.disabled = true;
+        searchClearBtn.style.display = 'none';
+        searchResultsPanel.classList.remove('visible');
+        clearSearchHighlights();
+    }
+
+    function highlightSearchOnPage(query) {
+        clearSearchHighlights();
+        if (!query) return;
+        const spans = document.querySelectorAll('.textLayer span');
+        const lq = query.toLowerCase();
+        spans.forEach(span => {
+            const orig = span.dataset.originalText !== undefined ? span.dataset.originalText : span.textContent;
+            const lo = orig.toLowerCase();
+            let pos = 0, result = '';
+            while (true) {
+                const i = lo.indexOf(lq, pos);
+                if (i === -1) { result += escapeHtml(orig.slice(pos)); break; }
+                result += escapeHtml(orig.slice(pos, i)) + '<mark class="search-highlight">' + escapeHtml(orig.slice(i, i + query.length)) + '</mark>';
+                pos = i + query.length;
+            }
+            if (result !== escapeHtml(orig)) {
+                if (span.dataset.originalText === undefined) span.dataset.originalText = orig;
+                span.innerHTML = result;
+            }
+        });
+
+        // Scroll first highlight into view
+        const first = document.querySelector('.search-highlight');
+        if (first) {
+            const rect = first.getBoundingClientRect();
+            const va = viewerArea.getBoundingClientRect();
+            if (rect.top < va.top || rect.bottom > va.bottom) {
+                viewerArea.scrollBy({ top: rect.top - va.top - va.height / 3, behavior: 'smooth' });
+            }
+        }
+    }
+
+    function clearSearchHighlights() {
+        document.querySelectorAll('.textLayer span').forEach(span => {
+            if (span.dataset.originalText !== undefined) {
+                span.textContent = span.dataset.originalText;
+            }
+        });
+    }
+
+    function escapeHtml(s) {
+        return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    // Close search panel when clicking outside
+    document.addEventListener('click', e => {
+        if (!searchResultsPanel.contains(e.target) && !document.getElementById('search-container').contains(e.target)) {
+            searchResultsPanel.classList.remove('visible');
+        }
+    });
+    searchInput.addEventListener('focus', () => {
+        if (searchMatches.length > 0) searchResultsPanel.classList.add('visible');
+    });
+
+    /* ─── PDF Rendering ─── */
+    let afterRenderCallback = null;
+
+    async function renderPage(num) {
+        pageIsRendering = true;
+        try {
+            const page = await pdfDoc.getPage(num);
+            const viewport = page.getViewport({ scale });
+
+            const canvas = document.getElementById('pdf-canvas');
+            const ctx = canvas.getContext('2d');
+            const dpr = window.devicePixelRatio || 1;
+            const cssW = Math.floor(viewport.width);
+            const cssH = Math.floor(viewport.height);
+
+            canvas.width = Math.floor(viewport.width * dpr);
+            canvas.height = Math.floor(viewport.height * dpr);
+            canvas.style.width = cssW + 'px';
+            canvas.style.height = cssH + 'px';
+
+            const transform = dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : null;
+            await page.render({ canvasContext: ctx, viewport, transform }).promise;
+
+            /* Text Layer */
+            const textLayerDiv = document.getElementById('text-layer');
+            textLayerDiv.innerHTML = '';
+            textLayerDiv.style.height = cssH + 'px';
+            textLayerDiv.style.width = cssW + 'px';
+            textLayerDiv.style.setProperty('--scale-factor', viewport.scale);
+
+            const textContent = await page.getTextContent();
+
+            // ── Heuristic text extraction for TTS ──
+            const fontSizes = textContent.items.map(i => Math.abs(i.transform[3])).filter(s => s > 0).sort((a,b) => a-b);
+            const baseFontSize = fontSizes.length ? fontSizes[Math.floor(fontSizes.length / 2)] : 12;
+
+            const Y_TOL = 5;
+            const sorted = [...textContent.items].sort((a,b) => {
+                const dy = a.transform[5] - b.transform[5];
+                if (Math.abs(dy) > Y_TOL) return b.transform[5] - a.transform[5];
+                return a.transform[4] - b.transform[4];
+            });
+
+            let lines = [];
+            let curLine = { y: null, items: [] };
+            sorted.forEach(item => {
+                if (!item.str.trim()) return;
+                const y = item.transform[5];
+                if (curLine.y === null || Math.abs(curLine.y - y) > Y_TOL) {
+                    if (curLine.items.length) lines.push(curLine);
+                    curLine = { y, items: [item] };
+                } else {
+                    curLine.items.push(item);
+                }
+            });
+            if (curLine.items.length) lines.push(curLine);
+
+            let structuredText = '';
+            const unscaledH = viewport.viewBox ? viewport.viewBox[3] : 800;
+            let prevY = null;
+
+            lines.forEach(line => {
+                let lineText = line.items.map(i => i.str).join(' ').replace(/\s+/g, ' ').trim();
+                if (!lineText) return;
+                const avgFS = line.items.reduce((s,i) => s + Math.abs(i.transform[3]), 0) / line.items.length;
+                const isTop = line.y > (unscaledH - 60);
+                const isBot = line.y < 60;
+                const isNum = /^[\[\(\-–—\s]*\d+[\]\)\-–—\s]*$/.test(lineText);
+                if ((isTop || isBot) && isNum) return;
+
+                const isHeader = avgFS > baseFontSize * 1.2;
+                const isList = /^[\u2022\u25E6\u25A0\-\*]\s/.test(lineText) || /^\d+\.\s/.test(lineText);
+                const isNewPara = prevY !== null && (prevY - line.y) > baseFontSize * 1.5;
+
+                prevY = line.y;
+
+                if (isHeader || isList) {
+                    structuredText += `\n${lineText}.\n`;
+                } else if (isNewPara) {
+                    structuredText += (!structuredText.trim().match(/[.!?]$/) ? '.\n' : '\n') + lineText;
+                } else if (structuredText.endsWith('-')) {
+                    structuredText = structuredText.slice(0, -1) + lineText;
+                } else if (structuredText.endsWith('\n') || !structuredText) {
+                    structuredText += lineText;
+                } else {
+                    structuredText += ' ' + lineText;
+                }
+            });
+
+            currentPageText = structuredText;
+            sentences = splitIntoTTSChunks(currentPageText, 150);
+
+            await pdfjsLib.renderTextLayer({
+                textContentSource: textContent,
+                container: textLayerDiv,
+                viewport,
+                textDivs: [],
+                enhanceTextSelection: true
+            }).promise;
+
+            /* Annotation Layer (links) */
+            await renderAnnotations(page, viewport, cssW, cssH);
+
+            /* Update UI */
+            document.getElementById('page-num').textContent = num;
+            prevPageBtn.disabled = num <= 1;
+            nextPageBtn.disabled = num >= pdfDoc.numPages;
+            updateMobilePageInfo();
+            updateActiveTocItem();
+
+            // Cache this page's text for search
+            if (textContent.items.length) {
+                searchAllPageTexts[num] = textContent.items.map(i => i.str).join(' ');
+            }
+
+            pageIsRendering = false;
+
+            if (pageNumPending !== null) {
+                const pending = pageNumPending;
+                pageNumPending = null;
+                renderPage(pending);
+                return;
+            }
+
+            if (currentIndex < sentences.length) highlightActiveSentence(currentIndex, sentences);
+
+            if (isAutoContinuing) {
+                isAutoContinuing = false;
+                // Small delay to let the page visually settle before audio starts
+                setTimeout(() => {
+                    if (currentPageText.trim()) {
+                        // Reset pipeline state cleanly then kick off the new page
+                        isPlaying = false; // startReadingPage will set this back to true
+                        startReadingPage(0);
+                    } else if (pageNum < pdfDoc.numPages) {
+                        // This page has no text, skip to the next
+                        isAutoContinuing = true;
+                        goToPage(1, true);
+                    } else {
+                        stopPipeline();
+                    }
+                }, 300);
+            }
+
+            // Re-apply search highlights after render
+            const q = searchInput.value.trim();
+            if (q) highlightSearchOnPage(q);
+
+            // Fire after-render callback (used by search navigation)
+            if (afterRenderCallback) {
+                const cb = afterRenderCallback;
+                afterRenderCallback = null;
+                cb();
+            }
+
+        } catch (err) {
+            console.error('Render error:', err);
+            pageIsRendering = false;
+        }
+    }
+
+    /* ─── Annotation Layer (PDF Links) ─── */
+    async function renderAnnotations(page, viewport, cssW, cssH) {
+        const annotLayer = document.getElementById('annotation-layer');
+        annotLayer.innerHTML = '';
+        annotLayer.style.width = cssW + 'px';
+        annotLayer.style.height = cssH + 'px';
+
+        try {
+            const annotations = await page.getAnnotations();
+
+            for (const annot of annotations) {
+                if (annot.subtype !== 'Link') continue;
+
+                // Calculate position
+                const rect = pdfjsLib.Util.normalizeRect([
+                    annot.rect[0], annot.rect[1], annot.rect[2], annot.rect[3]
+                ]);
+                const [x1, y1, x2, y2] = viewport.convertToViewportRectangle(rect);
+                const left   = Math.min(x1, x2);
+                const top    = Math.min(y1, y2);
+                const width  = Math.abs(x2 - x1);
+                const height = Math.abs(y2 - y1);
+
+                const linkWrap = document.createElement('div');
+                linkWrap.className = 'linkAnnotation';
+                linkWrap.style.cssText = `left:${left}px;top:${top}px;width:${width}px;height:${height}px;`;
+
+                const anchor = document.createElement('a');
+
+                if (annot.url) {
+                    // External URL
+                    anchor.href = annot.url;
+                    anchor.target = '_blank';
+                    anchor.rel = 'noopener noreferrer';
+                } else if (annot.dest) {
+                    // Internal destination
+                    anchor.href = '#';
+                    anchor.dataset.dest = typeof annot.dest === 'string' ? annot.dest : JSON.stringify(annot.dest);
+                    anchor.addEventListener('click', async e => {
+                        e.preventDefault();
+                        try {
+                            let dest = annot.dest;
+                            if (typeof dest === 'string') dest = await pdfDoc.getDestination(dest);
+                            if (!dest) return;
+                            const pageIdx = await pdfDoc.getPageIndex(dest[0]);
+                            stopPipeline();
+                            goToAbsolutePage(pageIdx + 1);
+                        } catch (err) {
+                            console.warn('Link navigation failed:', err);
+                        }
+                    });
+                } else if (annot.action && annot.action.type === 'GoTo') {
+                    anchor.href = '#';
+                    anchor.addEventListener('click', async e => {
+                        e.preventDefault();
+                        if (annot.action.dest) {
+                            try {
+                                let dest = annot.action.dest;
+                                if (typeof dest === 'string') dest = await pdfDoc.getDestination(dest);
+                                const pageIdx = await pdfDoc.getPageIndex(dest[0]);
+                                stopPipeline();
+                                goToAbsolutePage(pageIdx + 1);
+                            } catch (err) {}
+                        }
+                    });
+                } else {
+                    continue; // Skip non-navigable annotations
+                }
+
+                linkWrap.appendChild(anchor);
+                annotLayer.appendChild(linkWrap);
+            }
+        } catch (e) {
+            console.warn('Annotation rendering error:', e);
+        }
+    }
+
+    function queueRenderPage(num) {
+        pageIsRendering ? (pageNumPending = num) : renderPage(num);
+    }
+
+    /* ─── Page Navigation ─── */
+    function goToPage(delta, isAutoTurn = false) {
+        if (!pdfDoc) return;
+        const target = pageNum + delta;
+        if (target < 1 || target > pdfDoc.numPages) return;
+        if (!isAutoTurn) { stopPipeline(); isAutoContinuing = false; }
+        clearPageAudioCache();
+        currentIndex = 0;
+        pageNum = target;
+        queueRenderPage(pageNum);
+        updateSavedSession(pageNum, scale, currentIndex);
+        viewerArea.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function goToAbsolutePage(target, callback = null) {
+        if (!pdfDoc || target < 1 || target > pdfDoc.numPages) return;
+        stopPipeline();
+        clearPageAudioCache();
+        currentIndex = 0;
+        pageNum = target;
+        if (callback) afterRenderCallback = callback;
+        queueRenderPage(pageNum);
+        updateSavedSession(pageNum, scale, currentIndex);
+        viewerArea.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    prevPageBtn.addEventListener('click', () => goToPage(-1));
+    nextPageBtn.addEventListener('click', () => goToPage(1));
+    mobilePrevBtn.addEventListener('click', () => goToPage(-1));
+    mobileNextBtn.addEventListener('click', () => goToPage(1));
+
+	document.addEventListener('keydown', e => {
+        const tag = e.target.tagName.toLowerCase();
+        if (tag === 'input' || tag === 'select' || tag === 'textarea') return;
+
+        if (e.key === 'Escape') { resetUI(); return; }
+        if (e.key === 's' || e.key === 'S') { toggleSidebar(); return; }
+        if (!pdfDoc) return;
+        
+        // Page navigation & Zoom
+        if (e.key === 'ArrowLeft'  || e.key.toLowerCase() === 'h') goToPage(-1);
+        if (e.key === 'ArrowRight' || e.key.toLowerCase() === 'l') goToPage(1);
+        if (e.key === '+' || e.key === '=') setZoom(scale + 0.1);
+        if (e.key === '-' || e.key === '_') setZoom(scale - 0.1);
+        
+        // Play/Pause toggle
+        if (e.key === ' ') { e.preventDefault(); playBtn.click(); }
+
+        // Vim-style TTS line navigation (j = down/next, k = up/prev)
+        if (e.key.toLowerCase() === 'j' || e.key.toLowerCase() === 'k') {
+            if (!sentences || sentences.length === 0) return;
+            
+            let newIndex = currentIndex;
+            
+            if (e.key.toLowerCase() === 'j') {
+                newIndex = Math.min(currentIndex + 1, sentences.length - 1);
+            } else if (e.key.toLowerCase() === 'k') {
+                newIndex = Math.max(currentIndex - 1, 0);
+            }
+
+            if (newIndex !== currentIndex || !isPlaying) {
+                // 1. Instantly update the visual highlight and progress text
+                currentIndex = newIndex; 
+                highlightActiveSentence(currentIndex, sentences);
+                updateTtsStatus();
+                
+                // 2. Trigger the audio pipeline to start buffering/playing
+                startReadingPage(currentIndex);
+            }
+        }
+    });
+    /* ─── File Handling ─── */
+    fileInput.addEventListener('change', e => {
+        const file = e.target.files[0];
+        if (file && file.type === 'application/pdf') {
+            saveToDB(file, 1, scale, 0);
+            loadPDF(file, 1);
+        }
+    });
+
+    const dropZone = document.getElementById('drop-zone');
+    dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('dragging'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('dragging'));
+    dropZone.addEventListener('drop', e => {
+        e.preventDefault();
+        dropZone.classList.remove('dragging');
+        const file = e.dataTransfer.files[0];
+        if (file && file.type === 'application/pdf') {
+            saveToDB(file, 1, scale, 0);
+            loadPDF(file, 1);
+        }
+    });
+
+    document.getElementById('close-file').addEventListener('click', resetUI);
+
+    function resetUI() {
+        stopPipeline();
+        clearPageAudioCache();
+        pdfDoc = null;
+        currentFile = null;
+        currentFileName = '';
+        fileInput.value = '';
+        clearSavedDocument();
+        readerScreen.classList.remove('active');
+        welcomeScreen.classList.add('active');
+        document.getElementById('text-layer').innerHTML = '';
+        document.getElementById('annotation-layer').innerHTML = '';
+        document.title = 'DocReader Pro';
+        topbarFilename.textContent = 'No document';
+        tocList.innerHTML = '';
+        tocEmpty.style.display = 'block';
+        clearSearch();
+        searchAllPageTexts = {};
+        pageNum = 1;
+        pdfOutline = null;
+        cacheBadge.classList.remove('visible');
+        syncMobilePlayBtn();
+    }
+
+    /* ─── TTS ─── */
+    function splitIntoTTSChunks(text, maxLength = 120) {
+        let chunks = text.split('\n').flatMap(c => c.split(/(?<=[.!?])\s+/)).map(s => s.trim()).filter(s => s.length > 0);
+        let final = [];
+        chunks.forEach(chunk => {
+            if (chunk.length <= maxLength) { final.push(chunk); return; }
+            let subs = chunk.split(/(?<=[,;:\-—])\s+/);
+            let cur = '';
+            subs.forEach(sub => {
+                if ((cur.length + sub.length) <= maxLength) {
+                    cur += (cur ? ' ' : '') + sub;
+                } else {
+                    if (cur) final.push(cur.trim());
+                    if (sub.length > maxLength) {
+                        let words = sub.split(/\s+/), ws = '';
+                        words.forEach(w => {
+                            if ((ws.length + w.length) <= maxLength) ws += (ws ? ' ' : '') + w;
+                            else { if (ws) final.push(ws.trim()); ws = w; }
+                        });
+                        cur = ws;
+                    } else { cur = sub; }
+                }
+            });
+            if (cur) final.push(cur.trim());
+        });
+        return final;
+    }
+
+    function updateTtsStatus() {
+        if (!sentences.length) return;
+        const di = Math.min(currentIndex + 1, sentences.length);
+        ttsProgressFill.style.width = Math.round((di / sentences.length) * 100) + '%';
+        ttsStatusText.textContent = `Sentence ${di} / ${sentences.length}`;
+    }
+
+    function startReadingPage(startIndex = 0) {
+        if (!pdfDoc || !currentPageText.trim() || !sentences.length) return;
+        if (isPlaying) stopPipeline();
+
+        currentIndex = startIndex;
+        isPlaying = true;
+        hasStartedPlaying = false;
+
+        playBtn.textContent = '⏹ Stop';
+        ttsStatus.classList.add('active');
+        syncMobilePlayBtn();
+
+        const required = Math.min(REQUIRED_START_BUFFER, sentences.length - currentIndex);
+        let readyCount = 0;
+        for (let i = currentIndex; i < currentIndex + required; i++) {
+            if (audioCache[i] && audioCache[i] !== 'fetching') readyCount++;
+        }
+
+        if (readyCount >= required) {
+            hasStartedPlaying = true;
+            playNextChunk();
+        } else {
+            ttsStatusText.textContent = `Generating… ${readyCount}/${required}`;
+        }
+        preloadQueue();
+    }
+
+    playBtn.addEventListener('click', () => {
+        if (isPlaying) { stopPipeline(); return; }
+        if (!pdfDoc || !currentPageText.trim()) { alert('No text on this page.'); return; }
+        let si = currentIndex >= sentences.length ? 0 : currentIndex;
+        startReadingPage(si);
+    });
+
+    function preloadQueue() {
+        if (!isPlaying) return;
+        const limit = Math.min(currentIndex + BUFFER_DEPTH, sentences.length);
+        for (let i = currentIndex; i < limit; i++) {
+            if (inFlight >= MAX_CONCURRENT_FETCHES) break;
+            if (audioCache[i] === undefined) {
+                inFlight++;
+                audioCache[i] = 'fetching';
+                fetchSentenceAudio(i);
+            }
+        }
+    }
+
+    async function fetchSentenceAudio(idx) {
+        try {
+            const raw  = sentences[idx];
+            const text = /^\d{1,2}$/.test(raw.trim()) ? `Page ${raw.trim()}.` : raw;
+            const voice = document.getElementById('voice-selector').value;
+            const speed = parseFloat(document.getElementById('speed-slider').value);
+
+            /* Build headers — include cache metadata when a PDF is loaded */
+            const headers = { 'Content-Type': 'application/json' };
+            if (currentFileName) {
+                headers['X-Book-Name']   = currentFileName;
+                headers['X-Page-Number'] = String(pageNum);
+                headers['X-Line-Number'] = String(idx);
+                headers['X-Save-Audio']  = saveAudioEnabled ? 'true' : 'false';
+            }
+
+            const res = await fetch('http://127.0.0.1:8000/synthesize', {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({ text, voice, speed })
+            });
+            if (!res.ok) throw new Error(`Backend ${res.status}`);
+            const blob = await res.blob();
+            if (audioCache[idx] === 'fetching') audioCache[idx] = URL.createObjectURL(blob);
+        } catch (e) {
+            console.error(`Audio fetch failed for sentence ${idx}`, e);
+            if (audioCache[idx] === 'fetching') audioCache[idx] = null;
+        } finally {
+            inFlight--;
+            if (isPlaying) {
+                if (!hasStartedPlaying) {
+                    const required = Math.min(REQUIRED_START_BUFFER, sentences.length - currentIndex);
+                    let cnt = 0;
+                    for (let i = currentIndex; i < currentIndex + required; i++) {
+                        if (audioCache[i] && audioCache[i] !== 'fetching') cnt++;
+                    }
+                    ttsStatusText.textContent = `Generating… ${cnt}/${required}`;
+                    if (cnt >= required) { hasStartedPlaying = true; playNextChunk(); }
+                } else {
+                    if (idx === currentIndex && audioPlayer.paused) playNextChunk();
+                }
+            }
+            preloadQueue();
+        }
+    }
+
+    function playNextChunk() {
+        if (!isPlaying) return;
+        if (currentIndex >= sentences.length) {
+            if (document.getElementById('auto-read-next').checked && pageNum < pdfDoc.numPages) {
+                // Keep isPlaying = true so renderPage knows to auto-start on arrival
+                audioPlayer.pause();
+                playBtn.textContent = '▶ Play Page';
+                ttsStatus.classList.remove('active');
+                isAutoContinuing = true;
+                goToPage(1, true);
+            } else { stopPipeline(); }
+            return;
+        }
+        const url = audioCache[currentIndex];
+        if (url && url !== 'fetching') {
+            highlightActiveSentence(currentIndex, sentences);
+            updateTtsStatus();
+            audioPlayer.src = url;
+            audioPlayer.play();
+            audioPlayer.onended = () => {
+                currentIndex++;
+                updateSavedSession(pageNum, scale, currentIndex);
+                preloadQueue();
+                playNextChunk();
+            };
+        } else if (url === null) {
+            currentIndex++;
+            playNextChunk();
+        }
+    }
+
+    function stopPipeline() {
+        isPlaying = false;
+        audioPlayer.pause();
+        playBtn.textContent = '▶ Play Page';
+        ttsStatus.classList.remove('active');
+        syncMobilePlayBtn();
+    }
+
+    function clearPageAudioCache() {
+        if (audioCache) Object.values(audioCache).forEach(v => { if (v && typeof v === 'string' && v.startsWith('blob:')) URL.revokeObjectURL(v); });
+        audioCache = {};
+        inFlight = 0;
+    }
+
+    /* ─── Mobile play button sync ─── */
+    function syncMobilePlayBtn() {
+        if (isPlaying) {
+            mobilePlayBtn.style.background = '#ef4444';
+            mobilePlayLabel.textContent = 'Stop';
+            mobilePlayBtn.querySelector('svg').innerHTML = '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>';
+        } else {
+            mobilePlayBtn.style.background = '';
+            mobilePlayLabel.textContent = 'Play';
+            mobilePlayBtn.querySelector('svg').innerHTML = '<polygon points="5 3 19 12 5 21 5 3"/>';
+        }
+    }
+
+    mobilePlayBtn.addEventListener('click', () => {
+        if (isPlaying) { stopPipeline(); return; }
+        if (!pdfDoc || !currentPageText.trim()) { return; }
+        let si = currentIndex >= sentences.length ? 0 : currentIndex;
+        startReadingPage(si);
+    });
+
+    /* ─── Cache badge update ─── */
+    async function updateCacheBadge() {
+        if (!currentFileName || !pdfDoc) { cacheBadge.classList.remove('visible'); return; }
+        try {
+            const res = await fetch(`http://127.0.0.1:8000/cache_status?book_name=${encodeURIComponent(currentFileName)}&page=${pageNum}`);
+            if (!res.ok) { cacheBadge.classList.remove('visible'); return; }
+            const data = await res.json();
+            if (data.cached_lines && data.cached_lines.length > 0) {
+                cacheBadge.textContent = `${data.cached_lines.length} saved`;
+                cacheBadge.classList.add('visible');
+            } else {
+                cacheBadge.classList.remove('visible');
+            }
+        } catch (e) {
+            cacheBadge.classList.remove('visible');
+        }
+    }
+
+    /* ─── Save toggle ─── */
+    saveAudioToggle.addEventListener('change', e => {
+        saveAudioEnabled = e.target.checked;
+        saveRangeRow.style.display = saveAudioEnabled ? 'flex' : 'none';
+    });
+
+    /* ─── Batch download / pre-generate ─── */
+    downloadRangeBtn.addEventListener('click', async () => {
+        if (!pdfDoc || !currentFileName || isDownloadingRange) return;
+
+        const rangeStr = pageRangeInput.value.trim();
+        if (!rangeStr) { pageRangeInput.focus(); return; }
+
+        const match = rangeStr.match(/^(\d+)\s*[-–]\s*(\d+)$/);
+        if (!match) {
+            pageRangeInput.style.borderColor = 'var(--danger)';
+            setTimeout(() => pageRangeInput.style.borderColor = '', 1500);
+            return;
+        }
+
+        const fromPage = Math.max(1, parseInt(match[1], 10));
+        const toPage   = Math.min(pdfDoc.numPages, parseInt(match[2], 10));
+        if (fromPage > toPage) return;
+
+        const voice = document.getElementById('voice-selector').value;
+        const speed = parseFloat(document.getElementById('speed-slider').value);
+
+        isDownloadingRange = true;
+        downloadRangeBtn.disabled = true;
+        dlProgress.classList.add('active');
+
+        /* For each page in range, extract sentences using the same algorithm as renderPage */
+        const totalPages = toPage - fromPage + 1;
+        let donePages = 0;
+
+        for (let p = fromPage; p <= toPage; p++) {
+            dlStatusText.textContent = `Page ${p} / ${toPage}…`;
+            dlProgressFill.style.width = Math.round((donePages / totalPages) * 100) + '%';
+
+            try {
+                const page       = await pdfDoc.getPage(p);
+                const textContent = await page.getTextContent();
+                const pageSentences = extractSentencesFromTextContent(textContent, page);
+
+                for (let si = 0; si < pageSentences.length; si++) {
+                    const raw  = pageSentences[si];
+                    const text = /^\d{1,2}$/.test(raw.trim()) ? `Page ${raw.trim()}.` : raw;
+
+                    try {
+                        await fetch('http://127.0.0.1:8000/synthesize', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type':  'application/json',
+                                'X-Book-Name':   currentFileName,
+                                'X-Page-Number': String(p),
+                                'X-Line-Number': String(si),
+                                'X-Save-Audio':  'true',
+                                'X-Page-Range':  rangeStr,
+                            },
+                            body: JSON.stringify({ text, voice, speed })
+                        });
+                    } catch (e) {
+                        console.warn(`[DL] p${p} s${si} failed:`, e);
+                    }
+                }
+            } catch (e) {
+                console.warn(`[DL] Page ${p} extract failed:`, e);
+            }
+
+            donePages++;
+        }
+
+        dlProgressFill.style.width = '100%';
+        dlStatusText.textContent   = `Done! ${totalPages} page(s) cached.`;
+
+        setTimeout(() => {
+            dlProgress.classList.remove('active');
+            dlProgressFill.style.width = '0%';
+            isDownloadingRange = false;
+            downloadRangeBtn.disabled = false;
+            updateCacheBadge();
+        }, 2000);
+    });
+
+    /* ─── Shared text extraction (same algorithm as renderPage, callable standalone) ─── */
+    function extractSentencesFromTextContent(textContent, page) {
+        const viewport    = page.getViewport({ scale: 1 });
+        const fontSizes   = textContent.items.map(i => Math.abs(i.transform[3])).filter(s => s > 0).sort((a,b) => a-b);
+        const baseFontSize = fontSizes.length ? fontSizes[Math.floor(fontSizes.length / 2)] : 12;
+
+        const Y_TOL = 5;
+        const sorted = [...textContent.items].sort((a,b) => {
+            const dy = a.transform[5] - b.transform[5];
+            if (Math.abs(dy) > Y_TOL) return b.transform[5] - a.transform[5];
+            return a.transform[4] - b.transform[4];
+        });
+
+        let lines = [];
+        let curLine = { y: null, items: [] };
+        sorted.forEach(item => {
+            if (!item.str.trim()) return;
+            const y = item.transform[5];
+            if (curLine.y === null || Math.abs(curLine.y - y) > Y_TOL) {
+                if (curLine.items.length) lines.push(curLine);
+                curLine = { y, items: [item] };
+            } else {
+                curLine.items.push(item);
+            }
+        });
+        if (curLine.items.length) lines.push(curLine);
+
+        let structuredText = '';
+        const unscaledH = viewport.viewBox ? viewport.viewBox[3] : 800;
+        let prevY = null;
+
+        lines.forEach(line => {
+            let lineText = line.items.map(i => i.str).join(' ').replace(/\s+/g, ' ').trim();
+            if (!lineText) return;
+            const avgFS = line.items.reduce((s,i) => s + Math.abs(i.transform[3]), 0) / line.items.length;
+            const isTop = line.y > (unscaledH - 60);
+            const isBot = line.y < 60;
+            const isNum = /^[\[\(\-–—\s]*\d+[\]\)\-–—\s]*$/.test(lineText);
+            if ((isTop || isBot) && isNum) return;
+
+            const isHeader  = avgFS > baseFontSize * 1.2;
+            const isList    = /^[\u2022\u25E6\u25A0\-\*]\s/.test(lineText) || /^\d+\.\s/.test(lineText);
+            const isNewPara = prevY !== null && (prevY - line.y) > baseFontSize * 1.5;
+            prevY = line.y;
+
+            if (isHeader || isList) {
+                structuredText += `\n${lineText}.\n`;
+            } else if (isNewPara) {
+                structuredText += (!structuredText.trim().match(/[.!?]$/) ? '.\n' : '\n') + lineText;
+            } else if (structuredText.endsWith('-')) {
+                structuredText = structuredText.slice(0, -1) + lineText;
+            } else if (structuredText.endsWith('\n') || !structuredText) {
+                structuredText += lineText;
+            } else {
+                structuredText += ' ' + lineText;
+            }
+        });
+
+        return splitIntoTTSChunks(structuredText, 150);
+    }
+
+    /* ─── TTS Highlighting ─── */
+    function highlightActiveSentence(sentenceIndex, allSentences) {
+        const allSpans = Array.from(document.querySelectorAll('.textLayer span'));
+        allSpans.forEach(span => {
+            if (span.dataset.originalText === undefined) span.dataset.originalText = span.textContent;
+            span.textContent = span.dataset.originalText;
+        });
+
+        if (sentenceIndex < 0 || sentenceIndex >= allSentences.length) return;
+
+        const normalize = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
+        let fullNorm = '', spanMaps = [];
+        allSpans.forEach(span => {
+            const raw = span.dataset.originalText;
+            const norm = normalize(raw);
+            spanMaps.push({ element: span, rawText: raw, start: fullNorm.length, end: fullNorm.length + norm.length });
+            fullNorm += norm;
+        });
+
+        let cursor = 0, matchIndex = -1, targetNorm = '';
+        for (let i = 0; i <= sentenceIndex; i++) {
+            targetNorm = normalize(allSentences[i]);
+            if (!targetNorm) continue;
+            matchIndex = fullNorm.indexOf(targetNorm, cursor);
+            if (matchIndex === -1) matchIndex = fullNorm.indexOf(targetNorm, 0);
+            if (matchIndex !== -1) cursor = matchIndex + targetNorm.length;
+        }
+
+        if (matchIndex === -1) return;
+        const matchEnd = matchIndex + targetNorm.length;
+        let firstEl = null;
+
+        spanMaps.forEach(map => {
+            const os = Math.max(map.start, matchIndex);
+            const oe = Math.min(map.end, matchEnd);
+            if (os < oe) {
+                let alpha = map.start, rs = 0, re = map.rawText.length;
+                for (let i = 0; i < map.rawText.length; i++) {
+                    if (/[a-z0-9]/i.test(map.rawText[i])) {
+                        if (alpha === os) rs = i;
+                        alpha++;
+                        if (alpha === oe) { re = i + 1; break; }
+                    }
+                }
+                const before = escapeHtml(map.rawText.slice(0, rs));
+                const hi = escapeHtml(map.rawText.slice(rs, re));
+                const after = escapeHtml(map.rawText.slice(re));
+                map.element.innerHTML = `${before}<mark class="reading-highlight">${hi}</mark>${after}`;
+                if (!firstEl) firstEl = map.element.querySelector('mark.reading-highlight');
+            }
+        });
+
+        if (firstEl && viewerArea) {
+            const vr = viewerArea.getBoundingClientRect();
+            const hr = firstEl.getBoundingClientRect();
+            const rt = hr.top - vr.top, rb = hr.bottom - vr.top;
+            if (rt < vr.height * 0.2 || rb > vr.height * 0.8) {
+                viewerArea.scrollTo({ top: viewerArea.scrollTop + rt - vr.height / 3, behavior: 'smooth' });
+            }
+        }
+    }
+
+    /* ─── Click-to-Read ─── */
+    document.getElementById('text-layer').addEventListener('click', e => {
+        let target = e.target;
+        if (target.tagName.toLowerCase() === 'mark') target = target.parentElement;
+        if (target.tagName.toLowerCase() !== 'span') return;
+        if (!sentences || !sentences.length) return;
+
+        const allSpans = Array.from(document.querySelectorAll('.textLayer span'));
+        const ti = allSpans.indexOf(target);
+        if (ti === -1) return;
+
+        const normalize = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        let fullNorm = '';
+        let offsets = [];
+        allSpans.forEach(span => {
+            const raw = span.dataset.originalText !== undefined ? span.dataset.originalText : span.textContent;
+            offsets.push(fullNorm.length);
+            fullNorm += normalize(raw);
+        });
+
+        const clickedOffset = offsets[ti];
+        let cursor = 0, found = -1;
+        for (let i = 0; i < sentences.length; i++) {
+            const tn = normalize(sentences[i]);
+            if (!tn) continue;
+            let mi = fullNorm.indexOf(tn, cursor);
+            if (mi === -1) mi = fullNorm.indexOf(tn, 0);
+            if (mi !== -1) {
+                if (clickedOffset >= mi && clickedOffset < mi + tn.length) { found = i; break; }
+                cursor = mi + tn.length;
+            }
+        }
+        if (found !== -1) startReadingPage(found);
+    });
+
+</script>
 </body>
 </html>

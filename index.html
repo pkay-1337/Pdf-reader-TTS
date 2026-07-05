@@ -833,78 +833,280 @@
 
         .loading-card p { font-size: 14px; font-weight: 500; color: var(--text-secondary); }
 
+        /* ─── Download / Cache Panel ─── */
+        .download-panel {
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            border-radius: var(--radius-md);
+            padding: 14px;
+            margin-top: 12px;
+        }
+        .download-panel-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 10px;
+        }
+        .download-panel-title {
+            font-size: 12px;
+            font-weight: 700;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            color: var(--text-tertiary);
+        }
+        .cache-badge {
+            font-size: 10px;
+            font-weight: 600;
+            padding: 2px 7px;
+            border-radius: 99px;
+            background: var(--success);
+            color: white;
+            display: none;
+        }
+        .cache-badge.visible { display: inline-block; }
+
+        .toggle-row-spaced {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 4px 0;
+            gap: 8px;
+        }
+        .toggle-label-stack {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+        }
+        .toggle-label-stack .tl-main {
+            font-size: 13px;
+            color: var(--text-secondary);
+            font-weight: 500;
+        }
+        .toggle-label-stack .tl-sub {
+            font-size: 11px;
+            color: var(--text-tertiary);
+        }
+
+        .page-range-row {
+            display: flex;
+            gap: 6px;
+            align-items: center;
+            margin-top: 10px;
+        }
+        .page-range-row label {
+            font-size: 12px;
+            color: var(--text-secondary);
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+        .page-range-input {
+            flex: 1;
+            padding: 6px 8px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            background: var(--surface);
+            color: var(--text-primary);
+            font-size: 12px;
+            font-family: 'JetBrains Mono', monospace;
+            outline: none;
+            min-width: 0;
+        }
+        .page-range-input:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-glow); }
+        .page-range-input::placeholder { color: var(--text-tertiary); }
+
+        .btn-download {
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            width: 100%;
+            background: linear-gradient(135deg, #10b981, #059669);
+            color: white;
+            border: none;
+            padding: 10px;
+            border-radius: var(--radius-sm);
+            font-weight: 600;
+            font-size: 12px;
+            cursor: pointer;
+            margin-top: 10px;
+            transition: all var(--transition);
+            outline: none;
+        }
+        .btn-download:hover { filter: brightness(1.08); transform: translateY(-1px); }
+        .btn-download:active { transform: translateY(0); }
+        .btn-download:disabled { opacity: 0.5; cursor: not-allowed; transform: none; }
+
+        .download-progress {
+            display: none;
+            flex-direction: column;
+            gap: 5px;
+            margin-top: 8px;
+        }
+        .download-progress.active { display: flex; }
+        .dl-progress-track { width: 100%; height: 4px; border-radius: 999px; background: var(--border); overflow: hidden; }
+        .dl-progress-fill { height: 100%; width: 0%; border-radius: 999px; background: linear-gradient(90deg, #6ee7b7, #10b981); transition: width 0.3s ease; }
+        .dl-status-text { font-size: 11px; color: var(--text-tertiary); display: flex; align-items: center; gap: 6px; }
+        .dl-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--success); animation: pulse 1.2s ease-in-out infinite; flex-shrink: 0; }
+
         /* ─── Mobile ─── */
         .mobile-nav-bar {
             display: none;
             position: fixed;
             bottom: 0; left: 0; right: 0;
-            height: 56px;
+            height: 64px;
             background: var(--surface);
             border-top: 1px solid var(--border);
             z-index: 25;
             align-items: center;
-            justify-content: space-around;
-            padding: 0 12px;
-            gap: 8px;
+            justify-content: space-between;
+            padding: 0 16px;
+            gap: 10px;
+            box-shadow: 0 -2px 8px rgba(0,0,0,0.08);
         }
 
         .mobile-nav-btn {
             background: var(--surface-2);
             border: 1px solid var(--border);
-            color: var(--text-secondary);
-            font-size: 18px;
-            padding: 8px 16px;
-            border-radius: var(--radius-sm);
+            color: var(--text-primary);
+            font-size: 16px;
+            min-width: 48px;
+            height: 44px;
+            padding: 0 16px;
+            border-radius: var(--radius-md);
             cursor: pointer;
-            transition: background var(--transition);
-            font-weight: 600;
+            transition: background var(--transition), border-color var(--transition);
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
         }
-        .mobile-nav-btn:active { background: var(--accent-soft); }
+        .mobile-nav-btn:active { background: var(--accent-soft); border-color: var(--accent); }
+
+        .mobile-play-btn {
+            flex: 1;
+            background: var(--accent);
+            border: none;
+            color: white;
+            font-size: 13px;
+            height: 44px;
+            padding: 0 12px;
+            border-radius: var(--radius-md);
+            cursor: pointer;
+            transition: filter var(--transition);
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            gap: 6px;
+            max-width: 160px;
+        }
+        .mobile-play-btn:active { filter: brightness(1.15); }
 
         #mobile-page-info {
             font-size: 13px;
             font-weight: 600;
             color: var(--text-primary);
-            background: var(--surface-2);
-            padding: 6px 12px;
-            border-radius: var(--radius-sm);
-            border: 1px solid var(--border);
+            text-align: center;
+            white-space: nowrap;
+            flex-shrink: 0;
         }
+
+        .mobile-menu-btn {
+            background: var(--surface-2);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            font-size: 18px;
+            min-width: 44px;
+            height: 44px;
+            border-radius: var(--radius-md);
+            cursor: pointer;
+            transition: background var(--transition);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            flex-shrink: 0;
+        }
+        .mobile-menu-btn:active { background: var(--accent-soft); }
 
         .sidebar-overlay {
             display: none;
-            position: fixed; inset: 0;
+            position: fixed;
+            top: 0; left: 0; right: 0; bottom: 0;
             background: rgba(0,0,0,0.45);
             z-index: 15; opacity: 0;
             transition: opacity var(--transition);
         }
 
         @media (max-width: 768px) {
+            :root {
+                --topbar-h: 52px;
+                --mobile-nav-h: 64px;
+            }
+
+            .topbar { padding: 0 12px; gap: 8px; }
+            .topbar-logo { display: none; }
+            .topbar-divider { display: none; }
+
+            /* Sidebar slides in below topbar, above bottom nav — nothing gets hidden */
             .sidebar {
                 position: fixed;
-                left: 0; top: 0;
-                height: 100vh;
-                width: var(--sidebar-w) !important;
+                left: 0;
+                top: var(--topbar-h);
+                height: calc(100vh - var(--topbar-h) - var(--mobile-nav-h));
+                width: min(var(--sidebar-w), 92vw) !important;
                 transform: translateX(-100%);
                 z-index: 20;
                 box-shadow: var(--shadow-lg);
                 opacity: 1 !important;
+                border-radius: 0 var(--radius-lg) var(--radius-lg) 0;
             }
             .sidebar.open { transform: translateX(0); }
-            .sidebar.collapsed { transform: translateX(-100%); width: var(--sidebar-w) !important; }
-            .sidebar-overlay.show { display: block; opacity: 1; }
+            .sidebar.collapsed { transform: translateX(-100%); }
+
+            /* Overlay also only covers the space between the two bars */
+            .sidebar-overlay.show {
+                display: block;
+                opacity: 1;
+                top: var(--topbar-h);
+                height: calc(100vh - var(--topbar-h) - var(--mobile-nav-h));
+            }
+
+            /* Sidebar inner: header is fixed-height, footer is fixed-height,
+               content in the middle scrolls freely */
+            .sidebar-header { flex-shrink: 0; }
+            .sidebar-content {
+                flex: 1;
+                overflow-y: auto;
+                -webkit-overflow-scrolling: touch;
+                min-height: 0;        /* needed for flex children to scroll */
+            }
+            .sidebar-footer { flex-shrink: 0; }
+
             .mobile-nav-bar { display: flex; }
-            .pdf-viewer-area { padding: 12px; padding-bottom: 68px; }
-            #search-input { width: 160px; }
-            #search-input:focus { width: 200px; }
+            .pdf-viewer-area { padding: 8px; padding-bottom: calc(var(--mobile-nav-h) + 8px); }
+            #search-input { width: 130px; }
+            #search-input:focus { width: 170px; }
             .topbar-name { display: none; }
-            .topbar-filename { max-width: 160px; }
-            .search-results-panel { width: calc(100vw - 24px); left: 12px; transform: none; }
+            .topbar-filename { max-width: 140px; font-size: 12px; }
+            .search-results-panel { width: calc(100vw - 16px); left: 8px; transform: none; }
+            .btn-danger span { display: none; }
+            .btn-danger { padding: 7px 10px; }
         }
 
         @media (max-width: 480px) {
             .topbar-filename { display: none; }
-            #search-input { width: 130px; }
+            #search-input { width: 100px; }
+            #search-input:focus { width: 140px; }
+            .search-nav-btns { display: none; }
+        }
+
+        /* Very short screens (landscape phone) — tighten controls */
+        @media (max-height: 500px) and (max-width: 900px) {
+            :root { --mobile-nav-h: 56px; }
+            .control-section { padding: 10px 14px; }
+            .sidebar-footer { padding: 8px 14px; }
+            .download-panel { padding: 10px; }
         }
     </style>
 </head>
@@ -990,7 +1192,7 @@
         <!-- Close file -->
         <button class="btn-danger" id="close-file" title="Close document">
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
-            Close
+            <span>Close</span>
         </button>
     </header>
 
@@ -1107,6 +1309,44 @@
                             </div>
                         </div>
                         <audio id="tts-audio-player"></audio>
+
+                        <!-- Audio Cache / Download -->
+                        <div class="download-panel">
+                            <div class="download-panel-header">
+                                <span class="download-panel-title">Audio Cache</span>
+                                <span class="cache-badge" id="cache-badge">Saved</span>
+                            </div>
+
+                            <div class="toggle-row-spaced">
+                                <div class="toggle-label-stack">
+                                    <span class="tl-main">Save audio to disk</span>
+                                    <span class="tl-sub">Cache lines for offline use</span>
+                                </div>
+                                <label class="switch">
+                                    <input type="checkbox" id="save-audio-toggle">
+                                    <span class="slider"></span>
+                                </label>
+                            </div>
+
+                            <div id="save-range-row" class="page-range-row" style="display:none">
+                                <label>Pages</label>
+                                <input type="text" id="page-range-input" class="page-range-input" placeholder="e.g. 5-10">
+                                <button id="download-range-btn" class="btn-download" style="margin-top:0;width:auto;padding:6px 12px">
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+                                    Go
+                                </button>
+                            </div>
+
+                            <div class="download-progress" id="dl-progress">
+                                <div class="dl-progress-track">
+                                    <div class="dl-progress-fill" id="dl-progress-fill"></div>
+                                </div>
+                                <div class="dl-status-text">
+                                    <span class="dl-dot"></span>
+                                    <span id="dl-status-text">Generating…</span>
+                                </div>
+                            </div>
+                        </div>
                     </div>
 
                     <!-- Appearance -->
@@ -1161,10 +1401,20 @@
 
     <!-- Mobile Nav Bar -->
     <div id="mobile-nav-bar" class="mobile-nav-bar">
-        <button id="mobile-prev-page" class="mobile-nav-btn">←</button>
-        <span id="mobile-page-info">Page 0 / 0</span>
-        <button id="mobile-next-page" class="mobile-nav-btn">→</button>
-        <button id="mobile-sidebar-toggle-btn" class="mobile-nav-btn">☰</button>
+        <button id="mobile-prev-page" class="mobile-nav-btn" title="Previous page">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+        </button>
+        <button id="mobile-play-btn" class="mobile-play-btn" title="Play / Stop">
+            <svg id="mobile-play-icon" width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><polygon points="5 3 19 12 5 21 5 3"/></svg>
+            <span id="mobile-play-label">Play</span>
+        </button>
+        <span id="mobile-page-info">0 / 0</span>
+        <button id="mobile-next-page" class="mobile-nav-btn" title="Next page">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+        </button>
+        <button id="mobile-sidebar-toggle-btn" class="mobile-menu-btn" title="Menu">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+        </button>
     </div>
 
 </div><!-- /#reader-screen -->
@@ -1200,6 +1450,11 @@
     let searchCurrentMatch = -1;
     let searchAllPageTexts = {};
     let currentFile = null;
+
+    /* ─── Cache / Download state ─── */
+    let saveAudioEnabled   = false;   // mirrors the toggle
+    let currentFileName    = '';      // PDF file name (set when PDF loads)
+    let isDownloadingRange = false;   // true while batch pre-gen is running
 
     /* TTS constants */
     const BUFFER_DEPTH = 10;
@@ -1251,6 +1506,20 @@
     const pageJumpBtn       = document.getElementById('page-jump-btn');
     const speedSlider       = document.getElementById('speed-slider');
     const speedVal          = document.getElementById('speed-val');
+
+    /* cache panel */
+    const saveAudioToggle   = document.getElementById('save-audio-toggle');
+    const saveRangeRow      = document.getElementById('save-range-row');
+    const pageRangeInput    = document.getElementById('page-range-input');
+    const downloadRangeBtn  = document.getElementById('download-range-btn');
+    const dlProgress        = document.getElementById('dl-progress');
+    const dlProgressFill    = document.getElementById('dl-progress-fill');
+    const dlStatusText      = document.getElementById('dl-status-text');
+    const cacheBadge        = document.getElementById('cache-badge');
+
+    /* mobile play */
+    const mobilePlayBtn     = document.getElementById('mobile-play-btn');
+    const mobilePlayLabel   = document.getElementById('mobile-play-label');
 
     /* ─── Loading overlay ─── */
     function showLoading(msg = 'Loading…') {
@@ -1321,7 +1590,8 @@
 
     /* ─── Mobile Page Info ─── */
     function updateMobilePageInfo() {
-        mobilePageInfo.textContent = pdfDoc ? `Page ${pageNum} / ${pdfDoc.numPages}` : 'Page 0 / 0';
+        mobilePageInfo.textContent = pdfDoc ? `${pageNum} / ${pdfDoc.numPages}` : '0 / 0';
+        updateCacheBadge();
     }
 
     /* ─── Page Jump ─── */
@@ -1408,8 +1678,9 @@
             const task = pdfjsLib.getDocument(fileUrl);
             pdfDoc = await task.promise;
 
-            topbarFilename.textContent = file.name || 'Document';
-            document.title = `DocReader Pro — ${file.name}`;
+            currentFileName = file.name || 'Document';
+            topbarFilename.textContent = currentFileName;
+            document.title = `DocReader Pro — ${currentFileName}`;
 
             document.getElementById('page-count').textContent = pdfDoc.numPages;
             pageJumpInput.max = pdfDoc.numPages;
@@ -2049,19 +2320,46 @@
     mobilePrevBtn.addEventListener('click', () => goToPage(-1));
     mobileNextBtn.addEventListener('click', () => goToPage(1));
 
-    document.addEventListener('keydown', e => {
+	document.addEventListener('keydown', e => {
         const tag = e.target.tagName.toLowerCase();
         if (tag === 'input' || tag === 'select' || tag === 'textarea') return;
 
         if (e.key === 'Escape') { resetUI(); return; }
         if (e.key === 's' || e.key === 'S') { toggleSidebar(); return; }
         if (!pdfDoc) return;
+        
+        // Page navigation & Zoom
         if (e.key === 'ArrowLeft'  || e.key.toLowerCase() === 'h') goToPage(-1);
         if (e.key === 'ArrowRight' || e.key.toLowerCase() === 'l') goToPage(1);
         if (e.key === '+' || e.key === '=') setZoom(scale + 0.1);
         if (e.key === '-' || e.key === '_') setZoom(scale - 0.1);
-    });
+        
+        // Play/Pause toggle
+        if (e.key === ' ') { e.preventDefault(); playBtn.click(); }
 
+        // Vim-style TTS line navigation (j = down/next, k = up/prev)
+        if (e.key.toLowerCase() === 'j' || e.key.toLowerCase() === 'k') {
+            if (!sentences || sentences.length === 0) return;
+            
+            let newIndex = currentIndex;
+            
+            if (e.key.toLowerCase() === 'j') {
+                newIndex = Math.min(currentIndex + 1, sentences.length - 1);
+            } else if (e.key.toLowerCase() === 'k') {
+                newIndex = Math.max(currentIndex - 1, 0);
+            }
+
+            if (newIndex !== currentIndex || !isPlaying) {
+                // 1. Instantly update the visual highlight and progress text
+                currentIndex = newIndex; 
+                highlightActiveSentence(currentIndex, sentences);
+                updateTtsStatus();
+                
+                // 2. Trigger the audio pipeline to start buffering/playing
+                startReadingPage(currentIndex);
+            }
+        }
+    });
     /* ─── File Handling ─── */
     fileInput.addEventListener('change', e => {
         const file = e.target.files[0];
@@ -2091,6 +2389,7 @@
         clearPageAudioCache();
         pdfDoc = null;
         currentFile = null;
+        currentFileName = '';
         fileInput.value = '';
         clearSavedDocument();
         readerScreen.classList.remove('active');
@@ -2105,6 +2404,8 @@
         searchAllPageTexts = {};
         pageNum = 1;
         pdfOutline = null;
+        cacheBadge.classList.remove('visible');
+        syncMobilePlayBtn();
     }
 
     /* ─── TTS ─── */
@@ -2152,6 +2453,7 @@
 
         playBtn.textContent = '⏹ Stop';
         ttsStatus.classList.add('active');
+        syncMobilePlayBtn();
 
         const required = Math.min(REQUIRED_START_BUFFER, sentences.length - currentIndex);
         let readyCount = 0;
@@ -2190,14 +2492,23 @@
 
     async function fetchSentenceAudio(idx) {
         try {
-            const raw = sentences[idx];
+            const raw  = sentences[idx];
             const text = /^\d{1,2}$/.test(raw.trim()) ? `Page ${raw.trim()}.` : raw;
             const voice = document.getElementById('voice-selector').value;
             const speed = parseFloat(document.getElementById('speed-slider').value);
 
+            /* Build headers — include cache metadata when a PDF is loaded */
+            const headers = { 'Content-Type': 'application/json' };
+            if (currentFileName) {
+                headers['X-Book-Name']   = currentFileName;
+                headers['X-Page-Number'] = String(pageNum);
+                headers['X-Line-Number'] = String(idx);
+                headers['X-Save-Audio']  = saveAudioEnabled ? 'true' : 'false';
+            }
+
             const res = await fetch('http://127.0.0.1:8000/synthesize', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
+                headers,
                 body: JSON.stringify({ text, voice, speed })
             });
             if (!res.ok) throw new Error(`Backend ${res.status}`);
@@ -2261,12 +2572,196 @@
         audioPlayer.pause();
         playBtn.textContent = '▶ Play Page';
         ttsStatus.classList.remove('active');
+        syncMobilePlayBtn();
     }
 
     function clearPageAudioCache() {
         if (audioCache) Object.values(audioCache).forEach(v => { if (v && typeof v === 'string' && v.startsWith('blob:')) URL.revokeObjectURL(v); });
         audioCache = {};
         inFlight = 0;
+    }
+
+    /* ─── Mobile play button sync ─── */
+    function syncMobilePlayBtn() {
+        if (isPlaying) {
+            mobilePlayBtn.style.background = '#ef4444';
+            mobilePlayLabel.textContent = 'Stop';
+            mobilePlayBtn.querySelector('svg').innerHTML = '<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>';
+        } else {
+            mobilePlayBtn.style.background = '';
+            mobilePlayLabel.textContent = 'Play';
+            mobilePlayBtn.querySelector('svg').innerHTML = '<polygon points="5 3 19 12 5 21 5 3"/>';
+        }
+    }
+
+    mobilePlayBtn.addEventListener('click', () => {
+        if (isPlaying) { stopPipeline(); return; }
+        if (!pdfDoc || !currentPageText.trim()) { return; }
+        let si = currentIndex >= sentences.length ? 0 : currentIndex;
+        startReadingPage(si);
+    });
+
+    /* ─── Cache badge update ─── */
+    async function updateCacheBadge() {
+        if (!currentFileName || !pdfDoc) { cacheBadge.classList.remove('visible'); return; }
+        try {
+            const res = await fetch(`http://127.0.0.1:8000/cache_status?book_name=${encodeURIComponent(currentFileName)}&page=${pageNum}`);
+            if (!res.ok) { cacheBadge.classList.remove('visible'); return; }
+            const data = await res.json();
+            if (data.cached_lines && data.cached_lines.length > 0) {
+                cacheBadge.textContent = `${data.cached_lines.length} saved`;
+                cacheBadge.classList.add('visible');
+            } else {
+                cacheBadge.classList.remove('visible');
+            }
+        } catch (e) {
+            cacheBadge.classList.remove('visible');
+        }
+    }
+
+    /* ─── Save toggle ─── */
+    saveAudioToggle.addEventListener('change', e => {
+        saveAudioEnabled = e.target.checked;
+        saveRangeRow.style.display = saveAudioEnabled ? 'flex' : 'none';
+    });
+
+    /* ─── Batch download / pre-generate ─── */
+    downloadRangeBtn.addEventListener('click', async () => {
+        if (!pdfDoc || !currentFileName || isDownloadingRange) return;
+
+        const rangeStr = pageRangeInput.value.trim();
+        if (!rangeStr) { pageRangeInput.focus(); return; }
+
+        const match = rangeStr.match(/^(\d+)\s*[-–]\s*(\d+)$/);
+        if (!match) {
+            pageRangeInput.style.borderColor = 'var(--danger)';
+            setTimeout(() => pageRangeInput.style.borderColor = '', 1500);
+            return;
+        }
+
+        const fromPage = Math.max(1, parseInt(match[1], 10));
+        const toPage   = Math.min(pdfDoc.numPages, parseInt(match[2], 10));
+        if (fromPage > toPage) return;
+
+        const voice = document.getElementById('voice-selector').value;
+        const speed = parseFloat(document.getElementById('speed-slider').value);
+
+        isDownloadingRange = true;
+        downloadRangeBtn.disabled = true;
+        dlProgress.classList.add('active');
+
+        /* For each page in range, extract sentences using the same algorithm as renderPage */
+        const totalPages = toPage - fromPage + 1;
+        let donePages = 0;
+
+        for (let p = fromPage; p <= toPage; p++) {
+            dlStatusText.textContent = `Page ${p} / ${toPage}…`;
+            dlProgressFill.style.width = Math.round((donePages / totalPages) * 100) + '%';
+
+            try {
+                const page       = await pdfDoc.getPage(p);
+                const textContent = await page.getTextContent();
+                const pageSentences = extractSentencesFromTextContent(textContent, page);
+
+                for (let si = 0; si < pageSentences.length; si++) {
+                    const raw  = pageSentences[si];
+                    const text = /^\d{1,2}$/.test(raw.trim()) ? `Page ${raw.trim()}.` : raw;
+
+                    try {
+                        await fetch('http://127.0.0.1:8000/synthesize', {
+                            method: 'POST',
+                            headers: {
+                                'Content-Type':  'application/json',
+                                'X-Book-Name':   currentFileName,
+                                'X-Page-Number': String(p),
+                                'X-Line-Number': String(si),
+                                'X-Save-Audio':  'true',
+                                'X-Page-Range':  rangeStr,
+                            },
+                            body: JSON.stringify({ text, voice, speed })
+                        });
+                    } catch (e) {
+                        console.warn(`[DL] p${p} s${si} failed:`, e);
+                    }
+                }
+            } catch (e) {
+                console.warn(`[DL] Page ${p} extract failed:`, e);
+            }
+
+            donePages++;
+        }
+
+        dlProgressFill.style.width = '100%';
+        dlStatusText.textContent   = `Done! ${totalPages} page(s) cached.`;
+
+        setTimeout(() => {
+            dlProgress.classList.remove('active');
+            dlProgressFill.style.width = '0%';
+            isDownloadingRange = false;
+            downloadRangeBtn.disabled = false;
+            updateCacheBadge();
+        }, 2000);
+    });
+
+    /* ─── Shared text extraction (same algorithm as renderPage, callable standalone) ─── */
+    function extractSentencesFromTextContent(textContent, page) {
+        const viewport    = page.getViewport({ scale: 1 });
+        const fontSizes   = textContent.items.map(i => Math.abs(i.transform[3])).filter(s => s > 0).sort((a,b) => a-b);
+        const baseFontSize = fontSizes.length ? fontSizes[Math.floor(fontSizes.length / 2)] : 12;
+
+        const Y_TOL = 5;
+        const sorted = [...textContent.items].sort((a,b) => {
+            const dy = a.transform[5] - b.transform[5];
+            if (Math.abs(dy) > Y_TOL) return b.transform[5] - a.transform[5];
+            return a.transform[4] - b.transform[4];
+        });
+
+        let lines = [];
+        let curLine = { y: null, items: [] };
+        sorted.forEach(item => {
+            if (!item.str.trim()) return;
+            const y = item.transform[5];
+            if (curLine.y === null || Math.abs(curLine.y - y) > Y_TOL) {
+                if (curLine.items.length) lines.push(curLine);
+                curLine = { y, items: [item] };
+            } else {
+                curLine.items.push(item);
+            }
+        });
+        if (curLine.items.length) lines.push(curLine);
+
+        let structuredText = '';
+        const unscaledH = viewport.viewBox ? viewport.viewBox[3] : 800;
+        let prevY = null;
+
+        lines.forEach(line => {
+            let lineText = line.items.map(i => i.str).join(' ').replace(/\s+/g, ' ').trim();
+            if (!lineText) return;
+            const avgFS = line.items.reduce((s,i) => s + Math.abs(i.transform[3]), 0) / line.items.length;
+            const isTop = line.y > (unscaledH - 60);
+            const isBot = line.y < 60;
+            const isNum = /^[\[\(\-–—\s]*\d+[\]\)\-–—\s]*$/.test(lineText);
+            if ((isTop || isBot) && isNum) return;
+
+            const isHeader  = avgFS > baseFontSize * 1.2;
+            const isList    = /^[\u2022\u25E6\u25A0\-\*]\s/.test(lineText) || /^\d+\.\s/.test(lineText);
+            const isNewPara = prevY !== null && (prevY - line.y) > baseFontSize * 1.5;
+            prevY = line.y;
+
+            if (isHeader || isList) {
+                structuredText += `\n${lineText}.\n`;
+            } else if (isNewPara) {
+                structuredText += (!structuredText.trim().match(/[.!?]$/) ? '.\n' : '\n') + lineText;
+            } else if (structuredText.endsWith('-')) {
+                structuredText = structuredText.slice(0, -1) + lineText;
+            } else if (structuredText.endsWith('\n') || !structuredText) {
+                structuredText += lineText;
+            } else {
+                structuredText += ' ' + lineText;
+            }
+        });
+
+        return splitIntoTTSChunks(structuredText, 150);
     }
 
     /* ─── TTS Highlighting ─── */
