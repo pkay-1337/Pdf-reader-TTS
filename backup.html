@@ -2,13 +2,14 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
     <title>Local AI PDF Reader</title>
 
     <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf_viewer.min.css">
 
     <style>
-        /* Define color variables for light and dark themes */
+        /* ---------- Color variables ---------- */
         :root {
             --bg-color: #f0f4f8;
             --text-color: #1e293b;
@@ -23,6 +24,8 @@
             --canvas-bg: white;
             --canvas-shadow: rgba(0, 0, 0, 0.08);
             --text-muted: #64748b;
+            --overlay-bg: rgba(0, 0, 0, 0.4);
+            --mobile-bar-height: 56px;
         }
 
         [data-theme="dark"] {
@@ -39,6 +42,7 @@
             --canvas-bg: #1e293b;
             --canvas-shadow: rgba(0, 0, 0, 0.5);
             --text-muted: #94a3b8;
+            --overlay-bg: rgba(0, 0, 0, 0.7);
         }
 
         * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -54,7 +58,7 @@
         .screen { display: none; width: 100%; height: 100vh; }
         .screen.active { display: flex; }
 
-        /* Welcome Screen UI */
+        /* Welcome screen */
         #welcome-screen { justify-content: center; align-items: center; padding: 40px; }
         .upload-card {
             background: var(--card-bg); padding: 60px 40px; border-radius: 16px;
@@ -74,15 +78,16 @@
         .upload-btn:hover { filter: brightness(1.1); transform: translateY(-1px); }
         .upload-btn:active { transform: translateY(1px); }
 
-        /* Reader Screen UI */
+        /* Reader screen layout */
         #reader-screen { flex-direction: row; }
 
+        /* Sidebar (desktop) */
         .sidebar {
             position: relative; flex: 0 0 260px; width: 260px; height: 100vh;
-            background: var(--sidebar-bg); border-right: 1px solid var(--sidebar-border); padding: 28px 20px;
-            display: flex; flex-direction: column; justify-content: space-between;
+            background: var(--sidebar-bg); border-right: 1px solid var(--sidebar-border);
+            padding: 28px 20px; display: flex; flex-direction: column; justify-content: space-between;
             box-shadow: 4px 0 24px rgba(30, 41, 59, 0.03); z-index: 10;
-            overflow-y: auto;
+            overflow-y: auto; transition: transform 0.3s ease;
         }
         .sidebar-top { display: flex; flex-direction: column; gap: 18px; }
         .sidebar-bottom { display: flex; flex-direction: column; align-items: center; gap: 10px; }
@@ -91,100 +96,52 @@
         .brand-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--primary-accent); box-shadow: 0 0 0 4px rgba(37,99,235,0.15); }
         .brand-name { font-size: 13px; font-weight: 700; color: var(--brand-color); letter-spacing: 0.03em; text-transform: uppercase; }
 
-        /* Dark Mode Toggle Container */
         .theme-toggle-container {
             display: flex; align-items: center; justify-content: space-between;
             background: var(--panel-bg); padding: 10px 15px; border-radius: 10px;
             border: 1px solid var(--sidebar-border); margin-bottom: 4px;
         }
-        .theme-toggle-label {
-            font-size: 12px; font-weight: 700; color: var(--text-color);
-            text-transform: uppercase; letter-spacing: 0.06em;
-        }
-        .switch {
-            position: relative; display: inline-block; width: 44px; height: 24px;
-        }
+        .theme-toggle-label { font-size: 12px; font-weight: 700; color: var(--text-color); text-transform: uppercase; letter-spacing: 0.06em; }
+        .switch { position: relative; display: inline-block; width: 44px; height: 24px; }
         .switch input { opacity: 0; width: 0; height: 0; }
-        .slider {
-            position: absolute; cursor: pointer; inset: 0; background-color: #cbd5e1;
-            transition: .3s; border-radius: 24px;
-        }
-        .slider:before {
-            position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px;
-            background-color: white; transition: .3s; border-radius: 50%;
-        }
+        .slider { position: absolute; cursor: pointer; inset: 0; background-color: #cbd5e1; transition: .3s; border-radius: 24px; }
+        .slider:before { position: absolute; content: ""; height: 18px; width: 18px; left: 3px; bottom: 3px; background-color: white; transition: .3s; border-radius: 50%; }
         input:checked + .slider { background-color: var(--primary-accent); }
         input:checked + .slider:before { transform: translateX(20px); }
 
-        /* Control Panels */
         .control-panel {
             display: flex; flex-direction: column; gap: 10px;
             background: var(--panel-bg); padding: 15px; border-radius: 10px; border: 1px solid var(--sidebar-border);
         }
-        .control-panel label {
-            font-size: 12px; font-weight: 700; color: var(--text-color);
-            display: flex; justify-content: space-between; text-transform: uppercase; letter-spacing: 0.06em;
-        }
+        .control-panel label { font-size: 12px; font-weight: 700; color: var(--text-color); display: flex; justify-content: space-between; text-transform: uppercase; letter-spacing: 0.06em; }
         .control-panel label span { color: var(--primary-accent); font-weight: 700; }
 
-        input[type="range"] {
-            width: 100%; cursor: pointer; accent-color: var(--primary-accent);
-        }
+        input[type="range"] { width: 100%; cursor: pointer; accent-color: var(--primary-accent); }
 
         .zoom-btn-row { display: flex; gap: 8px; }
-        .zoom-btn {
-            flex: 1; background: var(--sidebar-bg); border: 1px solid var(--btn-border); color: var(--text-color);
-            padding: 6px 0; border-radius: 6px; font-size: 15px; font-weight: 600;
-            cursor: pointer; transition: all 0.15s ease; line-height: 1;
-        }
+        .zoom-btn { flex: 1; background: var(--sidebar-bg); border: 1px solid var(--btn-border); color: var(--text-color); padding: 6px 0; border-radius: 6px; font-size: 15px; font-weight: 600; cursor: pointer; transition: all 0.15s ease; line-height: 1; }
         .zoom-btn:hover { background: var(--secondary-accent); }
         .zoom-btn:active { transform: translateY(1px); }
 
         #play-page-btn {
             background: var(--primary-accent); color: white; border: none; padding: 12px;
             border-radius: 8px; font-weight: 600; font-size: 14px; cursor: pointer;
-            transition: all 0.2s ease; width: 100%;
-            box-shadow: 0 2px 4px rgba(37, 99, 235, 0.15);
+            transition: all 0.2s ease; width: 100%; box-shadow: 0 2px 4px rgba(37, 99, 235, 0.15);
         }
         #play-page-btn:hover { filter: brightness(1.1); }
         #play-page-btn:active { transform: translateY(1px); }
 
-        .tts-status {
-            display: none; flex-direction: column; gap: 6px; margin-top: 2px;
-        }
+        .tts-status { display: none; flex-direction: column; gap: 6px; margin-top: 2px; }
         .tts-status.active { display: flex; }
-        .tts-progress-track {
-            width: 100%; height: 6px; border-radius: 999px; background: var(--sidebar-border); overflow: hidden;
-        }
-        .tts-progress-fill {
-            height: 100%; width: 0%; border-radius: 999px;
-            background: linear-gradient(90deg, #60a5fa, var(--primary-accent));
-            transition: width 0.25s ease;
-        }
-        .tts-status-text {
-            font-size: 12px; color: var(--text-muted); text-align: center;
-            display: flex; align-items: center; justify-content: center; gap: 6px;
-        }
-        .tts-status-text::before {
-            content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--primary-accent);
-            animation: tts-pulse 1.2s ease-in-out infinite;
-        }
-        @keyframes tts-pulse {
-            0%, 100% { opacity: 0.3; transform: scale(0.85); }
-            50% { opacity: 1; transform: scale(1); }
-        }
+        .tts-progress-track { width: 100%; height: 6px; border-radius: 999px; background: var(--sidebar-border); overflow: hidden; }
+        .tts-progress-fill { height: 100%; width: 0%; border-radius: 999px; background: linear-gradient(90deg, #60a5fa, var(--primary-accent)); transition: width 0.25s ease; }
+        .tts-status-text { font-size: 12px; color: var(--text-muted); text-align: center; display: flex; align-items: center; justify-content: center; gap: 6px; }
+        .tts-status-text::before { content: ''; width: 7px; height: 7px; border-radius: 50%; background: var(--primary-accent); animation: tts-pulse 1.2s ease-in-out infinite; }
+        @keyframes tts-pulse { 0%, 100% { opacity: 0.3; transform: scale(0.85); } 50% { opacity: 1; transform: scale(1); } }
 
-        .page-info {
-            font-size: 17px; font-weight: 700; color: var(--brand-color); background: var(--secondary-accent);
-            padding: 10px 16px; border-radius: 8px; width: 100%; text-align: center;
-            border: 1px solid var(--btn-border);
-        }
+        .page-info { font-size: 17px; font-weight: 700; color: var(--brand-color); background: var(--secondary-accent); padding: 10px 16px; border-radius: 8px; width: 100%; text-align: center; border: 1px solid var(--btn-border); }
         .page-nav-row { display: flex; gap: 8px; width: 100%; }
-        .page-nav-btn {
-            flex: 1; background: var(--sidebar-bg); border: 1px solid var(--btn-border); color: var(--text-color);
-            padding: 8px 0; border-radius: 8px; font-size: 14px; font-weight: 600;
-            cursor: pointer; transition: all 0.15s ease;
-        }
+        .page-nav-btn { flex: 1; background: var(--sidebar-bg); border: 1px solid var(--btn-border); color: var(--text-color); padding: 8px 0; border-radius: 8px; font-size: 14px; font-weight: 600; cursor: pointer; transition: all 0.15s ease; }
         .page-nav-btn:hover:not(:disabled) { background: var(--secondary-accent); }
         .page-nav-btn:disabled { opacity: 0.4; cursor: not-allowed; }
 
@@ -198,11 +155,11 @@
         button.close-btn:hover { background: #fef2f2; border-color: #ef4444; }
         [data-theme="dark"] button.close-btn:hover { background: #7f1d1d; color: #fca5a5; }
 
-        /* PDF Canvas Container */
+        /* PDF viewer area */
         .pdf-viewer-area {
             flex: 1 1 auto; height: 100vh; padding: 40px;
             display: flex; justify-content: center; align-items: flex-start;
-            overflow: auto;
+            overflow: auto; background: var(--bg-color);
         }
         #pdf-container {
             position: relative; background: var(--canvas-bg); box-shadow: 0 20px 25px -5px var(--canvas-shadow);
@@ -210,79 +167,100 @@
             flex-shrink: 0;
             transition: filter 0.3s ease;
         }
-        
-        /* Dark mode conversion rule to invert standard white backgrounds of PDFs safely */
-        [data-theme="dark"] #pdf-container {
-            filter: invert(0.9) hue-rotate(180deg);
-        }
+        [data-theme="dark"] #pdf-container { filter: invert(0.9) hue-rotate(180deg); }
 
         canvas { display: block; }
 
         .textLayer {
-            position: absolute;
-            inset: 0;
-            overflow: hidden;
-            line-height: 1;
-            pointer-events: auto;
-            user-select: text;
-            opacity: 1;
+            position: absolute; inset: 0; overflow: hidden;
+            line-height: 1; pointer-events: auto; user-select: text; opacity: 1;
         }
-
-        .textLayer span,
-        .textLayer br {
-            position: absolute;
-            white-space: pre;
-            transform-origin: 0% 0%;
-            color: transparent;
-            cursor: text;
+        .textLayer span, .textLayer br {
+            position: absolute; white-space: pre; transform-origin: 0% 0%;
+            color: transparent; cursor: text;
         }
-
-        ::selection {
-            background: rgba(37, 99, 235, 0.35);
-        }
-
-        .textLayer ::selection {
-            background: rgba(37, 99, 235, 0.35);
-        }
+        ::selection { background: rgba(37, 99, 235, 0.35); }
+        .textLayer ::selection { background: rgba(37, 99, 235, 0.35); }
 
         mark.reading-highlight {
             background-color: rgba(59, 130, 246, 0.32) !important;
-            mix-blend-mode: multiply;
-            border-radius: 2px;
-            color: transparent !important;
+            mix-blend-mode: multiply; border-radius: 2px; color: transparent !important;
         }
-        
         .voice-selector {
-            width: 100%;
-            padding: 8px 12px;
-            border: 1px solid var(--btn-border);
-            border-radius: 6px;
-            background-color: var(--sidebar-bg);
-            color: var(--text-color);
-            font-size: 13px;
-            font-weight: 600;
-            cursor: pointer;
-            outline: none;
-            transition: all 0.2s ease;
-            margin-bottom: 4px;
+            width: 100%; padding: 8px 12px; border: 1px solid var(--btn-border);
+            border-radius: 6px; background-color: var(--sidebar-bg); color: var(--text-color);
+            font-size: 13px; font-weight: 600; cursor: pointer; outline: none;
+            transition: all 0.2s ease; margin-bottom: 4px;
         }
-        .voice-selector:focus {
-            border-color: var(--primary-accent);
-            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+        .voice-selector:focus { border-color: var(--primary-accent); box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1); }
+        .textLayer span { cursor: pointer; border-radius: 2px; transition: background-color 0.1s ease; }
+        .textLayer span:hover { background-color: rgba(37, 99, 235, 0.15); }
+
+        /* Sidebar overlay (mobile) */
+        .sidebar-overlay {
+            display: none; position: fixed; inset: 0; background: var(--overlay-bg);
+            z-index: 15; opacity: 0; transition: opacity 0.3s ease;
         }
-        
-        .textLayer span {
-            cursor: pointer;
-            border-radius: 2px;
-            transition: background-color 0.1s ease;
+
+        /* ---------- Mobile navigation bar ---------- */
+        .mobile-nav-bar {
+            display: none; /* hidden on desktop */
+            position: fixed; bottom: 0; left: 0; right: 0;
+            height: var(--mobile-bar-height); background: var(--sidebar-bg);
+            border-top: 1px solid var(--sidebar-border);
+            z-index: 25;
+            align-items: center; justify-content: space-around;
+            padding: 0 8px;
         }
-        .textLayer span:hover {
-            background-color: rgba(37, 99, 235, 0.15);
+        .mobile-nav-btn {
+            background: var(--panel-bg); border: 1px solid var(--btn-border);
+            color: var(--text-color); font-size: 20px; font-weight: 600;
+            padding: 8px 16px; border-radius: 8px; cursor: pointer;
+            line-height: 1; transition: background 0.15s;
+        }
+        .mobile-nav-btn:active { background: var(--secondary-accent); }
+        #mobile-page-info {
+            font-size: 16px; font-weight: 700; color: var(--brand-color);
+            background: var(--secondary-accent); padding: 6px 12px; border-radius: 8px;
+            text-align: center; border: 1px solid var(--btn-border);
+        }
+
+        /* ---------- Responsive styles ---------- */
+        @media (max-width: 768px) {
+            .sidebar {
+                position: fixed; left: 0; top: 0; height: 100vh; width: 280px;
+                transform: translateX(-100%);
+                z-index: 20;
+                box-shadow: 4px 0 20px rgba(0,0,0,0.2);
+            }
+            .sidebar.open { transform: translateX(0); }
+            .sidebar-overlay.show { display: block; opacity: 1; }
+
+            /* Show the mobile bottom bar */
+            .mobile-nav-bar {
+                display: flex;
+            }
+
+            /* Adjust viewer area to avoid being covered by the bar */
+            .pdf-viewer-area {
+                padding: 12px;
+                padding-bottom: calc(var(--mobile-bar-height) + 12px);
+                width: 100%;
+            }
+
+            /* Allow PDF to be wider than viewport for readability */
+            #pdf-container {
+                max-width: none;
+                height: auto;
+            }
+
+            .upload-card { padding: 36px 20px; }
         }
     </style>
 </head>
 <body>
 
+    <!-- Welcome Screen -->
     <div id="welcome-screen" class="screen active">
         <div class="upload-card">
             <h1>AI PDF Reader</h1>
@@ -292,15 +270,16 @@
         </div>
     </div>
 
+    <!-- Reader Screen -->
     <div id="reader-screen" class="screen">
-        <aside class="sidebar">
+        <!-- Sidebar with all controls -->
+        <aside class="sidebar" id="sidebar">
             <div class="sidebar-top">
                 <div class="brand">
                     <div class="brand-dot"></div>
                     <div class="brand-name">AI PDF Reader</div>
                 </div>
 
-                <!-- NEW: Dark mode toggle option in sidebar -->
                 <div class="theme-toggle-container">
                     <span class="theme-toggle-label">Dark Mode</span>
                     <label class="switch">
@@ -337,7 +316,6 @@
                             <option value="af_sarah">Sarah</option>
                             <option value="af_sky">Sky</option>
                         </optgroup>
-                        
                         <optgroup label="🇺🇸 US Male">
                             <option value="am_adam">Adam</option>
                             <option value="am_echo">Echo</option>
@@ -349,14 +327,12 @@
                             <option value="am_puck">Puck</option>
                             <option value="am_santa">Santa</option>
                         </optgroup>
-
                         <optgroup label="🇬🇧 UK Female">
                             <option value="bf_alice">Alice</option>
                             <option value="bf_emma">Emma</option>
                             <option value="bf_isabella">Isabella</option>
                             <option value="bf_lily">Lily</option>
                         </optgroup>
-
                         <optgroup label="🇬🇧 UK Male">
                             <option value="bm_daniel">Daniel</option>
                             <option value="bm_fable">Fable</option>
@@ -399,17 +375,31 @@
             </div>
         </aside>
 
-        <main class="pdf-viewer-area">
+        <!-- Overlay for mobile sidebar -->
+        <div class="sidebar-overlay" id="sidebar-overlay"></div>
+
+        <!-- PDF viewer -->
+        <main class="pdf-viewer-area" id="pdf-viewer-area">
             <div id="pdf-container">
                 <canvas id="pdf-canvas"></canvas>
                 <div id="text-layer" class="textLayer"></div>
             </div>
         </main>
+
+        <!-- Mobile bottom navigation bar -->
+        <div id="mobile-nav-bar" class="mobile-nav-bar">
+            <button id="mobile-prev-page" class="mobile-nav-btn">←</button>
+            <span id="mobile-page-info">Page 0 / 0</span>
+            <button id="mobile-next-page" class="mobile-nav-btn">→</button>
+            <button id="mobile-sidebar-toggle-btn" class="mobile-nav-btn">☰</button>
+        </div>
     </div>
 
     <script>
+        // PDF.js worker
         pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
+        // State
         let isPlaying = false;
         let isAutoContinuing = false; 
         let pdfDoc = null;
@@ -418,10 +408,11 @@
         let pageNumPending = null;
         let scale = 1.5;
 
+        // DOM references
         const welcomeScreen = document.getElementById('welcome-screen');
         const readerScreen = document.getElementById('reader-screen');
         const fileInput = document.getElementById('pdf-upload');
-        const viewerArea = document.querySelector('.pdf-viewer-area');
+        const viewerArea = document.getElementById('pdf-viewer-area');
 
         const zoomSlider = document.getElementById('zoom-slider');
         const zoomVal = document.getElementById('zoom-val');
@@ -432,16 +423,22 @@
         const prevPageBtn = document.getElementById('prev-page-btn');
         const nextPageBtn = document.getElementById('next-page-btn');
 
-        // --- Dark Mode Switch Script Logic ---
+        const sidebar = document.getElementById('sidebar');
+        const sidebarOverlay = document.getElementById('sidebar-overlay');
+
+        // Mobile nav bar elements
+        const mobilePrevBtn = document.getElementById('mobile-prev-page');
+        const mobileNextBtn = document.getElementById('mobile-next-page');
+        const mobilePageInfo = document.getElementById('mobile-page-info');
+        const mobileToggleBtn = document.getElementById('mobile-sidebar-toggle-btn');
+
+        // Dark mode
         const themeToggleCheckbox = document.getElementById('theme-toggle-checkbox');
-        
-        // Load initial preferred configuration from storage or fallback to system settings
         const currentTheme = localStorage.getItem('theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
         if (currentTheme === 'dark') {
             document.documentElement.setAttribute('data-theme', 'dark');
             themeToggleCheckbox.checked = true;
         }
-
         themeToggleCheckbox.addEventListener('change', (e) => {
             if (e.target.checked) {
                 document.documentElement.setAttribute('data-theme', 'dark');
@@ -452,24 +449,43 @@
             }
         });
 
-        // --- 1. Database Setup ---
+        // Sidebar toggle for mobile
+        function openSidebar() {
+            sidebar.classList.add('open');
+            sidebarOverlay.classList.add('show');
+        }
+        function closeSidebar() {
+            sidebar.classList.remove('open');
+            sidebarOverlay.classList.remove('show');
+        }
+        mobileToggleBtn.addEventListener('click', () => {
+            sidebar.classList.contains('open') ? closeSidebar() : openSidebar();
+        });
+        sidebarOverlay.addEventListener('click', closeSidebar);
+
+        // Sync page info to mobile bar
+        function updateMobilePageInfo() {
+            if (pdfDoc) {
+                mobilePageInfo.textContent = `Page ${pageNum} / ${pdfDoc.numPages}`;
+            } else {
+                mobilePageInfo.textContent = 'Page 0 / 0';
+            }
+        }
+
+        // IndexedDB persistence
         let db;
         const dbName = "LocalPDFReaderDB";
         const request = indexedDB.open(dbName, 1);
-
         request.onupgradeneeded = (event) => {
             db = event.target.result;
             db.createObjectStore("documents");
         };
-
         request.onsuccess = (event) => {
             db = event.target.result;
             loadSavedDocument();
         };
-
         request.onerror = (event) => console.error("IndexedDB error:", event.target.error);
 
-        // --- 2. Database Helpers ---
         function saveToDB(file, page, currentScale, sentenceIndex = 0) {
             if (!db) return;
             const transaction = db.transaction(["documents"], "readwrite");
@@ -481,7 +497,6 @@
             if (!db) return;
             const transaction = db.transaction(["documents"], "readwrite");
             const store = transaction.objectStore("documents");
-
             const getReq = store.get("lastSession");
             getReq.onsuccess = (e) => {
                 const data = e.target.result;
@@ -504,14 +519,12 @@
         function loadSavedDocument() {
             const transaction = db.transaction(["documents"], "readonly");
             const store = transaction.objectStore("documents");
-            const request = store.get("lastSession");
-
-            request.onsuccess = (e) => {
+            const getReq = store.get("lastSession");
+            getReq.onsuccess = (e) => {
                 const data = e.target.result;
                 if (data && data.file) {
                     scale = data.scale || 1.5;
                     currentIndex = data.sentenceIndex || 0; 
-                    
                     zoomSlider.value = scale;
                     zoomVal.textContent = Math.round(scale * 100) + '%';
                     loadPDF(data.file, data.page);
@@ -519,7 +532,7 @@
             };
         }
 
-        // --- 3. Zoom Logic ---
+        // Zoom
         function setZoom(newScale, { rerender = true } = {}) {
             newScale = Math.min(3.0, Math.max(0.5, newScale));
             newScale = Math.round(newScale * 10) / 10; 
@@ -535,7 +548,6 @@
 
         const speedSlider = document.getElementById('speed-slider');
         const speedVal = document.getElementById('speed-val');
-
         speedSlider.addEventListener('input', (e) => {
             speedVal.textContent = parseFloat(e.target.value).toFixed(1) + 'x';
         });
@@ -543,22 +555,31 @@
         zoomSlider.addEventListener('input', (e) => {
             zoomVal.textContent = Math.round(parseFloat(e.target.value) * 100) + '%';
         });
-
         zoomSlider.addEventListener('change', (e) => {
             setZoom(parseFloat(e.target.value));
         });
-
         zoomInBtn.addEventListener('click', () => setZoom(scale + 0.1));
         zoomOutBtn.addEventListener('click', () => setZoom(scale - 0.1));
         zoomResetBtn.addEventListener('click', () => setZoom(1.0));
 
-        // --- 4. TTS Audio Pipeline ---
+        // TTS
         const playBtn = document.getElementById('play-page-btn');
-        const voiceSelector = document.getElementById('voice-selector'); 
         const audioPlayer = document.getElementById('tts-audio-player');
         const ttsStatus = document.getElementById('tts-status');
         const ttsProgressFill = document.getElementById('tts-progress-fill');
         const ttsStatusText = document.getElementById('tts-status-text');
+
+        let sentences = [];
+        let currentIndex = 0;   
+        let audioCache = {};    
+        let inFlight = 0;       
+		// --- TTS STATE VARIABLES ---
+		const BUFFER_DEPTH = 10;               // Keep this at 5 to not overwhelm the server queue
+		const MAX_CONCURRENT_FETCHES = 1;     // STRICTLY 1 for slow/local servers
+		const REQUIRED_START_BUFFER = 5;      // Start playing after exactly 1 sentence is ready
+		let hasStartedPlaying = false;        
+		// (Keep your other variables: sentences, currentIndex, etc.)
+        let currentPageText = "";
 
         function updateTtsStatus() {
             if (!sentences.length) return;
@@ -567,41 +588,39 @@
             ttsStatusText.textContent = `Reading sentence ${displayIndex} / ${sentences.length}`;
         }
 
-        let sentences = [];
-        let currentIndex = 0;   
-        let fetchIndex = 0;     
-        let audioCache = {};    
-        let inFlight = 0;       
 
-        const BUFFER_DEPTH = 5; 
-        const MAX_CONCURRENT_FETCHES = 1;
+function startReadingPage(startIndex = 0) {
+    if (!pdfDoc || !currentPageText.trim() || sentences.length === 0) return;
+    if (isPlaying) stopPipeline(); 
 
-        let currentPageText = "";
+    // Notice we DO NOT clear audioCache here anymore!
 
-        function startReadingPage(startIndex = 0) {
-            if (!pdfDoc || !currentPageText.trim() || sentences.length === 0) return;
+    currentIndex = startIndex;
+    isPlaying = true;
+    hasStartedPlaying = false;
 
-            if (isPlaying) stopPipeline(); 
-            
-            if (audioCache) {
-                Object.values(audioCache).forEach(url => {
-                    if (url) URL.revokeObjectURL(url);
-                });
-            }
-
-            currentIndex = startIndex;
-            fetchIndex = startIndex; 
-            audioCache = {};
-            inFlight = 0;
-            isPlaying = true;
-
-            playBtn.textContent = "⏹ Stop Reading";
-            ttsStatus.classList.add('active');
-            updateTtsStatus();
-            
-            preloadQueue();
-        }
-
+    playBtn.textContent = "⏹ Stop Reading";
+    ttsStatus.classList.add('active');
+    
+    // Check if the required buffer is already cached
+    const required = Math.min(REQUIRED_START_BUFFER, sentences.length - currentIndex);
+    let readyCount = 0;
+    for (let i = currentIndex; i < currentIndex + required; i++) {
+        if (audioCache[i] && audioCache[i] !== 'fetching') readyCount++;
+    }
+    
+    if (readyCount >= required) {
+        // Audio is already cached, play immediately!
+        hasStartedPlaying = true;
+        playNextChunk();
+    } else {
+        // Needs buffering
+        ttsStatusText.textContent = `Generating audio... ${readyCount} / ${required}`;
+    }
+    
+    // Always trigger the queue to fetch upcoming missing sentences
+    preloadQueue();
+}
         playBtn.addEventListener('click', () => {
             if (isPlaying) {
                 stopPipeline();
@@ -610,114 +629,120 @@
                     alert("No text found on this page.");
                     return;
                 }
-                
                 let startIndex = currentIndex;
                 if (startIndex >= sentences.length) startIndex = 0;
-                
                 startReadingPage(startIndex);
             }
         });
 
-        function preloadQueue() {
-            if (!isPlaying) return;
-
-            while (
-                fetchIndex < sentences.length &&
-                inFlight < MAX_CONCURRENT_FETCHES &&
-                (fetchIndex - currentIndex) < BUFFER_DEPTH
-            ) {
-                const indexToFetch = fetchIndex;
-                fetchIndex++;
-                inFlight++;
-                fetchSentenceAudio(indexToFetch); 
-            }
+function preloadQueue() {
+    if (!isPlaying) return;
+    
+    // Scan ahead up to BUFFER_DEPTH starting from the current sentence
+    const lookaheadLimit = Math.min(currentIndex + BUFFER_DEPTH, sentences.length);
+    
+    for (let i = currentIndex; i < lookaheadLimit; i++) {
+        if (inFlight >= MAX_CONCURRENT_FETCHES) break;
+        
+        if (audioCache[i] === undefined) {
+            inFlight++;
+            audioCache[i] = 'fetching'; // Mark as fetching to prevent duplicate requests
+            fetchSentenceAudio(i);
         }
+    }
+}
 
-        async function fetchSentenceAudio(indexToFetch) {
-            try {
-                const rawText = sentences[indexToFetch];
+async function fetchSentenceAudio(indexToFetch) {
+    try {
+        const rawText = sentences[indexToFetch];
+        const isBareShortNumber = /^\d{1,2}$/.test(rawText.trim());
+        const textToSend = isBareShortNumber ? `Page ${rawText.trim()}.` : rawText;
 
-                const isBareShortNumber = /^\d{1,2}$/.test(rawText.trim());
-                const textToSend = isBareShortNumber ? `Page ${rawText.trim()}.` : rawText;
+        const selectedVoice = document.getElementById('voice-selector').value;
+        const selectedSpeed = parseFloat(document.getElementById('speed-slider').value); 
+        
+        const response = await fetch('http://127.0.0.1:8000/synthesize', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text: textToSend, voice: selectedVoice, speed: selectedSpeed })
+        });
 
-                const fetchStart = performance.now();
-                const selectedVoice = document.getElementById('voice-selector').value;
-                const selectedSpeed = parseFloat(document.getElementById('speed-slider').value); 
-                
-                const response = await fetch('http://127.0.0.1:8000/synthesize', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        text: textToSend,
-                        voice: selectedVoice,
-                        speed: selectedSpeed
-                    })
-                });
+        if (!response.ok) throw new Error(`Backend error ${response.status}`);
 
-                if (!response.ok) {
-                    let bodyText = '';
-                    try { bodyText = await response.text(); } catch (_) {}
-                    throw new Error(`Backend responded ${response.status}: ${bodyText.slice(0, 500)}`);
+        const blob = await response.blob();
+        
+        // Ensure the cache wasn't cleared (e.g., page changed) while we were fetching
+        if (audioCache[indexToFetch] === 'fetching') {
+            audioCache[indexToFetch] = URL.createObjectURL(blob);
+        }
+    } catch (error) {
+        console.error(`Failed to generate sentence ${indexToFetch}`, error);
+        if (audioCache[indexToFetch] === 'fetching') {
+            audioCache[indexToFetch] = null; // Mark failed so it doesn't block forever
+        }
+    } finally {
+        inFlight--;
+        
+        if (isPlaying) {
+            if (!hasStartedPlaying) {
+                const required = Math.min(REQUIRED_START_BUFFER, sentences.length - currentIndex);
+                let continuousReadyCount = 0;
+                for (let i = currentIndex; i < currentIndex + required; i++) {
+                    if (audioCache[i] && audioCache[i] !== 'fetching') continuousReadyCount++;
                 }
-
-                const blob = await response.blob();
-                const totalMs = Math.round(performance.now() - fetchStart);
-                console.log(`[TTS] sentence ${indexToFetch} ready in ${totalMs}ms`);
-                audioCache[indexToFetch] = URL.createObjectURL(blob);
-
-            } catch (error) {
-                console.error(`Failed to generate sentence ${indexToFetch} ("${sentences[indexToFetch]}")`, error);
-                audioCache[indexToFetch] = null;
-            } finally {
-                inFlight--;
-
-                if (isPlaying && indexToFetch === currentIndex && audioPlayer.paused) {
+                
+                ttsStatusText.textContent = `Generating audio... ${continuousReadyCount} / ${required}`;
+                
+                if (continuousReadyCount >= required) {
+                    hasStartedPlaying = true;
+                    playNextChunk(); 
+                }
+            } else {
+                if (indexToFetch === currentIndex && audioPlayer.paused) {
                     playNextChunk();
                 }
-                preloadQueue();
             }
         }
+        
+        preloadQueue(); 
+    }
+}
 
-        function playNextChunk() {
-            if (!isPlaying) return;
 
-            if (currentIndex >= sentences.length) {
-                const autoContinue = document.getElementById('auto-read-next').checked;
-                
-                if (autoContinue && pageNum < pdfDoc.numPages) {
-                    stopPipeline();
-                    isAutoContinuing = true; 
-                    goToPage(1, true);       
-                } else {
-                    stopPipeline();
-                }
-                return;
-            }
-
-            const nextAudioUrl = audioCache[currentIndex];
-
-            if (nextAudioUrl) {
-                highlightActiveSentence(currentIndex, sentences);
-                updateTtsStatus();
-
-                audioPlayer.src = nextAudioUrl;
-                audioPlayer.play();
-                console.log(`[TTS] playing sentence ${currentIndex} now`);
-
-                audioPlayer.onended = () => {
-                    URL.revokeObjectURL(nextAudioUrl);
-                    delete audioCache[currentIndex];
-                    currentIndex++;
-                    updateSavedSession(pageNum, scale, currentIndex);
-                    preloadQueue();
-                    playNextChunk();
-                };
-            } else if (nextAudioUrl === null) {
-                currentIndex++;
-                playNextChunk();
-            }
+function playNextChunk() {
+    if (!isPlaying) return;
+    if (currentIndex >= sentences.length) {
+        const autoContinue = document.getElementById('auto-read-next').checked;
+        if (autoContinue && pageNum < pdfDoc.numPages) {
+            stopPipeline();
+            isAutoContinuing = true; 
+            goToPage(1, true);       
+        } else {
+            stopPipeline();
         }
+        return;
+    }
 
+    const nextAudioUrl = audioCache[currentIndex];
+    if (nextAudioUrl && nextAudioUrl !== 'fetching') { // Added 'fetching' check
+        highlightActiveSentence(currentIndex, sentences);
+        updateTtsStatus();
+        audioPlayer.src = nextAudioUrl;
+        audioPlayer.play();
+        audioPlayer.onended = () => {
+            // REMOVED: URL.revokeObjectURL(nextAudioUrl);
+            // REMOVED: delete audioCache[currentIndex];
+            
+            currentIndex++;
+            updateSavedSession(pageNum, scale, currentIndex);
+            preloadQueue();
+            playNextChunk();
+        };
+    } else if (nextAudioUrl === null) {
+        currentIndex++;
+        playNextChunk();
+    }
+}
         function stopPipeline() {
             isPlaying = false;
             audioPlayer.pause();
@@ -725,7 +750,7 @@
             ttsStatus.classList.remove('active');
         }
 
-        // --- 5. Precision Substring Highlighter & Locked-Axis Auto-Scroll ---
+        // Highlighting
         function highlightActiveSentence(sentenceIndex, allSentences) {
             const allSpans = Array.from(document.querySelectorAll('.textLayer span'));
 
@@ -742,13 +767,11 @@
 
             let fullPageNorm = "";
             let spanMappings = [];
-
             allSpans.forEach((span) => {
                 let rawText = span.dataset.originalText;
                 let normText = normalize(rawText);
                 let startPos = fullPageNorm.length;
                 fullPageNorm += normText;
-
                 spanMappings.push({
                     element: span,
                     rawText: rawText,
@@ -761,14 +784,11 @@
             let currentCursor = 0;
             let matchIndex = -1;
             let targetNorm = "";
-
             for (let i = 0; i <= sentenceIndex; i++) {
                 targetNorm = normalize(allSentences[i]);
                 if (!targetNorm) continue;
-
                 matchIndex = fullPageNorm.indexOf(targetNorm, currentCursor);
                 if (matchIndex === -1) matchIndex = fullPageNorm.indexOf(targetNorm, 0);
-
                 if (matchIndex !== -1) {
                     currentCursor = matchIndex + targetNorm.length;
                 }
@@ -778,18 +798,15 @@
             const matchEnd = matchIndex + targetNorm.length;
 
             const escapeHTML = (str) => str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-
             let firstHighlightEl = null;
 
             spanMappings.forEach(map => {
                 let overlapAlphaStart = Math.max(map.start, matchIndex);
                 let overlapAlphaEnd = Math.min(map.end, matchEnd);
-
                 if (overlapAlphaStart < overlapAlphaEnd) {
                     let alphaCount = map.start;
                     let rawStart = 0;
                     let rawEnd = map.rawText.length;
-
                     for (let i = 0; i < map.rawText.length; i++) {
                         if (/[a-z0-9]/i.test(map.rawText[i])) {
                             if (alphaCount === overlapAlphaStart) rawStart = i;
@@ -797,13 +814,10 @@
                             if (alphaCount === overlapAlphaEnd) { rawEnd = i + 1; break; }
                         }
                     }
-
                     let before = escapeHTML(map.rawText.substring(0, rawStart));
                     let highlight = escapeHTML(map.rawText.substring(rawStart, rawEnd));
                     let after = escapeHTML(map.rawText.substring(rawEnd));
-
                     map.element.innerHTML = `${before}<mark class="reading-highlight">${highlight}</mark>${after}`;
-
                     if (!firstHighlightEl) {
                         firstHighlightEl = map.element.querySelector('mark.reading-highlight');
                     }
@@ -813,22 +827,17 @@
             if (firstHighlightEl && viewerArea) {
                 const containerRect = viewerArea.getBoundingClientRect();
                 const highlightRect = firstHighlightEl.getBoundingClientRect();
-
                 const relativeTop = highlightRect.top - containerRect.top;
                 const relativeBottom = highlightRect.bottom - containerRect.top;
                 const viewHeight = containerRect.height;
-
                 if (relativeTop < viewHeight * 0.2 || relativeBottom > viewHeight * 0.8) {
                     const targetScrollTop = viewerArea.scrollTop + (relativeTop - viewHeight / 3);
-                    viewerArea.scrollTo({
-                        top: targetScrollTop,
-                        behavior: 'smooth'
-                    });
+                    viewerArea.scrollTo({ top: targetScrollTop, behavior: 'smooth' });
                 }
             }
         }
 
-        // --- 6. Core Reader Logic ---
+        // PDF loading
         async function loadPDF(file, startingPage = 1) {
             const fileUrl = URL.createObjectURL(file);
             welcomeScreen.classList.remove('active');
@@ -839,8 +848,25 @@
                 pdfDoc = await loadingTask.promise;
                 document.getElementById('page-count').textContent = pdfDoc.numPages;
 
+                // Mobile scale adjustment
+                if (window.innerWidth <= 768) {
+                    const viewerWidth = viewerArea.clientWidth - 16;
+                    const firstPage = await pdfDoc.getPage(1);
+                    const originalViewport = firstPage.getViewport({ scale: 1 });
+                    let newScale = viewerWidth / originalViewport.width;
+                    newScale = Math.min(3.0, Math.max(0.9, newScale));
+                    scale = Math.round(newScale * 10) / 10;
+                    zoomSlider.value = scale;
+                    zoomVal.textContent = Math.round(scale * 100) + '%';
+                }
+
                 pageNum = startingPage;
                 renderPage(pageNum);
+                updateMobilePageInfo();
+
+                if (window.innerWidth <= 768) {
+                    closeSidebar();
+                }
             } catch (error) {
                 console.error("Error loading PDF:", error);
                 alert("Failed to load PDF.");
@@ -858,17 +884,18 @@
 
         document.getElementById('close-file').addEventListener('click', resetUI);
 
-        function resetUI() {
-            stopPipeline();
-            pdfDoc = null;
-            fileInput.value = '';
-            clearSavedDocument();
-
-            readerScreen.classList.remove('active');
-            welcomeScreen.classList.add('active');
-            document.getElementById('text-layer').innerHTML = '';
-        }
-
+function resetUI() {
+    stopPipeline();
+    // --> ADD THIS LINE <--
+    clearPageAudioCache(); 
+    
+    pdfDoc = null;
+    fileInput.value = '';
+    clearSavedDocument();
+    readerScreen.classList.remove('active');
+    welcomeScreen.classList.add('active');
+    document.getElementById('text-layer').innerHTML = '';
+}
         async function renderPage(num) {
             pageIsRendering = true;
             try {
@@ -877,7 +904,6 @@
 
                 const canvas = document.getElementById('pdf-canvas');
                 const context = canvas.getContext('2d');
-
                 const outputScale = window.devicePixelRatio || 1;
                 const cssWidth = Math.floor(viewport.width);
                 const cssHeight = Math.floor(viewport.height);
@@ -888,7 +914,6 @@
                 canvas.style.height = cssHeight + 'px';
 
                 const transform = outputScale !== 1 ? [outputScale, 0, 0, outputScale, 0, 0] : null;
-
                 const renderContext = { canvasContext: context, viewport: viewport, transform: transform };
                 await page.render(renderContext).promise;
 
@@ -896,30 +921,112 @@
                 textLayerDiv.innerHTML = '';
                 textLayerDiv.style.height = cssHeight + 'px';
                 textLayerDiv.style.width = cssWidth + 'px';
-
                 textLayerDiv.style.setProperty('--scale-factor', viewport.scale);
 
                 const textContent = await page.getTextContent();
 
-                const bracketedNumberPattern = /^[\[\(\{"'\-–—•·\s]*(\d+(?:[.,]\d+)*)[\]\)\}"'\-–—•·\s]*$/;
-                const decorativeOnlyPattern = /^[\[\]\(\)\{\}"'\-–—•·|_=~^]+$/;
-
-                currentPageText = textContent.items.reduce((acc, item) => {
-                    const str = item.str;
-                    const trimmed = str.trim();
-                    if (!trimmed) return acc + str + ' ';
-
-                    const numMatch = trimmed.match(bracketedNumberPattern);
-                    if (numMatch) {
-                        return acc + '\n' + numMatch[1] + '\n';
-                    }
-                    if (decorativeOnlyPattern.test(trimmed)) {
-                        return acc; 
-                    }
-                    return acc + str + ' ';
-                }, '');
+				// --- HEURISTIC ENGINE START ---
                 
-                sentences = splitIntoTTSChunks(currentPageText, 120);
+                // 1. Calculate the base (median) font size of the document
+                const fontSizes = textContent.items
+                    .map(item => Math.abs(item.transform[3]))
+                    .filter(size => size > 0)
+                    .sort((a, b) => a - b);
+                const baseFontSize = fontSizes.length > 0 ? fontSizes[Math.floor(fontSizes.length / 2)] : 12;
+
+                // 2. Group items into logical lines based on Y-coordinates
+                let lines = [];
+                const Y_TOLERANCE = 5; // Slightly increased tolerance for subscript/superscript
+                
+                // Sort by Y descending (top to bottom), then X ascending (left to right)
+                const sortedItems = [...textContent.items].sort((a, b) => {
+                    const yA = a.transform[5];
+                    const yB = b.transform[5];
+                    if (Math.abs(yA - yB) > Y_TOLERANCE) {
+                        return yB - yA; 
+                    }
+                    return a.transform[4] - b.transform[4]; 
+                });
+
+                let currentLine = { y: null, items: [] };
+                sortedItems.forEach(item => {
+                    if (!item.str.trim()) return; 
+                    const y = item.transform[5];
+                    
+                    if (currentLine.y === null || Math.abs(currentLine.y - y) > Y_TOLERANCE) {
+                        if (currentLine.items.length > 0) lines.push(currentLine);
+                        currentLine = { y: y, items: [item] };
+                    } else {
+                        currentLine.items.push(item);
+                    }
+                });
+                if (currentLine.items.length > 0) lines.push(currentLine);
+
+                // 3. Process lines and safely stitch sentences together
+                let structuredText = "";
+                const unscaledHeight = viewport.viewBox ? viewport.viewBox[3] : 800; 
+                let previousY = null;
+
+                lines.forEach(line => {
+                    let lineText = line.items.map(i => i.str).join(' ').replace(/\s+/g, ' ').trim();
+                    if (!lineText) return;
+
+                    const avgFontSize = line.items.reduce((sum, i) => sum + Math.abs(i.transform[3]), 0) / line.items.length;
+                    
+                    // A. Page Numbers
+                    const isVeryTop = line.y > (unscaledHeight - 60);
+                    const isVeryBottom = line.y < 60;
+                    const isJustNumber = /^[\[\(\-–—\s]*\d+[\]\)\-–—\s]*$/.test(lineText);
+                    if ((isVeryTop || isVeryBottom) && isJustNumber) return; 
+
+                    // B. Structure Detection
+                    // Increased threshold to 20% to prevent false headers
+                    const isHeader = avgFontSize > (baseFontSize * 1.20); 
+                    const isListItem = /^[\u2022\u25E6\u25A0\-\*]\s/.test(lineText) || /^\d+\.\s/.test(lineText);
+
+                    // C. Paragraph Gap Detection
+                    let isNewParagraph = false;
+                    if (previousY !== null) {
+                        const gap = previousY - line.y;
+                        // If the vertical gap between lines is larger than 1.5x the font size, it's a new block of text
+                        if (gap > (baseFontSize * 1.5)) {
+                            isNewParagraph = true;
+                        }
+                    }
+                    previousY = line.y;
+
+                    // D. Text Stitching
+                    if (isHeader || isListItem) {
+                        // Force a hard stop for structural elements
+                        structuredText += `\n${lineText}.\n`; 
+                    } else {
+                        // It's normal paragraph text. Let's stitch it carefully.
+                        if (isNewParagraph) {
+                            // If it's a new paragraph, check if the previous one forgot a period
+                            if (structuredText.trim().length > 0 && !structuredText.trim().match(/[.!?]$/)) {
+                                structuredText += ".\n" + lineText;
+                            } else {
+                                structuredText += "\n" + lineText;
+                            }
+                        } else {
+                            // Same paragraph, glue it to the previous line!
+                            if (structuredText.endsWith('-')) {
+                                // Fix hyphenated line breaks (e.g., "func-" + "tion")
+                                structuredText = structuredText.slice(0, -1) + lineText;
+                            } else if (structuredText.endsWith('\n') || structuredText.length === 0) {
+                                structuredText += lineText;
+                            } else {
+                                // Standard space continuation
+                                structuredText += " " + lineText;
+                            }
+                        }
+                    }
+                });
+
+                currentPageText = structuredText;
+                // --- HEURISTIC ENGINE END ---
+                
+                sentences = splitIntoTTSChunks(currentPageText, 150);
 
                 await pdfjsLib.renderTextLayer({
                     textContentSource: textContent,
@@ -932,6 +1039,7 @@
                 document.getElementById('page-num').textContent = num;
                 prevPageBtn.disabled = num <= 1;
                 nextPageBtn.disabled = num >= pdfDoc.numPages;
+                updateMobilePageInfo();
 
                 pageIsRendering = false;
 
@@ -948,7 +1056,6 @@
 
                 if (isAutoContinuing) {
                     isAutoContinuing = false; 
-                    
                     setTimeout(() => {
                         if (currentPageText.trim()) {
                             startReadingPage();
@@ -974,25 +1081,30 @@
             }
         }
 
-        function goToPage(delta, isAutoTurn = false) {
-            if (!pdfDoc) return;
-            const target = pageNum + delta;
-            if (target < 1 || target > pdfDoc.numPages) return;
+function goToPage(delta, isAutoTurn = false) {
+    if (!pdfDoc) return;
+    const target = pageNum + delta;
+    if (target < 1 || target > pdfDoc.numPages) return;
 
-            if (!isAutoTurn) {
-                stopPipeline();
-                isAutoContinuing = false; 
-            }
-            currentIndex = 0;
+    if (!isAutoTurn) {
+        stopPipeline();
+        isAutoContinuing = false; 
+    }
+    
+    // --> ADD THIS LINE <--
+    clearPageAudioCache(); 
 
-            pageNum = target;
-            queueRenderPage(pageNum);
-            updateSavedSession(pageNum, scale, currentIndex);
-            viewerArea.scrollTo({ top: 0, behavior: 'smooth' });
-        }
-
+    currentIndex = 0;
+    pageNum = target;
+    queueRenderPage(pageNum);
+    updateSavedSession(pageNum, scale, currentIndex);
+    viewerArea.scrollTo({ top: 0, behavior: 'smooth' });
+}
+        // Navigation listeners (sidebar + mobile bar)
         prevPageBtn.addEventListener('click', () => goToPage(-1));
         nextPageBtn.addEventListener('click', () => goToPage(1));
+        mobilePrevBtn.addEventListener('click', () => goToPage(-1));
+        mobileNextBtn.addEventListener('click', () => goToPage(1));
 
         document.addEventListener('keydown', (event) => {
             if (event.key === 'Escape') {
@@ -1000,7 +1112,6 @@
                 return;
             }
             if (!pdfDoc) return;
-
             if (event.key === 'ArrowLeft' || event.key.toLowerCase() === 'h') {
                 goToPage(-1);
             }
@@ -1017,22 +1128,18 @@
                 .filter(s => s.length > 0);
 
             let finalChunks = [];
-
             initialChunks.forEach(chunk => {
                 if (chunk.length <= maxLength) {
                     finalChunks.push(chunk);
                     return;
                 }
-
                 let subChunks = chunk.split(/(?<=[,;:\-—])\s+/);
                 let currentStr = "";
-
                 subChunks.forEach(sub => {
                     if ((currentStr.length + sub.length) <= maxLength) {
                         currentStr += (currentStr ? " " : "") + sub;
                     } else {
                         if (currentStr) finalChunks.push(currentStr.trim());
-                        
                         if (sub.length > maxLength) {
                             let words = sub.split(/\s+/);
                             let wordStr = "";
@@ -1052,63 +1159,75 @@
                 });
                 if (currentStr) finalChunks.push(currentStr.trim());
             });
-
             return finalChunks;
         }
 
-        // --- Click-to-Play Feature ---
-        document.getElementById('text-layer').addEventListener('click', (e) => {
-            let targetSpan = e.target;
+		// Click-to-play
+document.getElementById('text-layer').addEventListener('click', (e) => {
+    let targetSpan = e.target;
+    if (targetSpan.tagName.toLowerCase() === 'mark') {
+        targetSpan = targetSpan.parentElement; 
+    }
+    if (targetSpan.tagName.toLowerCase() !== 'span') return;
+    if (!sentences || sentences.length === 0) return;
+
+    const allSpans = Array.from(document.querySelectorAll('.textLayer span'));
+    const targetIndex = allSpans.indexOf(targetSpan);
+    if (targetIndex === -1) return;
+
+    const normalize = (str) => (str || "").toLowerCase().replace(/[^a-z0-9]/g, '');
+    let fullPageNorm = "";
+    let spanOffsets = [];
+    
+    allSpans.forEach(span => {
+        let rawText = span.dataset.originalText !== undefined ? span.dataset.originalText : span.textContent;
+        spanOffsets.push(fullPageNorm.length);
+        fullPageNorm += normalize(rawText);
+    });
+
+    const clickedOffset = spanOffsets[targetIndex];
+    let currentCursor = 0;
+    let matchIndex = -1;
+    let foundIndex = -1;
+    
+    for (let i = 0; i < sentences.length; i++) {
+        let targetNorm = normalize(sentences[i]);
+        if (!targetNorm) continue;
+        
+        matchIndex = fullPageNorm.indexOf(targetNorm, currentCursor);
+        
+        // Fallback: If not found at cursor, it means the PDF layer rendered this out of visual order. Search from top.
+        if (matchIndex === -1) matchIndex = fullPageNorm.indexOf(targetNorm, 0);
+        
+        if (matchIndex !== -1) {
+            let matchEnd = matchIndex + targetNorm.length;
             
-            if (targetSpan.tagName.toLowerCase() === 'mark') {
-                targetSpan = targetSpan.parentElement; 
+            // FIXED: STRICT BOUNDARY CHECK
+            // We now explicitly check if the click falls inside this specific sentence window
+            if (clickedOffset >= matchIndex && clickedOffset < matchEnd) {
+                foundIndex = i;
+                break;
             }
-            if (targetSpan.tagName.toLowerCase() !== 'span') return;
-            if (!sentences || sentences.length === 0) return;
-
-            const allSpans = Array.from(document.querySelectorAll('.textLayer span'));
-            const targetIndex = allSpans.indexOf(targetSpan);
-            if (targetIndex === -1) return;
-
-            const normalize = (str) => (str || "").toLowerCase().replace(/[^a-z0-9]/g, '');
-
-            let fullPageNorm = "";
-            let spanOffsets = [];
-
-            allSpans.forEach(span => {
-                let rawText = span.dataset.originalText !== undefined ? span.dataset.originalText : span.textContent;
-                spanOffsets.push(fullPageNorm.length);
-                fullPageNorm += normalize(rawText);
-            });
-
-            const clickedOffset = spanOffsets[targetIndex];
-
-            let currentCursor = 0;
-            let matchIndex = -1;
-            let foundIndex = -1;
-
-            for (let i = 0; i < sentences.length; i++) {
-                let targetNorm = normalize(sentences[i]);
-                if (!targetNorm) continue;
-
-                matchIndex = fullPageNorm.indexOf(targetNorm, currentCursor);
-                if (matchIndex === -1) matchIndex = fullPageNorm.indexOf(targetNorm, 0);
-
-                if (matchIndex !== -1) {
-                    let matchEnd = matchIndex + targetNorm.length;
-                    
-                    if (clickedOffset < matchEnd) {
-                        foundIndex = i;
-                        break;
-                    }
-                    currentCursor = matchEnd;
-                }
-            }
-
-            if (foundIndex !== -1) {
-                startReadingPage(foundIndex);
-            }
-        });
+            currentCursor = matchEnd;
+        }
+    }
+    
+    if (foundIndex !== -1) {
+        startReadingPage(foundIndex);
+    }
+});
+		function clearPageAudioCache() {
+			if (audioCache) {
+					Object.values(audioCache).forEach(val => {
+						// Only revoke if it's an actual blob URL, not a 'fetching' state or null
+						if (val && typeof val === 'string' && val.startsWith('blob:')) {
+							URL.revokeObjectURL(val);
+						}
+					});
+				}
+				audioCache = {};
+				inFlight = 0;
+			}
     </script>
 </body>
 </html>
