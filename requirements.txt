@@ -1,0 +1,6 @@
+fastapi
+uvicorn
+kokoro-onnx
+soundfile
+pydantic
+phonemizer-fork
