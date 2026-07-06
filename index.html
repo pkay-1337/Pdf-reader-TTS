@@ -34,6 +34,7 @@
             --shadow-lg:    0 10px 15px -3px rgba(0,0,0,0.08), 0 4px 6px -2px rgba(0,0,0,0.03);
             --sidebar-w:    300px;
             --topbar-h:     54px;
+            --mobile-nav-h: 0px;
             --radius-sm:    6px;
             --radius-md:    10px;
             --radius-lg:    14px;
@@ -1041,7 +1042,7 @@
         @media (max-width: 768px) {
             :root {
                 --topbar-h: 52px;
-                --mobile-nav-h: 64px;
+                --mobile-nav-h: 64px;  /* override: bottom nav is visible on mobile */
             }
 
             .topbar { padding: 0 12px; gap: 8px; }
@@ -1053,13 +1054,16 @@
                 position: fixed;
                 left: 0;
                 top: var(--topbar-h);
-                height: calc(100vh - var(--topbar-h) - var(--mobile-nav-h));
+                /* subtract both bars so the sidebar never extends under the nav bar */
+                height: calc(100dvh - var(--topbar-h) - 64px);
                 width: min(var(--sidebar-w), 92vw) !important;
                 transform: translateX(-100%);
                 z-index: 20;
                 box-shadow: var(--shadow-lg);
                 opacity: 1 !important;
                 border-radius: 0 var(--radius-lg) var(--radius-lg) 0;
+                display: flex;
+                flex-direction: column;
             }
             .sidebar.open { transform: translateX(0); }
             .sidebar.collapsed { transform: translateX(-100%); }
@@ -1069,19 +1073,23 @@
                 display: block;
                 opacity: 1;
                 top: var(--topbar-h);
-                height: calc(100vh - var(--topbar-h) - var(--mobile-nav-h));
+                height: calc(100dvh - var(--topbar-h) - 64px);
             }
 
             /* Sidebar inner: header is fixed-height, footer is fixed-height,
-               content in the middle scrolls freely */
+               content in the middle scrolls freely — min-height:0 is the key */
             .sidebar-header { flex-shrink: 0; }
             .sidebar-content {
                 flex: 1;
+                min-height: 0;
                 overflow-y: auto;
                 -webkit-overflow-scrolling: touch;
-                min-height: 0;        /* needed for flex children to scroll */
             }
-            .sidebar-footer { flex-shrink: 0; }
+            .sidebar-footer {
+                flex-shrink: 0;
+                /* ensure footer is never clipped */
+                padding-bottom: max(14px, env(safe-area-inset-bottom));
+            }
 
             .mobile-nav-bar { display: flex; }
             .pdf-viewer-area { padding: 8px; padding-bottom: calc(var(--mobile-nav-h) + 8px); }
@@ -1286,8 +1294,9 @@
                             </optgroup>
                         </select>
 
-                        <div class="control-label" style="margin-top:12px">Speed <span id="speed-val">1.0×</span></div>
+                        <div class="control-label" style="margin-top:12px">Playback Speed <span id="speed-val">1.0×</span></div>
                         <input type="range" id="speed-slider" min="0.5" max="2.0" step="0.1" value="1.0">
+                        <div style="font-size:10px;color:var(--text-tertiary);margin-top:4px;line-height:1.4">Audio is cached at 1.0×; speed is applied in-browser</div>
 
                         <div class="toggle-row" style="margin-top:10px">
                             <span class="toggle-label">Auto-advance pages</span>
@@ -1455,6 +1464,16 @@
     let saveAudioEnabled   = false;   // mirrors the toggle
     let currentFileName    = '';      // PDF file name (set when PDF loads)
     let isDownloadingRange = false;   // true while batch pre-gen is running
+
+    /* ─── Preload job tracking ─── */
+    // Maps job_id -> { total, done, status, pollTimer }
+    const activePreloadJobs = {};
+
+    /* ─── Playback speed (applied via audio.playbackRate) ─── */
+    // The server always stores WAV at 1.0×; we apply speed in the browser.
+    function getPlaybackRate() {
+        return parseFloat(document.getElementById('speed-slider').value);
+    }
 
     /* TTS constants */
     const BUFFER_DEPTH = 10;
@@ -1663,7 +1682,7 @@
     zoomInBtn.addEventListener('click', () => setZoom(scale + 0.1));
     zoomOutBtn.addEventListener('click', () => setZoom(scale - 0.1));
     zoomResetBtn.addEventListener('click', () => setZoom(1.0));
-    speedSlider.addEventListener('input', e => { speedVal.textContent = parseFloat(e.target.value).toFixed(1) + '×'; });
+    // Speed slider display update is now handled after playNextChunk definition
 
     /* ─── PDF Load ─── */
     async function loadPDF(file, startPage = 1) {
@@ -2492,10 +2511,13 @@
 
     async function fetchSentenceAudio(idx) {
         try {
-            const raw  = sentences[idx];
-            const text = /^\d{1,2}$/.test(raw.trim()) ? `Page ${raw.trim()}.` : raw;
+            const raw   = sentences[idx];
+            const text  = /^\d{1,2}$/.test(raw.trim()) ? `Page ${raw.trim()}.` : raw;
             const voice = document.getElementById('voice-selector').value;
-            const speed = parseFloat(document.getElementById('speed-slider').value);
+
+            // Always request 1.0x from the server — playback speed is applied
+            // in the browser via audioPlayer.playbackRate (see playNextChunk).
+            const serverSpeed = 1.0;
 
             /* Build headers — include cache metadata when a PDF is loaded */
             const headers = { 'Content-Type': 'application/json' };
@@ -2509,7 +2531,7 @@
             const res = await fetch('http://127.0.0.1:8000/synthesize', {
                 method: 'POST',
                 headers,
-                body: JSON.stringify({ text, voice, speed })
+                body: JSON.stringify({ text, voice, speed: serverSpeed })
             });
             if (!res.ok) throw new Error(`Backend ${res.status}`);
             const blob = await res.blob();
@@ -2554,6 +2576,8 @@
             highlightActiveSentence(currentIndex, sentences);
             updateTtsStatus();
             audioPlayer.src = url;
+            // Apply browser-side speed — WAVs are always stored at 1.0x
+            audioPlayer.playbackRate = getPlaybackRate();
             audioPlayer.play();
             audioPlayer.onended = () => {
                 currentIndex++;
@@ -2566,6 +2590,15 @@
             playNextChunk();
         }
     }
+
+    // Live-update playbackRate when slider changes during playback
+    document.getElementById('speed-slider').addEventListener('input', () => {
+        const rate = getPlaybackRate();
+        speedVal.textContent = rate.toFixed(1) + '×';
+        if (isPlaying && !audioPlayer.paused) {
+            audioPlayer.playbackRate = rate;
+        }
+    });
 
     function stopPipeline() {
         isPlaying = false;
@@ -2609,7 +2642,7 @@
             if (!res.ok) { cacheBadge.classList.remove('visible'); return; }
             const data = await res.json();
             if (data.cached_lines && data.cached_lines.length > 0) {
-                cacheBadge.textContent = `${data.cached_lines.length} saved`;
+                cacheBadge.textContent = `${data.cached_lines.length} cached`;
                 cacheBadge.classList.add('visible');
             } else {
                 cacheBadge.classList.remove('visible');
@@ -2625,7 +2658,7 @@
         saveRangeRow.style.display = saveAudioEnabled ? 'flex' : 'none';
     });
 
-    /* ─── Batch download / pre-generate ─── */
+    /* ─── Batch download / pre-generate (server-side queue) ─── */
     downloadRangeBtn.addEventListener('click', async () => {
         if (!pdfDoc || !currentFileName || isDownloadingRange) return;
 
@@ -2644,64 +2677,179 @@
         if (fromPage > toPage) return;
 
         const voice = document.getElementById('voice-selector').value;
-        const speed = parseFloat(document.getElementById('speed-slider').value);
+        const totalPages = toPage - fromPage + 1;
 
         isDownloadingRange = true;
         downloadRangeBtn.disabled = true;
         dlProgress.classList.add('active');
+        dlStatusText.textContent = 'Scanning pages…';
+        dlProgressFill.style.width = '0%';
 
-        /* For each page in range, extract sentences using the same algorithm as renderPage */
-        const totalPages = toPage - fromPage + 1;
-        let donePages = 0;
+        // ── Step 1: Bulk-check cache so we know what's already done ──
+        let cachedByPage = {};
+        try {
+            const statusRes = await fetch(
+                `http://127.0.0.1:8000/cache_status_bulk` +
+                `?book_name=${encodeURIComponent(currentFileName)}` +
+                `&page_from=${fromPage}&page_to=${toPage}`
+            );
+            if (statusRes.ok) {
+                const statusData = await statusRes.json();
+                cachedByPage = statusData.pages || {};
+            }
+        } catch (e) {
+            console.warn('[DL] cache_status_bulk failed, proceeding without skip', e);
+        }
+
+        // ── Step 2: Extract all sentences from all pages; skip already-cached lines ──
+        let allSentences = {};  // key: "page_line" → text
+        let extractedPages = 0;
 
         for (let p = fromPage; p <= toPage; p++) {
-            dlStatusText.textContent = `Page ${p} / ${toPage}…`;
-            dlProgressFill.style.width = Math.round((donePages / totalPages) * 100) + '%';
+            dlStatusText.textContent = `Extracting page ${p} / ${toPage}…`;
+            dlProgressFill.style.width = Math.round((extractedPages / totalPages) * 40) + '%';
 
             try {
-                const page       = await pdfDoc.getPage(p);
+                const page        = await pdfDoc.getPage(p);
                 const textContent = await page.getTextContent();
                 const pageSentences = extractSentencesFromTextContent(textContent, page);
+                const alreadyCached = new Set((cachedByPage[String(p)] || []));
 
                 for (let si = 0; si < pageSentences.length; si++) {
+                    if (alreadyCached.has(si)) {
+                        // Already on disk — skip entirely
+                        continue;
+                    }
                     const raw  = pageSentences[si];
                     const text = /^\d{1,2}$/.test(raw.trim()) ? `Page ${raw.trim()}.` : raw;
-
-                    try {
-                        await fetch('http://127.0.0.1:8000/synthesize', {
-                            method: 'POST',
-                            headers: {
-                                'Content-Type':  'application/json',
-                                'X-Book-Name':   currentFileName,
-                                'X-Page-Number': String(p),
-                                'X-Line-Number': String(si),
-                                'X-Save-Audio':  'true',
-                                'X-Page-Range':  rangeStr,
-                            },
-                            body: JSON.stringify({ text, voice, speed })
-                        });
-                    } catch (e) {
-                        console.warn(`[DL] p${p} s${si} failed:`, e);
-                    }
+                    allSentences[`${p}_${si}`] = text;
                 }
             } catch (e) {
                 console.warn(`[DL] Page ${p} extract failed:`, e);
             }
 
-            donePages++;
+            extractedPages++;
         }
 
-        dlProgressFill.style.width = '100%';
-        dlStatusText.textContent   = `Done! ${totalPages} page(s) cached.`;
+        const newSentenceCount = Object.keys(allSentences).length;
 
+        if (newSentenceCount === 0) {
+            // Everything already cached
+            dlProgressFill.style.width = '100%';
+            dlStatusText.textContent = `All ${totalPages} page(s) already cached ✓`;
+            setTimeout(() => {
+                dlProgress.classList.remove('active');
+                dlProgressFill.style.width = '0%';
+                isDownloadingRange = false;
+                downloadRangeBtn.disabled = false;
+                updateCacheBadge();
+            }, 2000);
+            return;
+        }
+
+        // ── Step 3: Send one /preload request per page (chunked) to the server ──
+        // The server queues everything as a background task and responds instantly.
+        // The browser does NOT need to stay open — jobs run server-side.
+        dlStatusText.textContent = `Queuing ${newSentenceCount} sentences on server…`;
+        dlProgressFill.style.width = '45%';
+
+        // Group sentences by page for chunked sends
+        const byPage = {};
+        for (const [key, text] of Object.entries(allSentences)) {
+            const pageNum = key.split('_')[0];
+            if (!byPage[pageNum]) byPage[pageNum] = {};
+            byPage[pageNum][key] = text;
+        }
+
+        const jobIds = [];
+        let sentPages = 0;
+        for (const [p, pageSentences] of Object.entries(byPage)) {
+            try {
+                const res = await fetch('http://127.0.0.1:8000/preload', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        book_name: currentFileName,
+                        page_from: parseInt(p, 10),
+                        page_to:   parseInt(p, 10),
+                        sentences: pageSentences,
+                        voice,
+                        // speed intentionally omitted — server always saves at 1.0x
+                    })
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    if (data.job_id) jobIds.push(data.job_id);
+                }
+            } catch (e) {
+                console.warn(`[DL] preload send failed for page ${p}:`, e);
+            }
+            sentPages++;
+            dlProgressFill.style.width = Math.round(45 + (sentPages / Object.keys(byPage).length) * 25) + '%';
+        }
+
+        dlProgressFill.style.width = '70%';
+        dlStatusText.textContent = `${newSentenceCount} sentences queued on server (${jobIds.length} job(s))`;
+
+        // ── Step 4: Poll the first job for progress feedback ──
+        // (Each page is one job; we track total done across all)
+        if (jobIds.length > 0) {
+            startPollingPreloadJobs(jobIds, newSentenceCount);
+        } else {
+            finishDownload(totalPages);
+        }
+    });
+
+    function startPollingPreloadJobs(jobIds, totalSentences) {
+        let pollCount = 0;
+        const MAX_POLLS = 600; // 10 minutes at 1s intervals
+
+        const interval = setInterval(async () => {
+            pollCount++;
+            if (pollCount > MAX_POLLS) {
+                clearInterval(interval);
+                finishDownload(jobIds.length);
+                return;
+            }
+
+            try {
+                let totalDone = 0;
+                let allFinished = true;
+                for (const jobId of jobIds) {
+                    const res = await fetch(`http://127.0.0.1:8000/preload_status?job_id=${jobId}`);
+                    if (res.ok) {
+                        const data = await res.json();
+                        totalDone += data.done || 0;
+                        if (data.status !== 'done') allFinished = false;
+                    }
+                }
+
+                const pct = Math.min(99, Math.round(70 + (totalDone / Math.max(1, totalSentences)) * 29));
+                dlProgressFill.style.width = pct + '%';
+                dlStatusText.textContent = `Server generating… ${totalDone} / ${totalSentences} sentences`;
+
+                if (allFinished) {
+                    clearInterval(interval);
+                    finishDownload(jobIds.length);
+                }
+            } catch (e) {
+                // Server might be temporarily unreachable; keep polling
+                dlStatusText.textContent = 'Waiting for server…';
+            }
+        }, 1000);
+    }
+
+    function finishDownload(pageCount) {
+        dlProgressFill.style.width = '100%';
+        dlStatusText.textContent = `Done! ${pageCount} page(s) queued for caching ✓`;
         setTimeout(() => {
             dlProgress.classList.remove('active');
             dlProgressFill.style.width = '0%';
             isDownloadingRange = false;
             downloadRangeBtn.disabled = false;
             updateCacheBadge();
-        }, 2000);
-    });
+        }, 2500);
+    }
 
     /* ─── Shared text extraction (same algorithm as renderPage, callable standalone) ─── */
     function extractSentencesFromTextContent(textContent, page) {
