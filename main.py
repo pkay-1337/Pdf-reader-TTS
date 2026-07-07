@@ -10,6 +10,9 @@ from fastapi.responses import StreamingResponse, FileResponse, JSONResponse
 from pydantic import BaseModel
 from typing import Optional
 from kokoro_onnx import Kokoro
+from concurrent.futures import ThreadPoolExecutor
+from functools import partial
+
 
 app = FastAPI(title="Local PDF Reader TTS Engine")
 
@@ -40,6 +43,10 @@ except Exception as e:
 # Maps job_id -> {"total": N, "done": N, "errors": N, "status": "running"|"done"|"failed"}
 _preload_jobs: dict[str, dict] = {}
 _preload_lock = asyncio.Lock()
+
+# Lock to ensure background jobs download strictly one page at a time
+#_page_processing_lock = asyncio.Lock()
+_page_processing_lock = asyncio.Semaphore(3)
 
 
 # ─── Helpers ───
@@ -88,6 +95,9 @@ class PreloadPayload(BaseModel):
 
 
 # ─── Core synthesis ───
+# Create a dedicated single-thread pool specifically for the TTS model.
+# This prevents ONNX from creating memory leaks across multiple threads.
+_tts_executor = ThreadPoolExecutor(max_workers=3)
 
 async def synthesize_audio(text: str, voice: str, speed: float = 1.0) -> bytes:
     """Run Kokoro and return raw WAV bytes."""
@@ -100,8 +110,13 @@ async def synthesize_audio(text: str, voice: str, speed: float = 1.0) -> bytes:
     print(f"  text  : {text!r}")
     print(f"  voice : {voice} | speed: {speed}")
 
-    audio_data, sample_rate = kokoro.create(text, voice=voice, speed=speed, lang="en-us")
+    func = partial(kokoro.create, text, voice=voice, speed=speed, lang="en-us")
 
+    # Send the job to our dedicated single thread
+    loop = asyncio.get_running_loop()
+    # FIX: Added the missing arguments to run_in_executor
+    audio_data, sample_rate = await loop.run_in_executor(_tts_executor, func)
+    
     if len(audio_data) == 0:
         raise ValueError("Model generated empty audio.")
 
@@ -203,37 +218,39 @@ async def _run_preload_job(job_id: str, payload: PreloadPayload):
 
     sorted_items = sorted(payload.sentences.items(), key=lambda kv: sort_key(kv[0]))
 
-    for key, text in sorted_items:
-        try:
-            parts = key.split("_")
-            page, line = int(parts[0]), int(parts[1])
-        except (ValueError, IndexError):
-            errors += 1
-            continue
+    # FIX: Use the new lock to force page jobs to process one at a time sequentially
+    async with _page_processing_lock:
+        for key, text in sorted_items:
+            try:
+                parts = key.split("_")
+                page, line = int(parts[0]), int(parts[1])
+            except (ValueError, IndexError):
+                errors += 1
+                continue
 
-        cache_file = wav_path(book_dir, page, line)
-        if os.path.exists(cache_file):
-            done += 1
+            cache_file = wav_path(book_dir, page, line)
+            if os.path.exists(cache_file):
+                done += 1
+                async with _preload_lock:
+                    _preload_jobs[job_id]["done"] = done
+                continue
+
+            try:
+                # Always synthesise at 1.0x for stored files
+                wav_bytes = await synthesize_audio(text, payload.voice, speed=1.0)
+                with open(cache_file, "wb") as f:
+                    f.write(wav_bytes)
+                done += 1
+            except Exception as e:
+                print(f"[PRELOAD ERROR] {key}: {e}")
+                errors += 1
+
             async with _preload_lock:
-                _preload_jobs[job_id]["done"] = done
-            continue
+                _preload_jobs[job_id]["done"]   = done
+                _preload_jobs[job_id]["errors"] = errors
 
-        try:
-            # Always synthesise at 1.0x for stored files
-            wav_bytes = await synthesize_audio(text, payload.voice, speed=1.0)
-            with open(cache_file, "wb") as f:
-                f.write(wav_bytes)
-            done += 1
-        except Exception as e:
-            print(f"[PRELOAD ERROR] {key}: {e}")
-            errors += 1
-
-        async with _preload_lock:
-            _preload_jobs[job_id]["done"]   = done
-            _preload_jobs[job_id]["errors"] = errors
-
-        # Yield control so other requests aren't fully blocked
-        await asyncio.sleep(0)
+            # Yield control so other requests aren't fully blocked
+            await asyncio.sleep(0)
 
     async with _preload_lock:
         _preload_jobs[job_id]["status"] = "done"
@@ -288,6 +305,15 @@ async def preload_status(job_id: str):
         raise HTTPException(status_code=404, detail="Job not found")
 
     return job
+
+
+# ─── POST /preload_status_bulk ───
+
+@app.post("/preload_status_bulk")
+async def preload_status_bulk(job_ids: list[str]):
+    """Return progress for multiple background preload jobs in a single request."""
+    async with _preload_lock:
+        return {jid: _preload_jobs.get(jid) for jid in job_ids}
 
 
 # ─── GET /preload_jobs ───
@@ -352,3 +378,4 @@ async def cache_status_bulk(book_name: str, page_from: int, page_to: int):
         result[str(p)] = sorted(cached)
 
     return {"pages": result}
+
