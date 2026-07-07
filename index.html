@@ -668,7 +668,7 @@
         :root {
             --hl-color:   rgba(59,130,246,0.32);   /* highlight fill */
             --hl-radius:  3px;                      /* corner radius */
-            --hl-padding: 2px;                      /* extra end-padding on each side */
+            --hl-padding: 1px;                      /* extra end-padding on each side */
             --hl-outline: none;                     /* optional outline ring */
         }
 
@@ -1059,25 +1059,24 @@
 
         /* ─── Topbar hide (mobile) ─── */
         .topbar {
-            transition: transform 0.28s cubic-bezier(0.4,0,0.2,1),
-                        opacity  0.28s cubic-bezier(0.4,0,0.2,1);
+            transition: margin-top 0.28s cubic-bezier(0.4,0,0.2,1),
+                        opacity   0.28s cubic-bezier(0.4,0,0.2,1);
         }
         body.topbar-hidden .topbar {
-            transform: translateY(-100%);
+            /* Pull the topbar up by its own height — removes it from flow so
+               reader-body and sidebar expand to fill the space naturally */
+            margin-top: calc(-1 * var(--topbar-h));
             opacity: 0;
             pointer-events: none;
         }
-        body.topbar-hidden .reader-body {
-            /* Fill the space the topbar vacated */
-            height: calc(100dvh - var(--mobile-nav-h));
-        }
+        /* reader-body is already flex:1 so it fills the freed space automatically.
+           On mobile the sidebar is position:fixed so we must update top/height. */
         body.topbar-hidden .sidebar {
             top: 0 !important;
             height: calc(100dvh - 64px) !important;
         }
-        body.topbar-hidden .sidebar-overlay.show {
+        body.topbar-hidden .sidebar-overlay {
             top: 0 !important;
-            height: calc(100dvh - 64px) !important;
         }
 
         @media (max-width: 768px) {
@@ -1609,7 +1608,7 @@
     let hlOpacity    = 0.32;          // fill alpha
     let hlRadius     = 3;             // px corner radius
     let hlOutline    = false;         // whether to draw an outline ring
-    let hlPadding    = 2;             // extra px added at each end of highlight rects
+    let hlPadding    = 1;             // extra px added at each end of highlight rects (horizontal only)
 
     /* ─── Mobile topbar state ─── */
     let topbarVisible = true;
@@ -1843,6 +1842,7 @@
             btn.classList.add('active');
             console.log(`[HIGHLIGHT] Colour preset selected: ${btn.dataset.label} (${hlBaseColor})`);
             applyHighlightSettings();
+            saveHighlightSettings();
         });
     });
 
@@ -1850,18 +1850,21 @@
         hlOpacity = parseInt(e.target.value, 10) / 100;
         document.getElementById('hl-opacity-val').textContent = e.target.value + '%';
         applyHighlightSettings();
+        saveHighlightSettings();
     });
 
     document.getElementById('hl-radius-slider').addEventListener('input', e => {
         hlRadius = parseInt(e.target.value, 10);
         document.getElementById('hl-radius-val').textContent = e.target.value + 'px';
         applyHighlightSettings();
+        saveHighlightSettings();
     });
 
     document.getElementById('hl-outline-toggle').addEventListener('change', e => {
         hlOutline = e.target.checked;
         console.log(`[HIGHLIGHT] Outline ring: ${hlOutline}`);
         applyHighlightSettings();
+        saveHighlightSettings();
     });
 
     /* ─── Sidebar Tabs ─── */
@@ -1924,14 +1927,26 @@
 
     /* ─── IndexedDB ─── */
     let db;
-    const dbReq = indexedDB.open('DocReaderProDB', 1);
+    const dbReq = indexedDB.open('DocReaderProDB', 2);
     dbReq.onupgradeneeded = e => {
         db = e.target.result;
-        db.createObjectStore('documents');
+        if (!db.objectStoreNames.contains('documents')) {
+            db.createObjectStore('documents');
+            console.log('[DB] Created object store: documents');
+        }
+        if (!db.objectStoreNames.contains('settings')) {
+            db.createObjectStore('settings');
+            console.log('[DB] Created object store: settings');
+        }
     };
     dbReq.onsuccess = e => {
         db = e.target.result;
+        console.log('[DB] Opened DocReaderProDB v2');
         loadSavedDocument();
+        loadHighlightSettings();   // restore hl customisations before first render
+    };
+    dbReq.onerror = e => {
+        console.error('[DB] Failed to open database:', e.target.error);
     };
 
     function saveToDB(file, page, s, si = 0) {
@@ -1950,6 +1965,66 @@
     function clearSavedDocument() {
         if (!db) return;
         db.transaction(['documents'], 'readwrite').objectStore('documents').delete('lastSession');
+    }
+
+    /* ─── Highlight settings persistence ─── */
+    function saveHighlightSettings() {
+        if (!db) return;
+        const payload = {
+            hlBaseColor,
+            hlOpacity,
+            hlRadius,
+            hlOutline,
+            hlPadding,
+        };
+        db.transaction(['settings'], 'readwrite').objectStore('settings').put(payload, 'highlight');
+        console.log('[DB] Saved highlight settings:', payload);
+    }
+
+    function loadHighlightSettings() {
+        if (!db) return;
+        const req = db.transaction(['settings'], 'readonly').objectStore('settings').get('highlight');
+        req.onsuccess = e => {
+            const s = e.target.result;
+            if (!s) {
+                console.log('[DB] No saved highlight settings — using defaults');
+                return;
+            }
+            console.log('[DB] Restoring highlight settings:', s);
+
+            // Restore state vars
+            if (s.hlBaseColor !== undefined) hlBaseColor = s.hlBaseColor;
+            if (s.hlOpacity   !== undefined) hlOpacity   = s.hlOpacity;
+            if (s.hlRadius    !== undefined) hlRadius     = s.hlRadius;
+            if (s.hlOutline   !== undefined) hlOutline    = s.hlOutline;
+            if (s.hlPadding   !== undefined) hlPadding    = s.hlPadding;
+
+            // Sync UI controls
+            const opacityPct = Math.round(hlOpacity * 100);
+            const opacitySlider = document.getElementById('hl-opacity-slider');
+            const opacityVal    = document.getElementById('hl-opacity-val');
+            if (opacitySlider) { opacitySlider.value = opacityPct; }
+            if (opacityVal)    { opacityVal.textContent = opacityPct + '%'; }
+
+            const radiusSlider = document.getElementById('hl-radius-slider');
+            const radiusVal    = document.getElementById('hl-radius-val');
+            if (radiusSlider) { radiusSlider.value = hlRadius; }
+            if (radiusVal)    { radiusVal.textContent = hlRadius + 'px'; }
+
+            const outlineToggle = document.getElementById('hl-outline-toggle');
+            if (outlineToggle) { outlineToggle.checked = hlOutline; }
+
+            // Sync colour preset active state
+            document.querySelectorAll('.hl-preset').forEach(btn => {
+                btn.classList.remove('active');
+                const presetRGB = HL_PRESETS[btn.dataset.color];
+                if (presetRGB === hlBaseColor) btn.classList.add('active');
+            });
+
+            // Apply to CSS
+            applyHighlightSettings();
+        };
+        req.onerror = e => console.error('[DB] Failed to load highlight settings:', e.target.error);
     }
     function loadSavedDocument() {
         if (!db) return;
@@ -2491,7 +2566,7 @@
             });
 
             currentPageText = structuredText;
-            sentences = splitIntoTTSChunks(currentPageText, 250);
+            sentences = splitIntoTTSChunks(currentPageText, 150);
             console.log(`[RENDER] Page ${num}: ${lines.length} lines → ${sentences.length} TTS sentences`);
 
             await pdfjsLib.renderTextLayer({
@@ -3301,7 +3376,7 @@
             }
         });
 
-        return splitIntoTTSChunks(structuredText, 250);
+        return splitIntoTTSChunks(structuredText, 150);
     }
 
     /* ─── TTS Highlighting (canvas-based) ─── */
@@ -3478,10 +3553,10 @@
             if (strokeColor) { ctx.strokeStyle = strokeColor; ctx.lineWidth = 1; }
 
             rows.forEach((row, key) => {
-                const x = row.left   - pad;
-                const y = row.top;
-                const w = (row.right - row.left) + pad * 2;
-                const h = row.bottom - row.top;
+                const x  = row.left   - pad;
+                const y  = row.top   ;          // inset 1px from top — no bleed into line above
+                const w  = (row.right - row.left) + pad * 2;
+                const h  = (row.bottom - row.top) ;  // inset 1px from bottom too
                 const cr = Math.min(r, w / 2, h / 2);
 
                 ctx.beginPath();

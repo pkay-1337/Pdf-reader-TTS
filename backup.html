@@ -664,12 +664,30 @@
         ::selection { background: rgba(37,99,235,0.3); }
         .textLayer ::selection { background: rgba(37,99,235,0.3); }
 
-        /* TTS highlight */
+        /* ─── Highlight customisation tokens ─── */
+        :root {
+            --hl-color:   rgba(59,130,246,0.32);   /* highlight fill */
+            --hl-radius:  3px;                      /* corner radius */
+            --hl-padding: 2px;                      /* extra end-padding on each side */
+            --hl-outline: none;                     /* optional outline ring */
+        }
+
+        /* TTS highlight — canvas overlay handles the main rect;
+           mark is kept for fallback / selection-layer accuracy */
         mark.reading-highlight {
-            background-color: rgba(59,130,246,0.3) !important;
-            mix-blend-mode: multiply;
-            border-radius: 2px;
+            background-color: var(--hl-color) !important;
+            border-radius: var(--hl-radius);
             color: transparent !important;
+            padding: 0 var(--hl-padding);
+            box-shadow: var(--hl-outline);
+        }
+
+        /* Highlight canvas floats above the text layer */
+        #highlight-canvas {
+            position: absolute;
+            inset: 0;
+            pointer-events: none;
+            z-index: 5;
         }
 
         /* Search highlight */
@@ -1039,6 +1057,29 @@
             transition: opacity var(--transition);
         }
 
+        /* ─── Topbar hide (mobile) ─── */
+        .topbar {
+            transition: transform 0.28s cubic-bezier(0.4,0,0.2,1),
+                        opacity  0.28s cubic-bezier(0.4,0,0.2,1);
+        }
+        body.topbar-hidden .topbar {
+            transform: translateY(-100%);
+            opacity: 0;
+            pointer-events: none;
+        }
+        body.topbar-hidden .reader-body {
+            /* Fill the space the topbar vacated */
+            height: calc(100dvh - var(--mobile-nav-h));
+        }
+        body.topbar-hidden .sidebar {
+            top: 0 !important;
+            height: calc(100dvh - 64px) !important;
+        }
+        body.topbar-hidden .sidebar-overlay.show {
+            top: 0 !important;
+            height: calc(100dvh - 64px) !important;
+        }
+
         @media (max-width: 768px) {
             :root {
                 --topbar-h: 52px;
@@ -1109,6 +1150,51 @@
             .search-nav-btns { display: none; }
         }
 
+        /* ─── Highlight colour presets ─── */
+        .hl-preset {
+            width: 26px; height: 26px;
+            border-radius: 50%;
+            border: 2px solid transparent;
+            cursor: pointer;
+            transition: transform 0.15s, border-color 0.15s;
+            flex-shrink: 0;
+            outline: none;
+        }
+        .hl-preset:hover { transform: scale(1.15); }
+        .hl-preset.active { border-color: var(--text-primary); transform: scale(1.1); }
+
+        /* ─── Server PDF list item ─── */
+        .server-pdf-item {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 8px 10px;
+            border-radius: var(--radius-sm);
+            cursor: pointer;
+            transition: background var(--transition);
+            border: 1px solid transparent;
+        }
+        .server-pdf-item:hover {
+            background: var(--accent-soft);
+            border-color: var(--accent);
+        }
+        .server-pdf-item-icon { color: var(--accent); flex-shrink: 0; }
+        .server-pdf-item-name {
+            flex: 1;
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--text-primary);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+        .server-pdf-item-size {
+            font-size: 11px;
+            color: var(--text-tertiary);
+            font-family: 'JetBrains Mono', monospace;
+            flex-shrink: 0;
+        }
+
         /* Very short screens (landscape phone) — tighten controls */
         @media (max-height: 500px) and (max-width: 900px) {
             :root { --mobile-nav-h: 56px; }
@@ -1142,6 +1228,19 @@
                 Choose File
             </label>
             <input type="file" id="pdf-upload" accept="application/pdf">
+        </div>
+
+        <!-- Server PDF library -->
+        <div id="server-pdf-section" style="margin-top:24px;display:none">
+            <div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+                <div style="flex:1;height:1px;background:var(--border)"></div>
+                <span style="font-size:12px;color:var(--text-tertiary);white-space:nowrap;font-weight:600">OR OPEN FROM SERVER</span>
+                <div style="flex:1;height:1px;background:var(--border)"></div>
+            </div>
+            <div id="server-pdf-list" style="display:flex;flex-direction:column;gap:6px;max-height:220px;overflow-y:auto;border:1px solid var(--border);border-radius:var(--radius-md);padding:6px;background:var(--surface-2)"></div>
+        </div>
+        <div id="server-pdf-loading" style="margin-top:16px;font-size:12px;color:var(--text-tertiary);display:none">
+            <span style="display:inline-block;animation:spin 0.8s linear infinite;margin-right:6px">⟳</span>Checking server for PDFs…
         </div>
     </div>
 </div>
@@ -1369,6 +1468,39 @@
                             </label>
                         </div>
                     </div>
+
+                    <!-- Highlight Customisation -->
+                    <div class="control-section">
+                        <div class="control-label">Reading Highlight</div>
+
+                        <!-- Colour presets -->
+                        <div style="font-size:11px;color:var(--text-tertiary);margin-bottom:6px;font-weight:600;letter-spacing:0.04em;text-transform:uppercase">Colour</div>
+                        <div id="hl-color-presets" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">
+                            <button class="hl-preset active" data-color="rgba(59,130,246,0.32)" data-label="Blue" style="background:rgba(59,130,246,0.55)" title="Blue"></button>
+                            <button class="hl-preset" data-color="rgba(234,179,8,0.38)" data-label="Yellow" style="background:rgba(234,179,8,0.7)" title="Yellow"></button>
+                            <button class="hl-preset" data-color="rgba(16,185,129,0.35)" data-label="Green" style="background:rgba(16,185,129,0.6)" title="Green"></button>
+                            <button class="hl-preset" data-color="rgba(239,68,68,0.32)" data-label="Red" style="background:rgba(239,68,68,0.55)" title="Red"></button>
+                            <button class="hl-preset" data-color="rgba(168,85,247,0.32)" data-label="Purple" style="background:rgba(168,85,247,0.55)" title="Purple"></button>
+                            <button class="hl-preset" data-color="rgba(251,146,60,0.35)" data-label="Orange" style="background:rgba(251,146,60,0.6)" title="Orange"></button>
+                        </div>
+
+                        <!-- Opacity -->
+                        <div class="control-label" style="margin-bottom:6px">Opacity <span id="hl-opacity-val">32%</span></div>
+                        <input type="range" id="hl-opacity-slider" min="10" max="70" step="2" value="32" style="margin-bottom:12px">
+
+                        <!-- Radius -->
+                        <div class="control-label" style="margin-bottom:6px">Corner radius <span id="hl-radius-val">3px</span></div>
+                        <input type="range" id="hl-radius-slider" min="0" max="8" step="1" value="3" style="margin-bottom:12px">
+
+                        <!-- Outline toggle -->
+                        <div class="toggle-row">
+                            <span class="toggle-label">Show outline ring</span>
+                            <label class="switch">
+                                <input type="checkbox" id="hl-outline-toggle">
+                                <span class="slider"></span>
+                            </label>
+                        </div>
+                    </div>
                 </div>
 
             </div>
@@ -1402,6 +1534,8 @@
             <div id="pdf-container">
                 <canvas id="pdf-canvas"></canvas>
                 <div id="text-layer" class="textLayer"></div>
+                <!-- Highlight overlay canvas — drawn on top of text layer -->
+                <canvas id="highlight-canvas"></canvas>
                 <div id="annotation-layer" class="annotationLayer"></div>
             </div>
         </main>
@@ -1420,6 +1554,11 @@
         <span id="mobile-page-info">0 / 0</span>
         <button id="mobile-next-page" class="mobile-nav-btn" title="Next page">
             <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+        </button>
+        <!-- Hide/show topbar toggle -->
+        <button id="mobile-topbar-toggle-btn" class="mobile-menu-btn" title="Hide/show top bar" style="min-width:36px">
+            <svg id="mobile-topbar-icon-hide" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="12" y1="3" x2="12" y2="3"/><polyline points="18 9 12 3 6 9"/><line x1="12" y1="3" x2="12" y2="15"/><line x1="3" y1="20" x2="21" y2="20"/></svg>
+            <svg id="mobile-topbar-icon-show" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" style="display:none"><line x1="3" y1="4" x2="21" y2="4"/><polyline points="6 15 12 21 18 15"/><line x1="12" y1="9" x2="12" y2="21"/></svg>
         </button>
         <button id="mobile-sidebar-toggle-btn" class="mobile-menu-btn" title="Menu">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
@@ -1464,6 +1603,16 @@
     let saveAudioEnabled   = false;   // mirrors the toggle
     let currentFileName    = '';      // PDF file name (set when PDF loads)
     let isDownloadingRange = false;   // true while batch pre-gen is running
+
+    /* ─── Highlight customisation state ─── */
+    let hlBaseColor  = '59,130,246';  // RGB components of the highlight colour
+    let hlOpacity    = 0.32;          // fill alpha
+    let hlRadius     = 3;             // px corner radius
+    let hlOutline    = false;         // whether to draw an outline ring
+    let hlPadding    = 2;             // extra px added at each end of highlight rects
+
+    /* ─── Mobile topbar state ─── */
+    let topbarVisible = true;
 
     /* ─── Preload job tracking ─── */
     // Maps job_id -> { total, done, status, pollTimer }
@@ -1566,6 +1715,154 @@
 
     themeCheckbox.addEventListener('change', e => applyTheme(e.target.checked));
     themeToggleBtn.addEventListener('click', () => applyTheme(document.documentElement.getAttribute('data-theme') !== 'dark'));
+
+    /* ─── Mobile topbar toggle ─── */
+    const mobileTopbarToggleBtn = document.getElementById('mobile-topbar-toggle-btn');
+    const mobileTopbarIconHide  = document.getElementById('mobile-topbar-icon-hide');
+    const mobileTopbarIconShow  = document.getElementById('mobile-topbar-icon-show');
+
+    function setTopbarVisible(visible) {
+        topbarVisible = visible;
+        document.body.classList.toggle('topbar-hidden', !visible);
+        mobileTopbarIconHide.style.display = visible ? '' : 'none';
+        mobileTopbarIconShow.style.display = visible ? 'none' : '';
+        mobileTopbarToggleBtn.title = visible ? 'Hide top bar' : 'Show top bar';
+        console.log(`[TOPBAR] Visibility set to: ${visible}`);
+    }
+
+    mobileTopbarToggleBtn.addEventListener('click', () => {
+        setTopbarVisible(!topbarVisible);
+    });
+
+    /* ─── Server PDF Library ─── */
+    async function loadServerPDFs() {
+        const section  = document.getElementById('server-pdf-section');
+        const loading  = document.getElementById('server-pdf-loading');
+        const listEl   = document.getElementById('server-pdf-list');
+
+        console.log('[SERVER-PDF] Checking server for PDF library at http://127.0.0.1:8000/pdfs');
+        loading.style.display = 'block';
+
+        try {
+            const res = await fetch('http://127.0.0.1:8000/pdfs', { signal: AbortSignal.timeout(4000) });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            const pdfs = data.pdfs || [];
+            loading.style.display = 'none';
+
+            console.log(`[SERVER-PDF] Found ${pdfs.length} PDF(s) on server`);
+
+            if (pdfs.length === 0) {
+                console.log('[SERVER-PDF] No PDFs in server ./pdf directory — hiding section');
+                return;
+            }
+
+            section.style.display = 'block';
+            listEl.innerHTML = '';
+
+            pdfs.forEach(pdf => {
+                const item = document.createElement('div');
+                item.className = 'server-pdf-item';
+                item.title = `Open: ${pdf.name}`;
+
+                const sizeMB = (pdf.size / (1024 * 1024)).toFixed(1);
+                item.innerHTML = `
+                    <svg class="server-pdf-item-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+                    <span class="server-pdf-item-name">${escapeHtmlWelcome(pdf.name)}</span>
+                    <span class="server-pdf-item-size">${sizeMB} MB</span>
+                `;
+
+                item.addEventListener('click', async () => {
+                    console.log(`[SERVER-PDF] User selected: ${pdf.name} — fetching from server`);
+                    item.style.opacity = '0.5';
+                    item.style.pointerEvents = 'none';
+                    try {
+                        const pdfRes = await fetch(`http://127.0.0.1:8000${pdf.url}`);
+                        if (!pdfRes.ok) throw new Error(`HTTP ${pdfRes.status}`);
+                        const blob = await pdfRes.blob();
+                        const file = new File([blob], pdf.name, { type: 'application/pdf' });
+                        console.log(`[SERVER-PDF] Downloaded ${pdf.name} (${(file.size/1024/1024).toFixed(2)} MB), loading into reader`);
+                        saveToDB(file, 1, scale, 0);
+                        loadPDF(file, 1);
+                    } catch (err) {
+                        console.error(`[SERVER-PDF] Failed to load ${pdf.name}:`, err);
+                        alert(`Could not load "${pdf.name}" from server. Is the server running?`);
+                        item.style.opacity = '';
+                        item.style.pointerEvents = '';
+                    }
+                });
+
+                listEl.appendChild(item);
+                console.log(`[SERVER-PDF]   • ${pdf.name} (${sizeMB} MB)`);
+            });
+        } catch (err) {
+            loading.style.display = 'none';
+            console.log('[SERVER-PDF] Server not reachable or no PDFs — hiding section:', err.message);
+        }
+    }
+
+    // Separate escapeHtml for use before JS block is fully initialised
+    function escapeHtmlWelcome(s) {
+        return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    // Probe server for PDFs when welcome screen is shown
+    loadServerPDFs();
+
+    /* ─── Highlight Customisation ─── */
+
+    // Colour preset map: base RGB → preset button dataset
+    const HL_PRESETS = {
+        'rgba(59,130,246,0.32)':  '59,130,246',
+        'rgba(234,179,8,0.38)':   '234,179,8',
+        'rgba(16,185,129,0.35)':  '16,185,129',
+        'rgba(239,68,68,0.32)':   '239,68,68',
+        'rgba(168,85,247,0.32)':  '168,85,247',
+        'rgba(251,146,60,0.35)':  '251,146,60',
+    };
+
+    function applyHighlightSettings() {
+        const color = `rgba(${hlBaseColor},${hlOpacity})`;
+        document.documentElement.style.setProperty('--hl-color', color);
+        document.documentElement.style.setProperty('--hl-radius', hlRadius + 'px');
+        document.documentElement.style.setProperty('--hl-padding', hlPadding + 'px');
+        const outlineVal = hlOutline ? `0 0 0 1px rgba(${hlBaseColor},${Math.min(1, hlOpacity * 2.5)})` : 'none';
+        document.documentElement.style.setProperty('--hl-outline', outlineVal);
+        console.log(`[HIGHLIGHT] color=rgba(${hlBaseColor},${hlOpacity}) radius=${hlRadius}px outline=${hlOutline}`);
+        // Redraw canvas highlight if currently active
+        if (sentences && sentences.length && currentIndex >= 0) {
+            highlightActiveSentence(currentIndex, sentences);
+        }
+    }
+
+    document.querySelectorAll('.hl-preset').forEach(btn => {
+        btn.addEventListener('click', () => {
+            const colorKey = btn.dataset.color;
+            hlBaseColor = HL_PRESETS[colorKey] || '59,130,246';
+            document.querySelectorAll('.hl-preset').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            console.log(`[HIGHLIGHT] Colour preset selected: ${btn.dataset.label} (${hlBaseColor})`);
+            applyHighlightSettings();
+        });
+    });
+
+    document.getElementById('hl-opacity-slider').addEventListener('input', e => {
+        hlOpacity = parseInt(e.target.value, 10) / 100;
+        document.getElementById('hl-opacity-val').textContent = e.target.value + '%';
+        applyHighlightSettings();
+    });
+
+    document.getElementById('hl-radius-slider').addEventListener('input', e => {
+        hlRadius = parseInt(e.target.value, 10);
+        document.getElementById('hl-radius-val').textContent = e.target.value + 'px';
+        applyHighlightSettings();
+    });
+
+    document.getElementById('hl-outline-toggle').addEventListener('change', e => {
+        hlOutline = e.target.checked;
+        console.log(`[HIGHLIGHT] Outline ring: ${hlOutline}`);
+        applyHighlightSettings();
+    });
 
     /* ─── Sidebar Tabs ─── */
     tabToc.addEventListener('click', () => {
@@ -1686,6 +1983,7 @@
 
     /* ─── PDF Load ─── */
     async function loadPDF(file, startPage = 1) {
+        console.log(`[PDF] Loading: "${file.name}" (${(file.size/1024/1024).toFixed(2)} MB), startPage=${startPage}`);
         showLoading('Loading document…');
         currentFile = file;
         const fileUrl = URL.createObjectURL(file);
@@ -2071,6 +2369,7 @@
 
     async function renderPage(num) {
         pageIsRendering = true;
+        clearHighlightCanvas();  // Clear stale highlight before new page renders
         try {
             const page = await pdfDoc.getPage(num);
             const viewport = page.getViewport({ scale });
@@ -2126,6 +2425,9 @@
             let structuredText = '';
             const unscaledH = viewport.viewBox ? viewport.viewBox[3] : 800;
             let prevY = null;
+            // Track whether we are inside a list item so continuation
+            // lines (indented, no bullet prefix) are appended to it
+            let inListItem = false;
 
             lines.forEach(line => {
                 let lineText = line.items.map(i => i.str).join(' ').replace(/\s+/g, ' ').trim();
@@ -2136,15 +2438,48 @@
                 const isNum = /^[\[\(\-–—\s]*\d+[\]\)\-–—\s]*$/.test(lineText);
                 if ((isTop || isBot) && isNum) return;
 
-                const isHeader = avgFS > baseFontSize * 1.2;
-                const isList = /^[\u2022\u25E6\u25A0\-\*]\s/.test(lineText) || /^\d+\.\s/.test(lineText);
-                const isNewPara = prevY !== null && (prevY - line.y) > baseFontSize * 1.5;
+                const isHeader   = avgFS > baseFontSize * 1.2;
+                // A line starts a NEW list item only when it begins with a bullet/number marker
+                const startsNewListItem = /^[\u2022\u25E6\u25A0\u25CF\u2013\-\*]\s/.test(lineText) ||
+                                          /^\d+[\.\)]\s/.test(lineText) ||
+                                          /^[a-zA-Z][\.\)]\s/.test(lineText);
+                const isNewPara  = prevY !== null && (prevY - line.y) > baseFontSize * 1.5;
+                // A continuation line inside a list has a small gap (not a full paragraph break)
+                //  and doesn't start a new marker
+                const isListContinuation = inListItem && !startsNewListItem && !isNewPara && !isHeader;
 
                 prevY = line.y;
 
-                if (isHeader || isList) {
+                if (isHeader) {
+                    // Headers always get their own line with a trailing period for TTS
+                    inListItem = false;
                     structuredText += `\n${lineText}.\n`;
+                } else if (startsNewListItem) {
+                    // Start a new list item — close any previous one first
+                    if (inListItem) {
+                        // Ensure previous item ends with punctuation before we add a newline
+                        if (!structuredText.trim().match(/[.!?]$/)) {
+                            structuredText = structuredText.trimEnd() + '.\n';
+                        } else {
+                            structuredText = structuredText.trimEnd() + '\n';
+                        }
+                    } else {
+                        structuredText += structuredText && !structuredText.endsWith('\n') ? '\n' : '';
+                    }
+                    inListItem = true;
+                    structuredText += lineText;
+                    console.debug(`[TEXT] New list item: "${lineText.slice(0, 60)}…"`);
+                } else if (isListContinuation) {
+                    // Continuation of the previous list item — join without forcing a new sentence
+                    if (structuredText.endsWith('-')) {
+                        structuredText = structuredText.slice(0, -1) + lineText;
+                    } else {
+                        structuredText = structuredText.trimEnd() + ' ' + lineText;
+                    }
+                    console.debug(`[TEXT] List continuation: "${lineText.slice(0, 60)}…"`);
                 } else if (isNewPara) {
+                    // Paragraph break — close list mode
+                    inListItem = false;
                     structuredText += (!structuredText.trim().match(/[.!?]$/) ? '.\n' : '\n') + lineText;
                 } else if (structuredText.endsWith('-')) {
                     structuredText = structuredText.slice(0, -1) + lineText;
@@ -2156,7 +2491,8 @@
             });
 
             currentPageText = structuredText;
-            sentences = splitIntoTTSChunks(currentPageText, 150);
+            sentences = splitIntoTTSChunks(currentPageText, 250);
+            console.log(`[RENDER] Page ${num}: ${lines.length} lines → ${sentences.length} TTS sentences`);
 
             await pdfjsLib.renderTextLayer({
                 textContentSource: textContent,
@@ -2404,8 +2740,10 @@
     document.getElementById('close-file').addEventListener('click', resetUI);
 
     function resetUI() {
+        console.log('[UI] Resetting to welcome screen');
         stopPipeline();
         clearPageAudioCache();
+        clearHighlightCanvas();
         pdfDoc = null;
         currentFile = null;
         currentFileName = '';
@@ -2425,6 +2763,8 @@
         pdfOutline = null;
         cacheBadge.classList.remove('visible');
         syncMobilePlayBtn();
+        // Re-probe server PDFs each time we return to welcome screen
+        loadServerPDFs();
     }
 
     /* ─── TTS ─── */
@@ -2510,6 +2850,7 @@
     }
 
     async function fetchSentenceAudio(idx) {
+        const t0 = performance.now();
         try {
             const raw   = sentences[idx];
             const text  = /^\d{1,2}$/.test(raw.trim()) ? `Page ${raw.trim()}.` : raw;
@@ -2528,16 +2869,23 @@
                 headers['X-Save-Audio']  = saveAudioEnabled ? 'true' : 'false';
             }
 
+            console.log(`[TTS] Fetching sentence ${idx}/${sentences.length - 1}: "${text.slice(0, 60)}…" voice=${voice} save=${saveAudioEnabled}`);
+
             const res = await fetch('http://127.0.0.1:8000/synthesize', {
                 method: 'POST',
                 headers,
                 body: JSON.stringify({ text, voice, speed: serverSpeed })
             });
             if (!res.ok) throw new Error(`Backend ${res.status}`);
-            const blob = await res.blob();
+
+            const cached = res.headers.get('X-Cached') === 'true';
+            const blob   = await res.blob();
+            const elapsed = Math.round(performance.now() - t0);
+            console.log(`[TTS] Sentence ${idx} ready in ${elapsed}ms (${cached ? 'CACHE HIT' : 'synthesised'}, ${(blob.size/1024).toFixed(1)} KB)`);
+
             if (audioCache[idx] === 'fetching') audioCache[idx] = URL.createObjectURL(blob);
         } catch (e) {
-            console.error(`Audio fetch failed for sentence ${idx}`, e);
+            console.error(`[TTS] Fetch FAILED for sentence ${idx} (${Math.round(performance.now()-t0)}ms):`, e);
             if (audioCache[idx] === 'fetching') audioCache[idx] = null;
         } finally {
             inFlight--;
@@ -2549,7 +2897,11 @@
                         if (audioCache[i] && audioCache[i] !== 'fetching') cnt++;
                     }
                     ttsStatusText.textContent = `Generating… ${cnt}/${required}`;
-                    if (cnt >= required) { hasStartedPlaying = true; playNextChunk(); }
+                    if (cnt >= required) {
+                        console.log(`[TTS] Buffer ready (${cnt}/${required}) — starting playback`);
+                        hasStartedPlaying = true;
+                        playNextChunk();
+                    }
                 } else {
                     if (idx === currentIndex && audioPlayer.paused) playNextChunk();
                 }
@@ -2606,6 +2958,14 @@
         playBtn.textContent = '▶ Play Page';
         ttsStatus.classList.remove('active');
         syncMobilePlayBtn();
+        clearHighlightCanvas();
+        // Also clear <mark> elements
+        document.querySelectorAll('.textLayer span').forEach(span => {
+            if (span.dataset.originalText !== undefined) {
+                span.textContent = span.dataset.originalText;
+            }
+        });
+        console.log('[PIPELINE] Stopped — highlights cleared');
     }
 
     function clearPageAudioCache() {
@@ -2813,16 +3173,25 @@
             }
 
             try {
+                // Single bulk request for all job statuses — one round-trip regardless of job count
+                const res = await fetch('http://127.0.0.1:8000/preload_status_bulk', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(jobIds),
+                });
+
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const statusMap = await res.json();  // { job_id: { done, status, ... }, ... }
+
                 let totalDone = 0;
                 let allFinished = true;
-                for (const jobId of jobIds) {
-                    const res = await fetch(`http://127.0.0.1:8000/preload_status?job_id=${jobId}`);
-                    if (res.ok) {
-                        const data = await res.json();
-                        totalDone += data.done || 0;
-                        if (data.status !== 'done') allFinished = false;
-                    }
+                for (const [jobId, job] of Object.entries(statusMap)) {
+                    if (!job) continue;  // job_id not found on server (shouldn't happen)
+                    totalDone += job.done || 0;
+                    if (job.status !== 'done') allFinished = false;
                 }
+
+                console.log(`[POLL] Bulk status: ${totalDone}/${totalSentences} done, allFinished=${allFinished} (${jobIds.length} job(s) in 1 request)`);
 
                 const pct = Math.min(99, Math.round(70 + (totalDone / Math.max(1, totalSentences)) * 29));
                 dlProgressFill.style.width = pct + '%';
@@ -2834,6 +3203,7 @@
                 }
             } catch (e) {
                 // Server might be temporarily unreachable; keep polling
+                console.warn('[POLL] Bulk status request failed, will retry:', e.message);
                 dlStatusText.textContent = 'Waiting for server…';
             }
         }, 1000);
@@ -2881,6 +3251,7 @@
         let structuredText = '';
         const unscaledH = viewport.viewBox ? viewport.viewBox[3] : 800;
         let prevY = null;
+        let inListItem = false;
 
         lines.forEach(line => {
             let lineText = line.items.map(i => i.str).join(' ').replace(/\s+/g, ' ').trim();
@@ -2891,14 +3262,35 @@
             const isNum = /^[\[\(\-–—\s]*\d+[\]\)\-–—\s]*$/.test(lineText);
             if ((isTop || isBot) && isNum) return;
 
-            const isHeader  = avgFS > baseFontSize * 1.2;
-            const isList    = /^[\u2022\u25E6\u25A0\-\*]\s/.test(lineText) || /^\d+\.\s/.test(lineText);
-            const isNewPara = prevY !== null && (prevY - line.y) > baseFontSize * 1.5;
+            const isHeader   = avgFS > baseFontSize * 1.2;
+            const startsNewListItem = /^[\u2022\u25E6\u25A0\u25CF\u2013\-\*]\s/.test(lineText) ||
+                                      /^\d+[\.\)]\s/.test(lineText) ||
+                                      /^[a-zA-Z][\.\)]\s/.test(lineText);
+            const isNewPara  = prevY !== null && (prevY - line.y) > baseFontSize * 1.5;
+            const isListContinuation = inListItem && !startsNewListItem && !isNewPara && !isHeader;
+
             prevY = line.y;
 
-            if (isHeader || isList) {
+            if (isHeader) {
+                inListItem = false;
                 structuredText += `\n${lineText}.\n`;
+            } else if (startsNewListItem) {
+                if (inListItem) {
+                    structuredText = structuredText.trimEnd() +
+                        (!structuredText.trim().match(/[.!?]$/) ? '.\n' : '\n');
+                } else {
+                    structuredText += structuredText && !structuredText.endsWith('\n') ? '\n' : '';
+                }
+                inListItem = true;
+                structuredText += lineText;
+            } else if (isListContinuation) {
+                if (structuredText.endsWith('-')) {
+                    structuredText = structuredText.slice(0, -1) + lineText;
+                } else {
+                    structuredText = structuredText.trimEnd() + ' ' + lineText;
+                }
             } else if (isNewPara) {
+                inListItem = false;
                 structuredText += (!structuredText.trim().match(/[.!?]$/) ? '.\n' : '\n') + lineText;
             } else if (structuredText.endsWith('-')) {
                 structuredText = structuredText.slice(0, -1) + lineText;
@@ -2909,67 +3301,218 @@
             }
         });
 
-        return splitIntoTTSChunks(structuredText, 150);
+        return splitIntoTTSChunks(structuredText, 250);
     }
 
-    /* ─── TTS Highlighting ─── */
+    /* ─── TTS Highlighting (canvas-based) ─── */
+
+    /**
+     * Clear the highlight canvas and any leftover <mark> elements.
+     */
+    function clearHighlightCanvas() {
+        const hlCanvas = document.getElementById('highlight-canvas');
+        if (!hlCanvas) return;
+        const ctx = hlCanvas.getContext('2d');
+        ctx.clearRect(0, 0, hlCanvas.width, hlCanvas.height);
+    }
+
+    /**
+     * Highlight the active sentence.
+     *
+     * Strategy:
+     *  1. Normalise-match to find which spans overlap the target sentence
+     *     (same alphanumeric-only matching as before, but now we include ALL
+     *      characters — including commas, colons, etc. — in the drawn rectangle).
+     *  2. Group matched spans by their visual Y coordinate → one rect per line.
+     *  3. Paint rounded rectangles on the highlight-canvas, extending each rect
+     *     by `hlPadding` px at both ends so it doesn't clip tightly.
+     *  4. Also set a `<mark>` on each matched span so text-selection and the
+     *     search-highlight interactions still work correctly.
+     */
     function highlightActiveSentence(sentenceIndex, allSentences) {
+        // ── 1. Clear previous highlights ──
+        clearHighlightCanvas();
         const allSpans = Array.from(document.querySelectorAll('.textLayer span'));
         allSpans.forEach(span => {
-            if (span.dataset.originalText === undefined) span.dataset.originalText = span.textContent;
+            if (span.dataset.originalText === undefined) {
+                span.dataset.originalText = span.textContent;
+            }
             span.textContent = span.dataset.originalText;
         });
 
-        if (sentenceIndex < 0 || sentenceIndex >= allSentences.length) return;
+        if (sentenceIndex < 0 || sentenceIndex >= allSentences.length) {
+            console.log(`[HIGHLIGHT] clearHighlight: index ${sentenceIndex} out of range`);
+            return;
+        }
 
+        // ── 2. Build normalised full-text map (alpha-numeric only for matching) ──
         const normalize = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-        let fullNorm = '', spanMaps = [];
+        let fullNorm = '';
+        const spanMaps = [];
         allSpans.forEach(span => {
-            const raw = span.dataset.originalText;
+            const raw  = span.dataset.originalText;
             const norm = normalize(raw);
-            spanMaps.push({ element: span, rawText: raw, start: fullNorm.length, end: fullNorm.length + norm.length });
+            spanMaps.push({ element: span, rawText: raw, normStart: fullNorm.length, normEnd: fullNorm.length + norm.length });
             fullNorm += norm;
         });
 
+        // ── 3. Find match position for this sentence ──
         let cursor = 0, matchIndex = -1, targetNorm = '';
         for (let i = 0; i <= sentenceIndex; i++) {
             targetNorm = normalize(allSentences[i]);
             if (!targetNorm) continue;
-            matchIndex = fullNorm.indexOf(targetNorm, cursor);
-            if (matchIndex === -1) matchIndex = fullNorm.indexOf(targetNorm, 0);
-            if (matchIndex !== -1) cursor = matchIndex + targetNorm.length;
+            const found = fullNorm.indexOf(targetNorm, cursor);
+            if (found !== -1) {
+                matchIndex = found;
+                cursor = found + targetNorm.length;
+            } else {
+                // Fallback: search from beginning
+                const fallback = fullNorm.indexOf(targetNorm, 0);
+                if (fallback !== -1) { matchIndex = fallback; cursor = fallback + targetNorm.length; }
+            }
         }
 
-        if (matchIndex === -1) return;
+        if (matchIndex === -1) {
+            console.warn(`[HIGHLIGHT] Could not locate sentence ${sentenceIndex}: "${allSentences[sentenceIndex]?.slice(0,60)}…"`);
+            return;
+        }
+
         const matchEnd = matchIndex + targetNorm.length;
+        console.log(`[HIGHLIGHT] Sentence ${sentenceIndex}: normMatch [${matchIndex}–${matchEnd}], text="${allSentences[sentenceIndex]?.slice(0,60)}…"`);
+
+        // ── 4. Collect matched spans and set <mark> on them ──
+        const matchedSpans = [];
         let firstEl = null;
 
         spanMaps.forEach(map => {
-            const os = Math.max(map.start, matchIndex);
-            const oe = Math.min(map.end, matchEnd);
-            if (os < oe) {
-                let alpha = map.start, rs = 0, re = map.rawText.length;
-                for (let i = 0; i < map.rawText.length; i++) {
-                    if (/[a-z0-9]/i.test(map.rawText[i])) {
-                        if (alpha === os) rs = i;
-                        alpha++;
-                        if (alpha === oe) { re = i + 1; break; }
-                    }
+            const os = Math.max(map.normStart, matchIndex);
+            const oe = Math.min(map.normEnd,   matchEnd);
+            if (os >= oe) return;  // no overlap
+
+            // Find raw character indices for the highlight within this span
+            // We include ALL characters (commas, spaces, etc.) — not just alnum
+            let alpha = map.normStart, rs = 0, re = map.rawText.length;
+            let rsFound = false;
+            for (let i = 0; i < map.rawText.length; i++) {
+                const ch = map.rawText[i];
+                if (/[a-z0-9]/i.test(ch)) {
+                    if (!rsFound && alpha === os) { rs = i; rsFound = true; }
+                    alpha++;
+                    if (alpha === oe) { re = i + 1; break; }
                 }
-                const before = escapeHtml(map.rawText.slice(0, rs));
-                const hi = escapeHtml(map.rawText.slice(rs, re));
-                const after = escapeHtml(map.rawText.slice(re));
+            }
+
+            // Extend re to include trailing punctuation/spaces on same span
+            // (e.g. comma immediately after the last matched alnum char)
+            while (re < map.rawText.length && /[^\w\s]/.test(map.rawText[re])) re++;
+
+            // Set <mark> for DOM-level highlighting (search interaction, dark mode, etc.)
+            const before = escapeHtml(map.rawText.slice(0, rs));
+            const hi     = escapeHtml(map.rawText.slice(rs, re));
+            const after  = escapeHtml(map.rawText.slice(re));
+            if (hi) {
                 map.element.innerHTML = `${before}<mark class="reading-highlight">${hi}</mark>${after}`;
-                if (!firstEl) firstEl = map.element.querySelector('mark.reading-highlight');
+                const markEl = map.element.querySelector('mark.reading-highlight');
+                if (!firstEl && markEl) firstEl = markEl;
+                matchedSpans.push(map.element);
             }
         });
 
+        // ── 5. Paint canvas highlight rects ──
+        const hlCanvas  = document.getElementById('highlight-canvas');
+        const container = document.getElementById('pdf-container');
+        if (hlCanvas && container && matchedSpans.length > 0) {
+            const dpr  = window.devicePixelRatio || 1;
+            const cRect = container.getBoundingClientRect();
+
+            // Group matched <mark> elements by their visual top position (one row per line)
+            const rows = new Map();  // key: rounded top → [{left, right, top, bottom}]
+
+            matchedSpans.forEach(span => {
+                const marks = span.querySelectorAll('mark.reading-highlight');
+                marks.forEach(mark => {
+                    const r = mark.getBoundingClientRect();
+                    if (r.width < 1 || r.height < 1) return;
+
+                    // Convert to container-local coordinates
+                    const left   = r.left   - cRect.left;
+                    const top    = r.top    - cRect.top;
+                    const right  = r.right  - cRect.left;
+                    const bottom = r.bottom - cRect.top;
+
+                    // Group by row: round top to nearest 2px bucket
+                    const rowKey = Math.round(top / 2) * 2;
+                    if (!rows.has(rowKey)) {
+                        rows.set(rowKey, { left, right, top, bottom });
+                    } else {
+                        const row = rows.get(rowKey);
+                        row.left   = Math.min(row.left,   left);
+                        row.right  = Math.max(row.right,  right);
+                        row.top    = Math.min(row.top,    top);
+                        row.bottom = Math.max(row.bottom, bottom);
+                    }
+                });
+            });
+
+            if (rows.size === 0) {
+                console.warn('[HIGHLIGHT] No bounding rects found for matched spans — canvas draw skipped');
+                return;
+            }
+
+            // Ensure canvas size matches container
+            hlCanvas.width  = Math.round(cRect.width  * dpr);
+            hlCanvas.height = Math.round(cRect.height * dpr);
+            hlCanvas.style.width  = cRect.width  + 'px';
+            hlCanvas.style.height = cRect.height + 'px';
+
+            const ctx = hlCanvas.getContext('2d');
+            ctx.clearRect(0, 0, hlCanvas.width, hlCanvas.height);
+            ctx.scale(dpr, dpr);
+
+            const pad = hlPadding;   // extra px at each horizontal end
+            const r   = hlRadius;    // corner radius
+            const fillColor   = `rgba(${hlBaseColor},${hlOpacity})`;
+            const strokeColor = hlOutline ? `rgba(${hlBaseColor},${Math.min(1, hlOpacity * 2.5)})` : null;
+
+            ctx.fillStyle = fillColor;
+            if (strokeColor) { ctx.strokeStyle = strokeColor; ctx.lineWidth = 1; }
+
+            rows.forEach((row, key) => {
+                const x = row.left   - pad;
+                const y = row.top;
+                const w = (row.right - row.left) + pad * 2;
+                const h = row.bottom - row.top;
+                const cr = Math.min(r, w / 2, h / 2);
+
+                ctx.beginPath();
+                ctx.moveTo(x + cr, y);
+                ctx.lineTo(x + w - cr, y);
+                ctx.quadraticCurveTo(x + w, y, x + w, y + cr);
+                ctx.lineTo(x + w, y + h - cr);
+                ctx.quadraticCurveTo(x + w, y + h, x + w - cr, y + h);
+                ctx.lineTo(x + cr, y + h);
+                ctx.quadraticCurveTo(x, y + h, x, y + h - cr);
+                ctx.lineTo(x, y + cr);
+                ctx.quadraticCurveTo(x, y, x + cr, y);
+                ctx.closePath();
+                ctx.fill();
+                if (strokeColor) ctx.stroke();
+            });
+
+            // Reset transform for subsequent calls
+            ctx.setTransform(1, 0, 0, 1, 0, 0);
+            console.log(`[HIGHLIGHT] Drew ${rows.size} rect(s) on canvas for sentence ${sentenceIndex}`);
+        }
+
+        // ── 6. Auto-scroll if needed ──
         if (firstEl && viewerArea) {
             const vr = viewerArea.getBoundingClientRect();
             const hr = firstEl.getBoundingClientRect();
-            const rt = hr.top - vr.top, rb = hr.bottom - vr.top;
-            if (rt < vr.height * 0.2 || rb > vr.height * 0.8) {
+            const rt = hr.top - vr.top;
+            const rb = hr.bottom - vr.top;
+            if (rt < vr.height * 0.15 || rb > vr.height * 0.8) {
                 viewerArea.scrollTo({ top: viewerArea.scrollTop + rt - vr.height / 3, behavior: 'smooth' });
+                console.log(`[HIGHLIGHT] Auto-scrolled viewer by ${Math.round(rt - vr.height / 3)}px`);
             }
         }
     }
