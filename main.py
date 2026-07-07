@@ -16,6 +16,11 @@ from functools import partial
 
 app = FastAPI(title="Local PDF Reader TTS Engine")
 
+# ─── PDF library directory ───
+PDF_DIR = os.path.join(os.path.dirname(__file__), "pdf")
+os.makedirs(PDF_DIR, exist_ok=True)
+print(f"[INIT] PDF library directory: {PDF_DIR}")
+
 # ─── CORS ───
 app.add_middleware(
     CORSMiddleware,
@@ -25,6 +30,57 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["X-Cached", "X-Cache-Path"],  # expose custom headers to browser
 )
+
+# ─── GET /pdfs  — list available server-side PDFs ───
+
+@app.get("/pdfs")
+async def list_pdfs():
+    """
+    Return a list of PDF files available in the server's ./pdf directory.
+    Each entry includes name, size (bytes), and a download URL.
+    """
+    if not os.path.isdir(PDF_DIR):
+        print("[PDFS] PDF directory not found, returning empty list")
+        return {"pdfs": []}
+
+    pdfs = []
+    for fname in sorted(os.listdir(PDF_DIR)):
+        if not fname.lower().endswith(".pdf"):
+            continue
+        fpath = os.path.join(PDF_DIR, fname)
+        try:
+            size = os.path.getsize(fpath)
+            pdfs.append({
+                "name": fname,
+                "size": size,
+                "url":  f"/pdfs/{fname}",
+            })
+            print(f"[PDFS]   found: {fname} ({size:,} bytes)")
+        except OSError as e:
+            print(f"[PDFS]   skip {fname}: {e}")
+
+    print(f"[PDFS] Listing {len(pdfs)} PDF(s)")
+    return {"pdfs": pdfs}
+
+
+# ─── GET /pdfs/{filename}  — serve a specific PDF ───
+
+@app.get("/pdfs/{filename}")
+async def serve_pdf(filename: str):
+    """Serve a PDF file from the server's ./pdf directory."""
+    # Sanitise: no path traversal
+    safe_name = os.path.basename(filename)
+    if not safe_name.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are served here.")
+
+    fpath = os.path.join(PDF_DIR, safe_name)
+    if not os.path.isfile(fpath):
+        print(f"[PDFS] 404: {safe_name} not found in {PDF_DIR}")
+        raise HTTPException(status_code=404, detail=f"PDF '{safe_name}' not found on server.")
+
+    print(f"[PDFS] Serving: {safe_name} ({os.path.getsize(fpath):,} bytes)")
+    return FileResponse(fpath, media_type="application/pdf", filename=safe_name)
+
 
 # ─── Audio cache root directory ───
 AUDIO_CACHE_DIR = os.path.join(os.path.dirname(__file__), "tts_cache")
@@ -106,9 +162,9 @@ async def synthesize_audio(text: str, voice: str, speed: float = 1.0) -> bytes:
     if not text.strip():
         raise HTTPException(status_code=400, detail="Text cannot be empty.")
 
-    print(f"\n--- Synthesizing ---")
-    print(f"  text  : {text!r}")
-    print(f"  voice : {voice} | speed: {speed}")
+    #print(f"\n--- Synthesizing ---")
+    #print(f"  text  : {text!r}")
+    #print(f"  voice : {voice} | speed: {speed}")
 
     func = partial(kokoro.create, text, voice=voice, speed=speed, lang="en-us")
 
@@ -170,6 +226,7 @@ async def synthesize_post(
     # ── Synthesise at 1.0x for saving; use requested speed for live play ──
     synthesis_speed = 1.0 if (save and can_cache) else payload.speed
     try:
+        print(f"Page : {page} \t Line : {line}")
         wav_bytes = await synthesize_audio(payload.text, payload.voice, synthesis_speed)
     except Exception as e:
         print(f"ERROR: {e}")
@@ -237,6 +294,7 @@ async def _run_preload_job(job_id: str, payload: PreloadPayload):
 
             try:
                 # Always synthesise at 1.0x for stored files
+                print(f"Downloading -> Page : {page} \t Line : {line}")
                 wav_bytes = await synthesize_audio(text, payload.voice, speed=1.0)
                 with open(cache_file, "wb") as f:
                     f.write(wav_bytes)
