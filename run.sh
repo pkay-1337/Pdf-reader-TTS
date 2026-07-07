@@ -10,7 +10,7 @@ uvicorn main:app --host 127.0.0.1 --port 8000 &
 BACKEND_PID=$!
 
 echo -e "${GREEN}Starting Frontend on port 8080...${NC}"
-python -m http.server 8080 &
+python3 -m http.server 8080 &
 FRONTEND_PID=$!
 
 # Trap SIGINT (Ctrl+C) and cleanly kill both processes
