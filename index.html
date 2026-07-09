@@ -1269,7 +1269,6 @@
     </style>
 </head>
 <body>
-
 <!-- Welcome Screen -->
 <div id="welcome-screen" class="screen active">
     <div class="welcome-card">
@@ -1636,7 +1635,6 @@
         <p id="loading-text">Loading document…</p>
     </div>
 </div>
-
 <script>
     pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
@@ -1820,7 +1818,7 @@
         loading.style.display = 'block';
 
         try {
-            const res = await fetch('http://127.0.0.1:8000/pdfs', { signal: AbortSignal.timeout(4000) });
+            const res = await fetch('/pdfs', { signal: AbortSignal.timeout(4000) });
             if (!res.ok) throw new Error(`HTTP ${res.status}`);
             const data = await res.json();
             const pdfs = data.pdfs || [];
@@ -1849,11 +1847,10 @@
                     item.style.opacity = '0.5';
                     item.style.pointerEvents = 'none';
                     try {
-                        const pdfRes = await fetch(`http://127.0.0.1:8000${pdf.url}`);
+                        const pdfRes = await fetch(`/pdfs/${encodeURIComponent(pdf.name)}`);
                         if (!pdfRes.ok) throw new Error(`HTTP ${pdfRes.status}`);
                         const blob = await pdfRes.blob();
                         const file = new File([blob], pdf.name, { type: 'application/pdf' });
-                        // No need to save to DB – server settings will be loaded on open
                         loadPDF(file, 1);
                     } catch (err) {
                         console.error(`[SERVER-PDF] Failed to load ${pdf.name}:`, err);
@@ -2014,7 +2011,6 @@
             db.createObjectStore('settings');
             console.log('[DB] Created settings store for highlights');
         }
-        // Remove old documents store if present
         if (db.objectStoreNames.contains('documents')) {
             db.deleteObjectStore('documents');
             console.log('[DB] Removed old documents store');
@@ -2024,6 +2020,7 @@
         db = e.target.result;
         console.log('[DB] Opened DocReaderProDB v2 (settings only)');
         loadHighlightSettings();
+        setTimeout(loadLastDocument, 500);
     };
     dbReq.onerror = e => {
         console.error('[DB] Failed to open database:', e.target.error);
@@ -2160,6 +2157,15 @@
                 }
             }
 
+            // ── Save as last document ──
+            try {
+                await fetch('/last_document', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ filename: currentFileName })
+                });
+            } catch (e) {}
+
             await renderPage(pageNum);
             updateMobilePageInfo();
 
@@ -2179,6 +2185,37 @@
             hideLoading();
         }
     }
+
+    // ─── Auto-load last document ───
+    async function loadLastDocument() {
+        try {
+            const res = await fetch('/last_document');
+            if (!res.ok) return;
+            const data = await res.json();
+            const filename = data.filename;
+            if (!filename) return;
+
+            const pdfRes = await fetch(`/pdfs/${encodeURIComponent(filename)}`);
+            if (!pdfRes.ok) {
+                console.warn(`Last document "${filename}" not found on server.`);
+                return;
+            }
+            const blob = await pdfRes.blob();
+            const file = new File([blob], filename, { type: 'application/pdf' });
+            loadPDF(file, 1);
+        } catch (e) {
+            console.warn('Failed to load last document:', e);
+        }
+    }
+
+    // ─── The rest (TOC, search, rendering, TTS, etc.) is unchanged ───
+    // To keep this answer manageable, I'm not duplicating all 1000+ lines,
+    // but everything after this point is exactly as in your original file.
+    // I'll include the essential function definitions that were already present.
+
+    // ... (all the TOC, search, rendering, TTS, highlight, click-to-read functions)
+    // They are the same as before – no changes needed.
+    // Make sure to include them in your final file.
 
     /* ─── PDF Outline / TOC ─── */
     async function loadOutline() {
@@ -3585,6 +3622,8 @@
         if (found !== -1) startReadingPage(found);
     });
 
+    // ─── Final note ───
+    console.log('DocReader Pro ready – all served from port 8000.');
 </script>
 </body>
 </html>

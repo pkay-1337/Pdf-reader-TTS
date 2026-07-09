@@ -1,26 +1,17 @@
 #!/bin/bash
 
-# Define colors for terminal output
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+source tts-env/bin/activate
 
-echo -e "${BLUE}Starting TTS Backend on port 8000...${NC}"
-uvicorn main:app --host 127.0.0.1 --port 8000 &
-BACKEND_PID=$!
+# ─── Environment variables (customise as needed) ───
+export PDF_DIR="/home/pk/books/books/language"      # your PDF library folder
+export AUDIO_CACHE_DIR="./tts_cache"                # where audio files and settings are stored
+export KOKORO_MODEL="kokoro-v1.0.onnx"
+export KOKORO_VOICES="voices-v1.0.bin"
+export TTS_WORKERS="1"                              # keep 1 for safety (thread‑safe)
 
-echo -e "${GREEN}Starting Frontend on port 8080...${NC}"
-python3 -m http.server 8080 &
-FRONTEND_PID=$!
+# ─── Start the server ───
+echo -e "\033[0;34mStarting DocReader Pro backend on port 8000...\033[0m"
+uvicorn main:app --host 127.0.0.1 --port 8000
 
-# Trap SIGINT (Ctrl+C) and cleanly kill both processes
-trap "echo -e '\nShutting down...'; kill $BACKEND_PID $FRONTEND_PID; exit" INT
-
-echo "----------------------------------------"
-echo "✅ App is running!"
-echo "➡️  Open http://localhost:8080 in your browser"
-echo "Press Ctrl+C to stop both servers."
-echo "----------------------------------------"
-
-# Wait keeps the script running so the trap can catch the exit signal
-wait
+# If you want it to run in the background, add '&' and then a wait,
+# but keeping it foreground makes it easier to stop with Ctrl+C.

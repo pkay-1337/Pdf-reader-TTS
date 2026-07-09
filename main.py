@@ -8,7 +8,6 @@ import soundfile as sf
 from fastapi import FastAPI, HTTPException, Header, BackgroundTasks, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse, HTMLResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional, List, Dict
 from kokoro_onnx import Kokoro
@@ -37,18 +36,14 @@ app.add_middleware(
     expose_headers=["X-Cached", "X-Cache-Path"],
 )
 
-# ─── Serve the HTML page at the root ───
-# Place your index.html in the same directory as this script.
-# Or you can serve it from a static directory.
+# ─── Serve HTML at root ───
 @app.get("/", response_class=HTMLResponse)
 async def serve_index():
-    # If you have index.html in the same folder, read and return it.
-    # Otherwise, you can mount a static folder.
-    with open("index.html", "r", encoding="utf-8") as f:
-        return f.read()
-
-# Alternatively, if you want to keep your HTML separate, you can mount a static directory:
-# app.mount("/", StaticFiles(directory=".", html=True), name="static")
+    try:
+        with open("index.html", "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        return HTMLResponse("<h1>DocReader Pro</h1><p>index.html not found.</p>", status_code=404)
 
 # ─── Kokoro model (global, with lock for thread safety) ───
 kokoro = None
@@ -104,6 +99,23 @@ def save_settings(book_name: str, data: dict) -> None:
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=2)
 
+# ─── Last document persistence ───
+LAST_DOC_FILE = os.path.join(AUDIO_CACHE_DIR, "last_document.json")
+
+def get_last_document() -> Optional[str]:
+    if os.path.exists(LAST_DOC_FILE):
+        try:
+            with open(LAST_DOC_FILE, "r") as f:
+                data = json.load(f)
+                return data.get("filename")
+        except:
+            pass
+    return None
+
+def set_last_document(filename: str):
+    with open(LAST_DOC_FILE, "w") as f:
+        json.dump({"filename": filename}, f)
+
 # ─── Pydantic models ───
 
 class TextPayload(BaseModel):
@@ -123,6 +135,9 @@ class SettingsPayload(BaseModel):
     page: int
     scale: float
     sentenceIndex: int = 0
+
+class LastDocPayload(BaseModel):
+    filename: str
 
 # ─── Core TTS synthesis ───
 
@@ -181,7 +196,7 @@ async def serve_pdf(filename: str):
         raise HTTPException(status_code=404, detail="PDF not found.")
     return FileResponse(fpath, media_type="application/pdf", filename=safe_name)
 
-# ─── Settings endpoints (NEW) ───
+# ─── Settings endpoints ───
 
 @app.get("/settings")
 async def get_settings(book_name: str):
@@ -198,6 +213,18 @@ async def set_settings(payload: SettingsPayload):
     if payload.page < 1:
         raise HTTPException(status_code=400, detail="Invalid page number")
     save_settings(payload.book_name, payload.dict())
+    return {"status": "ok"}
+
+# ─── Last document endpoints ───
+
+@app.get("/last_document")
+async def get_last():
+    filename = get_last_document()
+    return {"filename": filename} if filename else {"filename": None}
+
+@app.post("/last_document")
+async def set_last(payload: LastDocPayload):
+    set_last_document(payload.filename)
     return {"status": "ok"}
 
 # ─── TTS synthesis ───
@@ -379,5 +406,3 @@ async def upload_pdf(file: UploadFile = File(...)):
         content = await file.read()
         f.write(content)
     return {"status": "uploaded", "filename": safe_name}
-
-# ─── Run with: uvicorn server:app --host 0.0.0.0 --port 8000
