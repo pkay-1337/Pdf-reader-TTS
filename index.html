@@ -2566,7 +2566,7 @@
             });
 
             currentPageText = structuredText;
-            sentences = splitIntoTTSChunks(currentPageText, 150);
+            sentences = splitIntoTTSChunks(currentPageText, 250);
             console.log(`[RENDER] Page ${num}: ${lines.length} lines → ${sentences.length} TTS sentences`);
 
             await pdfjsLib.renderTextLayer({
@@ -3376,7 +3376,7 @@
             }
         });
 
-        return splitIntoTTSChunks(structuredText, 150);
+        return splitIntoTTSChunks(structuredText, 250);
     }
 
     /* ─── TTS Highlighting (canvas-based) ─── */
@@ -3556,7 +3556,7 @@
                 const x  = row.left   - pad;
                 const y  = row.top   ;          // inset 1px from top — no bleed into line above
                 const w  = (row.right - row.left) + pad * 2;
-                const h  = (row.bottom - row.top) ;  // inset 1px from bottom too
+                const h  = (row.bottom - row.top) + 1 ;  // inset 1px from bottom too
                 const cr = Math.min(r, w / 2, h / 2);
 
                 ctx.beginPath();
