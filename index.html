@@ -1828,19 +1828,6 @@
         });
     }
 
-    /* ─── FAB sidebar toggle (landscape phone) ─── */
-    const fabSidebarToggle = document.getElementById('fab-sidebar-toggle');
-    if (fabSidebarToggle) {
-        fabSidebarToggle.addEventListener('click', () => {
-            if (sidebarOpen) {
-                closeMobileSidebar();
-            } else {
-                openMobileSidebar();
-                sidebarOpen = true;
-            }
-        });
-    }
-
     /* ─── Server PDF Library ─── */
     async function loadServerPDFs() {
         const section  = document.getElementById('server-pdf-section');
