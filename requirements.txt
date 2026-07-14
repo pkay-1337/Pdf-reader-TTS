@@ -1,6 +1,8 @@
 fastapi
-uvicorn
+uvicorn[standard]
 kokoro-onnx
 soundfile
 pydantic
 phonemizer-fork
+python-multipart
+aiofiles

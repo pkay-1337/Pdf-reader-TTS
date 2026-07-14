@@ -8,6 +8,7 @@ import soundfile as sf
 from fastapi import FastAPI, HTTPException, Header, BackgroundTasks, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse, JSONResponse, HTMLResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional, List, Dict
 from kokoro_onnx import Kokoro
@@ -35,6 +36,11 @@ app.add_middleware(
     allow_headers=["*"],
     expose_headers=["X-Cached", "X-Cache-Path"],
 )
+
+# ─── Serve offline static assets (PDF.js, fonts) ───
+STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
+if os.path.isdir(STATIC_DIR):
+    app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 # ─── Serve HTML at root ───
 @app.get("/", response_class=HTMLResponse)

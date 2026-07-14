@@ -1,0 +1,17 @@
+services:
+  docreader:
+    build: .
+    image: docreader-pro
+    ports:
+      - "8000:8000"
+    volumes:
+      # Host folders that persist across container restarts
+      - ./pdf:/app/pdf            # drop your PDFs here
+      - ./tts_cache:/app/tts_cache # synthesized audio cache
+    environment:
+      PDF_DIR: /app/pdf
+      AUDIO_CACHE_DIR: /app/tts_cache
+      KOKORO_MODEL: kokoro-v1.0.onnx
+      KOKORO_VOICES: voices-v1.0.bin
+      TTS_WORKERS: "1"
+    restart: unless-stopped
