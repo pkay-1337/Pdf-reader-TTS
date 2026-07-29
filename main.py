@@ -67,7 +67,7 @@ except Exception as e:
 # ─── Background preload jobs ───
 _preload_jobs: Dict[str, dict] = {}
 _preload_lock = asyncio.Lock()
-_page_processing_semaphore = asyncio.Semaphore(3)
+_page_processing_semaphore = asyncio.Semaphore(2)
 
 # ─── Helper functions ───
 
@@ -242,36 +242,46 @@ async def synthesize_post(
     x_save_audio: Optional[str] = Header(default=None),
     x_page_number: Optional[str] = Header(default=None),
     x_line_number: Optional[str] = Header(default=None),
+    x_force_regenerate: Optional[str] = Header(default=None),
 ):
-    save = (x_save_audio or "false").lower() == "true"
-    book = x_book_name or ""
-    page = int(x_page_number) if x_page_number and x_page_number.isdigit() else None
-    line = int(x_line_number) if x_line_number and x_line_number.isdigit() else None
+    save             = (x_save_audio or "false").lower() == "true"
+    force_regen      = (x_force_regenerate or "false").lower() == "true"
+    book             = x_book_name or ""
+    page             = int(x_page_number) if x_page_number and x_page_number.isdigit() else None
+    line             = int(x_line_number) if x_line_number and x_line_number.isdigit() else None
 
     can_cache = bool(book and page is not None and line is not None)
 
     if can_cache:
-        book_dir = get_book_dir(book)
+        book_dir   = get_book_dir(book)
         cache_file = wav_path(book_dir, page, line)
 
-        if not save and os.path.exists(cache_file):
+        # Serve from cache only when NOT forced to regenerate and NOT a save request
+        if not save and not force_regen and os.path.exists(cache_file):
             return FileResponse(
                 cache_file,
                 media_type="audio/wav",
-                headers={"X-Cached": "true"},
+                headers={"X-Cached": "true", "X-Cache-Path": cache_file},
             )
 
-    synthesis_speed = 1.0 if (save and can_cache) else payload.speed
+    synthesis_speed = 1.0 if (can_cache and (save or force_regen)) else payload.speed
     wav_bytes = await synthesize_audio(payload.text, payload.voice, synthesis_speed)
 
-    if save and can_cache:
+    # Write to disk when:
+    #   • explicit save request, OR
+    #   • force-regenerate (always overwrite existing cache so the new
+    #     normalised text replaces the old audio)
+    if can_cache and (save or force_regen):
         with open(cache_file, "wb") as f:
             f.write(wav_bytes)
 
     return StreamingResponse(
         io.BytesIO(wav_bytes),
         media_type="audio/wav",
-        headers={"X-Cached": "false"},
+        headers={
+            "X-Cached": "false",
+            **({"X-Cache-Path": cache_file} if can_cache else {}),
+        },
     )
 
 @app.get("/play")
