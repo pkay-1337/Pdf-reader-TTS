@@ -58,9 +58,10 @@
 
     --toc-chapter-bg:  rgba(88, 166, 255, 0.08);
     --toc-chapter-border: rgba(88, 166, 255, 0.2);
-    --toc-subtopic-color: #b0b8c4;
-    --toc-subsub-color: #8b949e;
-    --toc-line-color: #30363d;
+	    --toc-subtopic-color: #ffffff;   /* was #b0b8c4 */
+    --toc-subsub-color: #ffffff;     /* was #8b949e */
+    --toc-line-color: #6e7681;       /* keep as is, or make lighter */
+
 }
 
 * {
@@ -69,10 +70,19 @@
     padding: 0;
 }
 
+/* ─── Custom Font ─── */
+@font-face {
+    font-family: 'Mononoki';
+    src: url('/static/fonts/mononoki-Regular.ttf') format('truetype');
+    font-weight: normal;
+    font-style: normal;
+    font-display: swap;
+}
+
 html,
 body {
     height: 100%;
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+	font-family: 'Mononoki', 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
     font-size: 14px;
     color: var(--text-primary);
     background: var(--bg);
@@ -1776,7 +1786,7 @@ body.topbar-hidden .sidebar-overlay {
     }
 }
 .reading-time {
-    font-size: 13px;   /* was 11px */
+    font-size: 14px;   /* was 11px */
     /* ... rest unchanged */
 }
 
@@ -1785,16 +1795,16 @@ body.topbar-hidden .sidebar-overlay {
 }
 
 .toc-item.level-1 .toc-item-label {
-    font-size: 14px;   /* was 13px */
+    font-size: 15px;   /* was 13px */
 }
 
 .toc-item.level-2 .toc-item-label {
-    font-size: 13px;   /* was 12.5px */
+    font-size: 14px;   /* was 12.5px */
 }
 
 .toc-item.level-3 .toc-item-label {
-    font-size: 12px;   /* was 12px – kept */
+    font-size: 13px;   /* was 12px – kept */
 }
 .page-info-badge {
-    font-size: 14px;   /* was 13px */
+    font-size: 15px;   /* was 13px */
 }
