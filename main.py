@@ -37,12 +37,11 @@ app.add_middleware(
     expose_headers=["X-Cached", "X-Cache-Path"],
 )
 
-# ─── Serve offline static assets (PDF.js, fonts) ───
+# ─── Serve static assets ───
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 if os.path.isdir(STATIC_DIR):
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-# ─── Serve HTML at root ───
 @app.get("/", response_class=HTMLResponse)
 async def serve_index():
     try:
@@ -51,7 +50,7 @@ async def serve_index():
     except FileNotFoundError:
         return HTMLResponse("<h1>DocReader Pro</h1><p>index.html not found.</p>", status_code=404)
 
-# ─── Kokoro model (global, with lock for thread safety) ───
+# ─── Kokoro model ───
 kokoro = None
 _model_lock = asyncio.Lock()
 _tts_executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
@@ -85,6 +84,52 @@ def get_book_dir(book_name: str) -> str:
 
 def wav_path(book_dir: str, page: int, line: int) -> str:
     return os.path.join(book_dir, f"{page}_{line}.wav")
+
+def get_durations_path(book_dir: str) -> str:
+    return os.path.join(book_dir, "durations.json")
+
+def load_durations(book_dir: str) -> dict:
+    path = get_durations_path(book_dir)
+    if not os.path.isfile(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (json.JSONDecodeError, IOError):
+        return {}
+
+def save_durations(book_dir: str, durations: dict):
+    path = get_durations_path(book_dir)
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(durations, f, indent=2)
+
+def get_duration_seconds(wav_path: str) -> float:
+    try:
+        info = sf.info(wav_path)
+        return info.duration
+    except Exception:
+        return 0.0
+
+def update_duration(book_dir: str, page: int, line: int, duration: float):
+    durations = load_durations(book_dir)
+    key = f"{page}_{line}"
+    durations[key] = duration
+    save_durations(book_dir, durations)
+
+def backfill_page_durations(book_dir: str, page: int):
+    """Compute and store durations for all WAV files of a given page, if missing."""
+    durations = load_durations(book_dir)
+    prefix = f"{page}_"
+    for fname in os.listdir(book_dir):
+        if fname.startswith(prefix) and fname.endswith(".wav"):
+            key = fname[:-4]  # remove .wav
+            if key not in durations:
+                wav_file = os.path.join(book_dir, fname)
+                dur = get_duration_seconds(wav_file)
+                if dur > 0:
+                    durations[key] = dur
+    if durations:
+        save_durations(book_dir, durations)
 
 def get_settings_path(book_name: str) -> str:
     book_dir = get_book_dir(book_name)
@@ -141,9 +186,15 @@ class SettingsPayload(BaseModel):
     page: int
     scale: float
     sentenceIndex: int = 0
+    speed: float = 1.0
 
 class LastDocPayload(BaseModel):
     filename: str
+
+class DeleteCacheRangePayload(BaseModel):
+    book_name: str
+    page_from: int
+    page_to: int
 
 # ─── Core TTS synthesis ───
 
@@ -212,6 +263,7 @@ async def get_settings(book_name: str):
         "page": data.get("page", 1),
         "scale": data.get("scale", 1.5),
         "sentenceIndex": data.get("sentenceIndex", 0),
+        "speed": data.get("speed", 1.0),
     }
 
 @app.post("/settings")
@@ -274,6 +326,9 @@ async def synthesize_post(
     if can_cache and (save or force_regen):
         with open(cache_file, "wb") as f:
             f.write(wav_bytes)
+        # Compute and store duration
+        duration = get_duration_seconds(cache_file)
+        update_duration(book_dir, page, line, duration)
 
     return StreamingResponse(
         io.BytesIO(wav_bytes),
@@ -289,6 +344,37 @@ async def synthesize_get(text: str, voice: str = "af_sarah", speed: float = 1.0)
     wav_bytes = await synthesize_audio(text, voice, speed)
     return StreamingResponse(io.BytesIO(wav_bytes), media_type="audio/wav")
 
+@app.get("/page_sentence_durations")
+async def page_sentence_durations(book_name: str, page: int):
+    """
+    Returns a dict of sentence_index -> duration_seconds for the given page.
+    Uses cached durations if available, otherwise estimates from WAV file info.
+    """
+    book_dir = get_book_dir(book_name)
+    if not os.path.isdir(book_dir):
+        return {"durations": {}}
+
+    durations = load_durations(book_dir)
+    result = {}
+    prefix = f"{page}_"
+    for fname in os.listdir(book_dir):
+        if fname.startswith(prefix) and fname.endswith(".wav"):
+            key = fname[:-4]          # "page_line"
+            if key in durations:
+                dur = durations[key]
+            else:
+                # Compute duration from the WAV file
+                wav_file = os.path.join(book_dir, fname)
+                dur = get_duration_seconds(wav_file)
+                if dur > 0:
+                    durations[key] = dur
+            if dur is not None and dur > 0:
+                line = int(key.split("_")[1])
+                result[line] = dur
+
+    if durations:
+        save_durations(book_dir, durations)
+    return {"durations": result}
 # ─── Preload ───
 
 async def _run_preload_job(job_id: str, payload: PreloadPayload):
@@ -323,6 +409,9 @@ async def _run_preload_job(job_id: str, payload: PreloadPayload):
                 wav_bytes = await synthesize_audio(text, payload.voice, speed=1.0)
                 with open(cache_file, "wb") as f:
                     f.write(wav_bytes)
+                # Store duration
+                duration = get_duration_seconds(cache_file)
+                update_duration(book_dir, page, line, duration)
                 done += 1
             except Exception as e:
                 print(f"[PRELOAD ERROR] {key}: {e}")
@@ -409,7 +498,80 @@ async def cache_status_bulk(book_name: str, page_from: int, page_to: int):
             result[str(p)] = []
     return {"pages": result}
 
-# ─── Optional upload endpoint ───
+@app.get("/page_duration")
+async def page_duration(book_name: str, page: int):
+    book_dir = get_book_dir(book_name)
+    durations = load_durations(book_dir)
+    # Check if we have all durations for this page
+    prefix = f"{page}_"
+    needed = set()
+    # Gather all cached line numbers for this page
+    for fname in os.listdir(book_dir):
+        if fname.startswith(prefix) and fname.endswith(".wav"):
+            key = fname[:-4]  # remove .wav
+            needed.add(key)
+    # Compute missing durations
+    missing = needed - set(durations.keys())
+    if missing:
+        for key in missing:
+            wav_file = os.path.join(book_dir, f"{key}.wav")
+            if os.path.exists(wav_file):
+                dur = get_duration_seconds(wav_file)
+                durations[key] = dur
+        save_durations(book_dir, durations)
+    total = sum(durations.get(key, 0.0) for key in needed)
+    return {"duration": total}
+
+@app.get("/chapter_duration")
+async def chapter_duration(book_name: str, start_page: int, end_page: int):
+    book_dir = get_book_dir(book_name)
+    durations = load_durations(book_dir)
+    # Gather all needed keys
+    needed = set()
+    for p in range(start_page, end_page + 1):
+        prefix = f"{p}_"
+        for fname in os.listdir(book_dir):
+            if fname.startswith(prefix) and fname.endswith(".wav"):
+                key = fname[:-4]
+                needed.add(key)
+    # Compute missing durations
+    missing = needed - set(durations.keys())
+    if missing:
+        for key in missing:
+            wav_file = os.path.join(book_dir, f"{key}.wav")
+            if os.path.exists(wav_file):
+                dur = get_duration_seconds(wav_file)
+                durations[key] = dur
+        save_durations(book_dir, durations)
+    total = sum(durations.get(key, 0.0) for key in needed)
+    return {"duration": total}
+# ─── Delete cache range ───
+
+@app.post("/delete_cache_range")
+async def delete_cache_range(payload: DeleteCacheRangePayload):
+    book_dir = get_book_dir(payload.book_name)
+    if not os.path.isdir(book_dir):
+        return {"deleted": 0}
+    deleted = 0
+    durations = load_durations(book_dir)
+    for p in range(payload.page_from, payload.page_to + 1):
+        prefix = f"{p}_"
+        for fname in os.listdir(book_dir):
+            if fname.startswith(prefix) and fname.endswith(".wav"):
+                try:
+                    os.remove(os.path.join(book_dir, fname))
+                    deleted += 1
+                    # Also remove from durations
+                    key = fname[:-4]
+                    if key in durations:
+                        del durations[key]
+                except OSError:
+                    pass
+    save_durations(book_dir, durations)
+    return {"deleted": deleted}
+
+# ─── Upload PDF ───
+
 @app.post("/upload_pdf")
 async def upload_pdf(file: UploadFile = File(...)):
     if not file.filename.lower().endswith(".pdf"):
