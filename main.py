@@ -204,10 +204,35 @@ async def synthesize_audio(text: str, voice: str, speed: float = 1.0) -> bytes:
     if not text.strip():
         raise HTTPException(status_code=400, detail="Text cannot be empty.")
 
+    # --- Safety: truncate to ~150 chars at a sentence boundary ---
+    MAX_SAFE_CHARS = 150
+    if len(text) > MAX_SAFE_CHARS:
+        # Find the last sentence-ending punctuation within the limit
+        truncated = text[:MAX_SAFE_CHARS]
+        last_end = max(truncated.rfind('.'), truncated.rfind('!'), truncated.rfind('?'))
+        if last_end > MAX_SAFE_CHARS // 2:
+            text = truncated[:last_end+1]
+        else:
+            text = truncated
+
     func = partial(kokoro.create, text, voice=voice, speed=speed, lang="en-us")
     loop = asyncio.get_running_loop()
-    async with _model_lock:
+    try:
         audio_data, sample_rate = await loop.run_in_executor(_tts_executor, func)
+    except IndexError as e:
+        # If the error is the known phoneme‑length bug, retry with a shorter text
+        if "index 510 is out of bounds" in str(e):
+            # Cut at last period before 100 chars
+            shorter = text[:100]
+            last_period = shorter.rfind('.')
+            if last_period > 30:
+                shorter = shorter[:last_period+1]
+            else:
+                shorter = shorter[:80]  # fallback
+            func = partial(kokoro.create, shorter, voice=voice, speed=speed, lang="en-us")
+            audio_data, sample_rate = await loop.run_in_executor(_tts_executor, func)
+        else:
+            raise
 
     if len(audio_data) == 0:
         raise ValueError("Model generated empty audio.")
