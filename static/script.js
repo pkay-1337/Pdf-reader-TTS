@@ -1,6 +1,8 @@
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/static/pdfjs/pdf.worker.min.js';
 
 /* ─── State ─── */
+let topSkipLines = 0;
+let bottomSkipLines = 0;
 let pdfDoc = null;
 let pageNum = 1;
 let pageIsRendering = false;
@@ -129,25 +131,35 @@ function hideLoading() {
     loadingOverlay.classList.remove('visible');
 }
 
-/* ─── Theme ─── */
-const themeCheckbox = document.getElementById('theme-toggle-checkbox');
-const themeToggleBtn = document.getElementById('theme-toggle-btn');
-const themeIconSun = document.getElementById('theme-icon-sun');
-const themeIconMoon = document.getElementById('theme-icon-moon');
+/* ─── Theme Handling ─── */
+const themeSelector = document.getElementById('theme-selector');
 
-function applyTheme(dark) {
-    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
-    themeCheckbox.checked = dark;
-    themeIconSun.style.display = dark ? 'none' : '';
-    themeIconMoon.style.display = dark ? '' : 'none';
-    localStorage.setItem('theme', dark ? 'dark' : 'light');
+function applyTheme(theme) {
+    // Remove all theme classes from body
+    document.body.className = document.body.className
+        .split(' ')
+        .filter(c => !c.startsWith('theme-'))
+        .join(' ');
+    if (theme && theme !== 'default-light') {
+        document.body.classList.add('theme-' + theme);
+    }
+    // Save
+    localStorage.setItem('docreader-theme', theme || 'default-light');
+    // Update selector
+    if (themeSelector) themeSelector.value = theme || 'default-light';
 }
 
-const savedTheme = localStorage.getItem('theme') || (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
-applyTheme(savedTheme === 'dark');
+// Load saved theme
+const savedTheme = localStorage.getItem('docreader-theme') || 'default-light';
+applyTheme(savedTheme);
 
-themeCheckbox.addEventListener('change', e => applyTheme(e.target.checked));
-themeToggleBtn.addEventListener('click', () => applyTheme(document.documentElement.getAttribute('data-theme') !== 'dark'));
+// Theme selector change
+if (themeSelector) {
+    themeSelector.addEventListener('change', () => {
+        applyTheme(themeSelector.value);
+    });
+}
+
 
 /* ─── Mobile topbar toggle ─── */
 function setTopbarVisible(visible) {
@@ -477,13 +489,12 @@ async function saveSettings(page, scale, sentenceIndex) {
                 page,
                 scale,
                 sentenceIndex: sentenceIndex || 0,
-                speed: playbackSpeed
+                speed: playbackSpeed,
+                topSkipLines,
+                bottomSkipLines
             })
         });
-        if (!res.ok) console.warn('Failed to save settings');
-    } catch (e) {
-        console.warn('Save settings error:', e);
-    }
+    } catch (e) {}
 }
 
 async function loadSettings(bookName) {
@@ -529,6 +540,11 @@ async function loadPDF(file, startPage = 1) {
             speedVal.textContent = playbackSpeed.toFixed(1) + '×';
             zoomSlider.value = scale;
             zoomVal.textContent = Math.round(scale * 100) + '%';
+			topSkipLines = settings.topSkipLines || 0;
+			bottomSkipLines = settings.bottomSkipLines || 0;
+			document.getElementById('skip-top-lines').value = topSkipLines;
+			document.getElementById('skip-bottom-lines').value = bottomSkipLines;
+
         } else {
             // fallback mobile scaling
             if (window.innerWidth <= 768) {
@@ -1244,12 +1260,19 @@ async function renderPage(num) {
         });
         if (curLine.items.length) lines.push(curLine);
 
+        // ── 🆕 APPLY TRIMMING ──
+        const skipTop = Math.min(topSkipLines || 0, lines.length);
+        const skipBottom = Math.min(bottomSkipLines || 0, lines.length);
+        const effectiveLines = lines.slice(skipTop, lines.length - skipBottom);
+        // ──────────────────────────
+
         let structuredText = '';
         const unscaledH = viewport.viewBox ? viewport.viewBox[3] : 800;
         let prevY = null;
         let inListItem = false;
 
-        lines.forEach(line => {
+        // 👉 Use effectiveLines instead of lines
+        effectiveLines.forEach(line => {
             let lineText = line.items.map(i => i.str).join(' ').replace(/\s+/g, ' ').trim();
             if (!lineText) return;
             const avgFS = line.items.reduce((s, i) => s + Math.abs(i.transform[3]), 0) / line.items.length;
@@ -1304,6 +1327,10 @@ async function renderPage(num) {
         sentences = splitIntoTTSChunks(currentPageText, 250);
         updatePageStats(num, sentences);
 
+        // ── DEBUG: log first sentence ──
+        console.log(`[TRIM] Page ${num}: skipTop=${skipTop}, skipBottom=${skipBottom}, lines=${lines.length}, effective=${effectiveLines.length}, sentences[0]="${sentences[0]?.slice(0, 60)}..."`);
+
+        // Render the text layer (still from full text content – visual only)
         await pdfjsLib.renderTextLayer({
             textContentSource: textContent,
             container: textLayerDiv,
@@ -1334,22 +1361,21 @@ async function renderPage(num) {
             return;
         }
 
-		if (isPlaying && currentIndex < sentences.length) {
-			highlightActiveSentence(currentIndex, sentences);
-			setTimeout(() => {
-				const highlight = document.querySelector('mark.reading-highlight');
-				if (highlight) {
-					const rect = highlight.getBoundingClientRect();
-					const va = viewerArea.getBoundingClientRect();
-					if (rect.top < va.top || rect.bottom > va.bottom) {
-						viewerArea.scrollBy({ top: rect.top - va.top - va.height / 3, behavior: 'smooth' });
-					}
-				}
-			}, 100);
-		} else {
-			// No highlight – scroll to top of the page
-			viewerArea.scrollTo({ top: 0, behavior: 'smooth' });
-		}
+        if (isPlaying && currentIndex < sentences.length) {
+            highlightActiveSentence(currentIndex, sentences);
+            setTimeout(() => {
+                const highlight = document.querySelector('mark.reading-highlight');
+                if (highlight) {
+                    const rect = highlight.getBoundingClientRect();
+                    const va = viewerArea.getBoundingClientRect();
+                    if (rect.top < va.top || rect.bottom > va.bottom) {
+                        viewerArea.scrollBy({ top: rect.top - va.top - va.height / 3, behavior: 'smooth' });
+                    }
+                }
+            }, 100);
+        } else {
+            viewerArea.scrollTo({ top: 0, behavior: 'smooth' });
+        }
 
         if (isAutoContinuing) {
             isAutoContinuing = false;
@@ -1756,7 +1782,9 @@ async function fetchSentenceAudio(idx, forceRegenerate = false) {
         if (currentFileName) {
             headers['X-Book-Name'] = currentFileName;
             headers['X-Page-Number'] = String(pageNum);
-            headers['X-Line-Number'] = String(idx);
+            // 🔥 Use the original line number (offset by skipTopLines)
+            const originalLine = idx + (parseInt(topSkipLines, 10) || 0);
+            headers['X-Line-Number'] = String(originalLine);
             headers['X-Save-Audio'] = saveAudioEnabled ? 'true' : 'false';
             if (forceRegenerate) {
                 headers['X-Force-Regenerate'] = 'true';
@@ -1981,7 +2009,7 @@ downloadRangeBtn.addEventListener('click', async () => {
         try {
             const page = await pdfDoc.getPage(p);
             const textContent = await page.getTextContent();
-            const pageSentences = extractSentencesFromTextContent(textContent, page);
+			const pageSentences = extractSentencesFromTextContent(textContent, page, topSkipLines, bottomSkipLines);
             const alreadyCached = new Set((cachedByPage[String(p)] || []));
 
             for (let si = 0; si < pageSentences.length; si++) {
@@ -2119,7 +2147,7 @@ function finishDownload(pageCount) {
 }
 
 /* ─── Shared text extraction ─── */
-function extractSentencesFromTextContent(textContent, page) {
+function extractSentencesFromTextContent(textContent, page, skipTop = 0, skipBottom = 0) {
     const viewport = page.getViewport({ scale: 1 });
     const fontSizes = textContent.items.map(i => Math.abs(i.transform[3])).filter(s => s > 0).sort((a, b) => a - b);
     const baseFontSize = fontSizes.length ? fontSizes[Math.floor(fontSizes.length / 2)] : 12;
@@ -2145,12 +2173,16 @@ function extractSentencesFromTextContent(textContent, page) {
     });
     if (curLine.items.length) lines.push(curLine);
 
+    const skipTopClamped = Math.min(skipTop, lines.length);
+    const skipBottomClamped = Math.min(skipBottom, lines.length);
+    const effectiveLines = lines.slice(skipTopClamped, lines.length - skipBottomClamped);
+
     let structuredText = '';
     const unscaledH = viewport.viewBox ? viewport.viewBox[3] : 800;
     let prevY = null;
     let inListItem = false;
 
-    lines.forEach(line => {
+    effectiveLines.forEach(line => {
         let lineText = line.items.map(i => i.str).join(' ').replace(/\s+/g, ' ').trim();
         if (!lineText) return;
         const avgFS = line.items.reduce((s, i) => s + Math.abs(i.transform[3]), 0) / line.items.length;
@@ -2499,4 +2531,37 @@ function formatDuration(seconds) {
     const secs = Math.round(seconds % 60);
     return `${mins}m ${secs}s`;
 }
+const skipTopInput = document.getElementById('skip-top-lines');
+const skipBottomInput = document.getElementById('skip-bottom-lines');
+
+function onSkipChange() {
+    topSkipLines = parseInt(skipTopInput.value, 10) || 0;
+    bottomSkipLines = parseInt(skipBottomInput.value, 10) || 0;
+
+    // Save to server (throttled)
+    saveSettingsThrottled(pageNum, scale, currentIndex);
+
+    if (!pdfDoc) return;
+
+    // Stop any ongoing TTS
+    stopPipeline();
+    clearPageAudioCache();
+
+    // Reset to start of the new sentences
+    currentIndex = 0;
+    sentences = [];
+    currentPageText = '';
+
+    // Invalidate cached text for this page so it will be re‑extracted
+    delete searchAllPageTexts[pageNum];
+
+    // Force a re‑render (if already rendering, queue it)
+    queueRenderPage(pageNum);
+}
+
+// Use 'input' for immediate reaction, 'change' as fallback
+skipTopInput.addEventListener('input', onSkipChange);
+skipBottomInput.addEventListener('input', onSkipChange);
+skipTopInput.addEventListener('change', onSkipChange);
+skipBottomInput.addEventListener('change', onSkipChange);
 console.log('DocReader Pro ready – all served from port 8000.');
