@@ -718,8 +718,8 @@ async function loadOutline() {
     await resolveAllTOCPages();
 
     // Now the page numbers are set, update the active item
-    updateActiveTocItem();
-    updateReadingTimes();
+    await updateActiveTocItem();   // <-- await because it's now async
+    await refreshTimeEstimates();  // <-- replace old updateReadingTimes()
 }
 
 async function resolveAllTOCPages() {
@@ -742,7 +742,7 @@ async function resolveAllTOCPages() {
     }
 }
 
-function updateActiveTocItem() {
+async function updateActiveTocItem() {
     const items = tocList.querySelectorAll('.toc-item[data-page]');
     let activeEl = null;
     let bestPage = 0;
@@ -759,7 +759,8 @@ function updateActiveTocItem() {
     items.forEach(el => el.classList.remove('active'));
 
     if (!activeEl) {
-        updateReadingTimes();
+        // No chapter found – still recompute estimates based on current page
+        await refreshTimeEstimates();
         return;
     }
 
@@ -768,7 +769,7 @@ function updateActiveTocItem() {
     // Scroll the sidebar content so the active item is visible
     const sidebarContent = document.getElementById('sidebar-content');
     if (!sidebarContent) {
-        updateReadingTimes();
+        await refreshTimeEstimates();
         return;
     }
 
@@ -777,15 +778,14 @@ function updateActiveTocItem() {
     const maxAttempts = 5;
     const attemptScroll = () => {
         const itemTop = activeEl.offsetTop - sidebarContent.offsetTop;
-        // If offset is 0 or negative, the layout isn't ready
         if (itemTop <= 0 && attempts < maxAttempts) {
             attempts++;
             setTimeout(attemptScroll, 150);
             return;
         }
-        // Scroll with a small padding
         sidebarContent.scrollTo({ top: Math.max(0, itemTop - 20), behavior: 'smooth' });
-        updateReadingTimes();
+        // After scroll, refresh time estimates (cached, so cheap)
+        refreshTimeEstimates();
     };
 
     attemptScroll();
@@ -834,14 +834,21 @@ function computeChapterTime() {
     return seconds;
 }
 
-// ─── Exact Reading Time from Server ───
+/* ─── Page duration cache ─── */
+// ─── Page duration cache ───
+const pageDurationCache = {};
 
 async function fetchPageDuration(bookName, page) {
+    if (pageDurationCache[page] !== undefined) {
+        return pageDurationCache[page];
+    }
     try {
         const res = await fetch(`/page_duration?book_name=${encodeURIComponent(bookName)}&page=${page}`);
         if (!res.ok) return null;
         const data = await res.json();
-        return data.duration || 0;
+        const dur = data.duration || 0;
+        pageDurationCache[page] = dur;
+        return dur;
     } catch (e) {
         console.warn('fetchPageDuration error:', e);
         return null;
@@ -860,133 +867,6 @@ async function fetchChapterDuration(bookName, startPage, endPage) {
     }
 }
 
-// ─── Update Reading Times (exact) ───
-async function updateReadingTimes() {
-    if (!currentFileName || !pdfDoc) {
-        pageTimeEl.textContent = 'Page: —';
-        chapterTimeEl.textContent = 'Chapter: —';
-        return;
-    }
-
-    const fmt = formatDuration;
-
-    // 1) Page time
-    let pageDur = 0;
-    if (isPlaying && Object.keys(sentenceDurations).length) {
-        let total = 0;
-        for (let i = currentIndex; i < sentences.length; i++) {
-            const d = sentenceDurations[i] || estimateSentenceDuration(sentences[i]);
-            total += d;
-        }
-        pageDur = total / playbackSpeed;
-        pageTimeEl.textContent = `Page: ${fmt(pageDur)}`;
-    } else {
-        const pageDuration = await fetchPageDuration(currentFileName, pageNum);
-        if (pageDuration !== null && pageDuration > 0) {
-            pageDur = pageDuration / playbackSpeed;
-            pageTimeEl.textContent = `Page: ${fmt(pageDur)}`;
-        } else {
-            const stats = pageStats[pageNum];
-            if (stats) {
-                const words = stats.totalChars / 5;
-                const seconds = (words / (150 * playbackSpeed)) * 60;
-                pageTimeEl.textContent = `Page: ~${fmt(seconds)}`;
-            } else {
-                pageTimeEl.textContent = 'Page: —';
-            }
-        }
-    }
-
-    // 2) Chapter time – find active chapter (fallback if class missing)
-    let activeChapter = document.querySelector('.toc-item.level-0.active');
-    if (!activeChapter) {
-        // Find the chapter whose start page <= current page and (next start > current or no next)
-        const chapters = document.querySelectorAll('.toc-item.level-0');
-        let best = null;
-        let bestStart = 0;
-        for (const el of chapters) {
-            const start = parseInt(el.dataset.page, 10);
-            if (start && start <= pageNum && start > bestStart) {
-                bestStart = start;
-                best = el;
-            }
-        }
-        activeChapter = best;
-        if (activeChapter) {
-            chapters.forEach(c => c.classList.remove('active'));
-            activeChapter.classList.add('active');
-        }
-    }
-
-    if (!activeChapter) {
-        chapterTimeEl.textContent = 'Chapter: —';
-        return;
-    }
-
-    const start = parseInt(activeChapter.dataset.page, 10);
-    if (!start) {
-        chapterTimeEl.textContent = 'Chapter: —';
-        return;
-    }
-
-    // Determine chapter end page (before next chapter starts)
-    let end = pdfDoc.numPages;
-    const allChapters = document.querySelectorAll('.toc-item.level-0');
-    for (let i = 0; i < allChapters.length; i++) {
-        if (allChapters[i] === activeChapter) {
-            if (i + 1 < allChapters.length) {
-                const nextPage = parseInt(allChapters[i + 1].dataset.page, 10);
-                if (nextPage) end = nextPage - 1;
-            }
-            break;
-        }
-    }
-    chapterStartPage = start;
-    chapterEndPage = end;
-
-    // Compute chapter remaining time
-    if (isPlaying && Object.keys(sentenceDurations).length) {
-        let total = 0;
-        // Remaining on current page
-        for (let i = currentIndex; i < sentences.length; i++) {
-            const d = sentenceDurations[i] || estimateSentenceDuration(sentences[i]);
-            total += d;
-        }
-        // Full pages after current page in chapter
-        for (let p = pageNum + 1; p <= chapterEndPage; p++) {
-            const dur = await fetchPageDuration(currentFileName, p);
-            if (dur !== null && dur > 0) {
-                total += dur;
-            } else {
-                const stats = pageStats[p];
-                if (stats) {
-                    const words = stats.totalChars / 5;
-                    total += (words / 150) * 60;
-                }
-            }
-        }
-        const chapDur = total / playbackSpeed;
-        chapterTimeEl.textContent = `Chapter: ${fmt(chapDur)}`;
-    } else {
-        const chapterDuration = await fetchChapterDuration(currentFileName, start, end);
-        if (chapterDuration !== null && chapterDuration > 0) {
-            const eff = chapterDuration / playbackSpeed;
-            chapterTimeEl.textContent = `Chapter: ${fmt(eff)}`;
-        } else {
-            let totalChars = 0;
-            for (let p = start; p <= end; p++) {
-                const stats = pageStats[p];
-                if (stats) totalChars += stats.totalChars;
-            }
-            if (totalChars > 0) {
-                const seconds = (totalChars / 5 / (150 * playbackSpeed)) * 60;
-                chapterTimeEl.textContent = `Chapter: ~${fmt(seconds)}`;
-            } else {
-                chapterTimeEl.textContent = 'Chapter: —';
-            }
-        }
-    }
-}
 
 function estimateSentenceDuration(text) {
     // Assume ~150 words per minute, average word length 5 chars
@@ -1346,8 +1226,13 @@ async function renderPage(num) {
         nextPageBtn.disabled = num >= pdfDoc.numPages;
         updateMobilePageInfo();
         updateActiveTocItem();
-        updateReadingTimes();
-
+		updateChapterBoundaries();
+		if (!isPlaying) {
+			refreshTimeEstimates();
+		} else {
+			updateChapterBoundaries(); // just update the chapter range for future decrements
+			updateTimeDisplay();       // keep showing current running totals
+		}
         if (textContent.items.length) {
             searchAllPageTexts[num] = textContent.items.map(i => i.str).join(' ');
         }
@@ -1404,6 +1289,42 @@ async function renderPage(num) {
     } catch (err) {
         console.error('Render error:', err);
         pageIsRendering = false;
+    }
+}
+function updateChapterBoundaries() {
+    let activeChapter = document.querySelector('.toc-item.level-0.active');
+    if (!activeChapter) {
+        const chapters = document.querySelectorAll('.toc-item.level-0');
+        let best = null, bestStart = 0;
+        for (const el of chapters) {
+            const start = parseInt(el.dataset.page, 10);
+            if (start && start <= pageNum && start > bestStart) {
+                bestStart = start;
+                best = el;
+            }
+        }
+        activeChapter = best;
+        if (activeChapter) {
+            chapters.forEach(c => c.classList.remove('active'));
+            activeChapter.classList.add('active');
+        }
+    }
+    if (activeChapter) {
+        const start = parseInt(activeChapter.dataset.page, 10);
+        let end = pdfDoc.numPages;
+        const allChapters = document.querySelectorAll('.toc-item.level-0');
+        for (let i = 0; i < allChapters.length; i++) {
+            if (allChapters[i] === activeChapter && i + 1 < allChapters.length) {
+                const nextPage = parseInt(allChapters[i + 1].dataset.page, 10);
+                if (nextPage) end = nextPage - 1;
+                break;
+            }
+        }
+        chapterStartPage = start;
+        chapterEndPage = end;
+    } else {
+        chapterStartPage = 1;
+        chapterEndPage = pdfDoc.numPages;
     }
 }
 
@@ -1495,6 +1416,7 @@ function goToPage(delta, isAutoTurn = false) {
     currentIndex = 0;
     pageNum = target;
     queueRenderPage(pageNum);
+    // after render, refreshTimeEstimates will be called from renderPage if not playing
     saveSettingsThrottled(pageNum, scale, currentIndex);
     viewerArea.scrollTo({ top: 0, behavior: 'smooth' });
 }
@@ -1577,6 +1499,7 @@ document.getElementById('close-file').addEventListener('click', resetUI);
 function resetUI() {
     stopPipeline();
     clearPageAudioCache();
+	pageDurationCache = {};
     clearHighlightCanvas();
     pdfDoc = null;
     currentFile = null;
@@ -1637,7 +1560,7 @@ function updateTtsStatus() {
     ttsStatusText.textContent = `Sentence ${di} / ${sentences.length}`;
 }
 
-function startReadingPage(startIndex = 0) {
+async function startReadingPage(startIndex = 0) {
     if (!pdfDoc || !currentPageText.trim() || !sentences.length) return;
     if (isPlaying) stopPipeline();
 
@@ -1650,16 +1573,32 @@ function startReadingPage(startIndex = 0) {
     syncMobilePlayBtn();
 
     // Fetch per‑sentence durations for this page
-    fetchSentenceDurationsForCurrentPage().then(() => {
-        // Now we have durations; compute remaining times
-        pageRemaining = 0;
-        for (let i = currentIndex; i < sentences.length; i++) {
-            const d = sentenceDurations[i] || estimateSentenceDuration(sentences[i]);
-            pageRemaining += d / playbackSpeed;
+    await fetchSentenceDurationsForCurrentPage();
+
+    // 1) Compute page remaining (from current sentence to end of page)
+    pageRemaining = 0;
+    for (let i = currentIndex; i < sentences.length; i++) {
+        const d = sentenceDurations[i] || estimateSentenceDuration(sentences[i]);
+        pageRemaining += d / playbackSpeed;
+    }
+
+    // 2) Compute chapter remaining (current page + all pages after)
+    chapterRemaining = pageRemaining;
+    const end = chapterEndPage || pdfDoc.numPages;
+    for (let p = pageNum + 1; p <= end; p++) {
+        const dur = await fetchPageDuration(currentFileName, p);
+        if (dur !== null && dur > 0) {
+            chapterRemaining += dur / playbackSpeed;
+        } else {
+            const stats = pageStats[p];
+            if (stats) {
+                const words = stats.totalChars / 5;
+                chapterRemaining += (words / (150 * playbackSpeed)) * 60;
+            }
         }
-        // Chapter remaining will be computed in updateReadingTimes
-        updateReadingTimes();
-    });
+    }
+
+    updateTimeDisplay();
 
     const required = Math.min(REQUIRED_START_BUFFER, sentences.length - currentIndex);
     let readyCount = 0;
@@ -1854,17 +1793,17 @@ function playNextChunk() {
         }
 
         // When the sentence ends, subtract its duration from remaining times
-        audioPlayer.onended = () => {
-            const dur = sentenceDurations[currentIndex] || estimateSentenceDuration(sentences[currentIndex]);
-            const adjusted = dur / playbackSpeed;
-            pageRemaining = Math.max(0, pageRemaining - adjusted);
-            // For chapter, we'll recalc in updateReadingTimes
-            currentIndex++;
-            saveSettingsThrottled(pageNum, scale, currentIndex);
-            preloadQueue();
-            updateReadingTimes();
-            playNextChunk();
-        };
+		audioPlayer.onended = () => {
+			const dur = sentenceDurations[currentIndex] || estimateSentenceDuration(sentences[currentIndex]);
+			const adjusted = dur / playbackSpeed;
+			pageRemaining = Math.max(0, pageRemaining - adjusted);
+			chapterRemaining = Math.max(0, chapterRemaining - adjusted);
+			updateTimeDisplay();
+			currentIndex++;
+			saveSettingsThrottled(pageNum, scale, currentIndex);
+			preloadQueue();
+			playNextChunk();
+		};
     } else if (url === null) {
         currentIndex++;
         playNextChunk();
@@ -1875,26 +1814,22 @@ function getPlaybackRate() {
     return parseFloat(document.getElementById('speed-slider').value);
 }
 
-document.getElementById('speed-slider').addEventListener('input', () => {
+document.getElementById('speed-slider').addEventListener('input', async () => {
     const rate = getPlaybackRate();
     playbackSpeed = rate;
     speedVal.textContent = rate.toFixed(1) + '×';
     if (isPlaying && !audioPlayer.paused) {
         audioPlayer.playbackRate = rate;
-        // Recompute remaining times with the new speed
-        pageRemaining = 0;
-        for (let i = currentIndex; i < sentences.length; i++) {
-            const d = sentenceDurations[i] || estimateSentenceDuration(sentences[i]);
-            pageRemaining += d / playbackSpeed;
-        }
-        updateReadingTimes();
+        // Recompute times with new speed (cached, so cheap)
+        await refreshTimeEstimates();
+    } else {
+        await refreshTimeEstimates();
     }
     saveSettingsThrottled(pageNum, scale, currentIndex);
 });
 
 function stopPipeline() {
     isPlaying = false;
-	updateReadingTimes();
     audioPlayer.pause();
     playBtn.textContent = '▶ Play Page';
     ttsStatus.classList.remove('active');
@@ -1906,6 +1841,8 @@ function stopPipeline() {
         }
     });
     saveSettingsThrottled(pageNum, scale, currentIndex);
+    // Refresh estimates from cache (no server storm)
+    refreshTimeEstimates();
 }
 
 function clearPageAudioCache() {
@@ -2142,7 +2079,8 @@ function finishDownload(pageCount) {
         isDownloadingRange = false;
         downloadRangeBtn.disabled = false;
         updateCacheBadge();
-		updateReadingTimes();
+        Object.keys(pageDurationCache).forEach(k => delete pageDurationCache[k]);
+        refreshTimeEstimates();   // <-- replace old updateReadingTimes()
     }, 2500);
 }
 
@@ -2477,7 +2415,8 @@ deleteRangeBtn.addEventListener('click', async () => {
         const data = await res.json();
         deleteStatus.textContent = `Deleted ${data.deleted} cached audio file(s).`;
         updateCacheBadge();
-		updateReadingTimes();
+        Object.keys(pageDurationCache).forEach(k => delete pageDurationCache[k]);
+        refreshTimeEstimates();   // <-- replace old updateReadingTimes()
     } catch (e) {
         deleteStatus.textContent = `Error: ${e.message}`;
     } finally {
@@ -2557,6 +2496,86 @@ function onSkipChange() {
 
     // Force a re‑render (if already rendering, queue it)
     queueRenderPage(pageNum);
+}
+// ─── Time display update (no server requests) ───
+function updateTimeDisplay() {
+    const fmt = formatDuration;
+    pageTimeEl.textContent = `Page: ${fmt(pageRemaining)}`;
+    chapterTimeEl.textContent = `Chapter: ${fmt(chapterRemaining)}`;
+}
+
+// ─── Refresh estimates when not playing (e.g., after page change) ───
+async function refreshTimeEstimates() {
+    if (!pdfDoc) return;
+
+    // Find active chapter
+    let activeChapter = document.querySelector('.toc-item.level-0.active');
+    if (!activeChapter) {
+        const chapters = document.querySelectorAll('.toc-item.level-0');
+        let best = null;
+        let bestStart = 0;
+        for (const el of chapters) {
+            const start = parseInt(el.dataset.page, 10);
+            if (start && start <= pageNum && start > bestStart) {
+                bestStart = start;
+                best = el;
+            }
+        }
+        activeChapter = best;
+        if (activeChapter) {
+            chapters.forEach(c => c.classList.remove('active'));
+            activeChapter.classList.add('active');
+        }
+    }
+
+    if (activeChapter) {
+        const start = parseInt(activeChapter.dataset.page, 10);
+        let end = pdfDoc.numPages;
+        const allChapters = document.querySelectorAll('.toc-item.level-0');
+        for (let i = 0; i < allChapters.length; i++) {
+            if (allChapters[i] === activeChapter && i + 1 < allChapters.length) {
+                const nextPage = parseInt(allChapters[i + 1].dataset.page, 10);
+                if (nextPage) end = nextPage - 1;
+                break;
+            }
+        }
+        chapterStartPage = start;
+        chapterEndPage = end;
+    } else {
+        chapterStartPage = 1;
+        chapterEndPage = pdfDoc.numPages;
+    }
+
+    // Page remaining time
+    let pageDur = await fetchPageDuration(currentFileName, pageNum);
+    if (pageDur === null || pageDur <= 0) {
+        const stats = pageStats[pageNum];
+        if (stats) {
+            const words = stats.totalChars / 5;
+            pageDur = (words / (150 * playbackSpeed)) * 60;
+        } else {
+            pageDur = 0;
+        }
+    }
+    pageRemaining = pageDur;
+
+    // Chapter remaining time (sum all pages from start to end)
+    let chapDur = 0;
+    for (let p = chapterStartPage; p <= chapterEndPage; p++) {
+        const dur = await fetchPageDuration(currentFileName, p);
+        if (dur !== null && dur > 0) {
+            chapDur += dur;
+        } else {
+            const stats = pageStats[p];
+            if (stats) {
+                const words = stats.totalChars / 5;
+                chapDur += (words / (150 * playbackSpeed)) * 60;
+            }
+        }
+    }
+    chapterRemaining = chapDur;
+
+    updateTimeDisplay();
 }
 
 // Use 'input' for immediate reaction, 'change' as fallback
