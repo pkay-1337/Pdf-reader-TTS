@@ -15,32 +15,8 @@ from kokoro_onnx import Kokoro
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 import numpy as np
-import time
-from datetime import datetime
-import sys
 
-# --- Rich logging (optional) ---
-try:
-    from rich.console import Console
-    from rich.table import Table
-    from rich.panel import Panel
-    from rich.text import Text
-    from rich import box
-    RICH_AVAILABLE = True
-except ImportError:
-    RICH_AVAILABLE = False
-    # Fallback to simple print
-    class Console:
-        def print(self, *args, **kwargs):
-            print(*args)
-    console = Console()
-
-if RICH_AVAILABLE:
-    console = Console()
-else:
-    console = Console()  # fallback
-
-# --- Configuration ---
+# ─── Configuration ───
 PDF_DIR = os.getenv("PDF_DIR", "/home/pk/books/books/language")
 AUDIO_CACHE_DIR = os.getenv("AUDIO_CACHE_DIR", "./tts_cache")
 KOKORO_MODEL_PATH = os.getenv("KOKORO_MODEL", "kokoro-v1.0.onnx")
@@ -52,7 +28,7 @@ os.makedirs(AUDIO_CACHE_DIR, exist_ok=True)
 
 app = FastAPI(title="DocReader Pro Backend")
 
-# --- CORS ---
+# ─── CORS ───
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -62,123 +38,18 @@ app.add_middleware(
     expose_headers=["X-Cached", "X-Cache-Path"],
 )
 
-# --- Serve static assets ---
+# ─── Serve static assets ───
 STATIC_DIR = os.path.join(os.path.dirname(__file__), "static")
 if os.path.isdir(STATIC_DIR):
     app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
-# --- Logging helpers ---
-
-def log_startup():
-    """Print a beautiful startup banner."""
-    if RICH_AVAILABLE:
-        banner = Panel(
-            f"[bold cyan]DocReader Pro Server[/bold cyan]\n"
-            f"[green]PDF Directory:[/green] {PDF_DIR}\n"
-            f"[green]Audio Cache:[/green] {AUDIO_CACHE_DIR}\n"
-            f"[green]Model:[/green] {KOKORO_MODEL_PATH}\n"
-            f"[green]Voices:[/green] {KOKORO_VOICES_PATH}\n"
-            f"[green]Workers:[/green] {MAX_WORKERS}",
-            title="🚀 Startup",
-            border_style="bold blue"
-        )
-        console.print(banner)
-    else:
-        console.print("="*60)
-        console.print("DocReader Pro Server")
-        console.print(f"PDF Directory: {PDF_DIR}")
-        console.print(f"Audio Cache: {AUDIO_CACHE_DIR}")
-        console.print(f"Model: {KOKORO_MODEL_PATH}")
-        console.print(f"Voices: {KOKORO_VOICES_PATH}")
-        console.print(f"Workers: {MAX_WORKERS}")
-        console.print("="*60)
-
-def log_request(endpoint: str, method: str, details: dict = None):
-    """Log an HTTP request in a consistent format."""
-    if RICH_AVAILABLE:
-        table = Table(title=f"{method} {endpoint}", box=box.ROUNDED, show_header=False)
-        table.add_column("Key", style="bold cyan")
-        table.add_column("Value", style="white")
-        if details:
-            for k, v in details.items():
-                if v is not None:
-                    table.add_row(k, str(v))
-        console.print(table)
-    else:
-        console.print(f"[{datetime.now().strftime('%H:%M:%S')}] {method} {endpoint}")
-        if details:
-            for k, v in details.items():
-                if v is not None:
-                    console.print(f"  {k}: {v}")
-
-def log_ws_connect(room: str, client_id: str = ""):
-    if RICH_AVAILABLE:
-        console.print(f"[green]🔗 WebSocket connected[/green] room={room} id={client_id}")
-    else:
-        console.print(f"[{datetime.now().strftime('%H:%M:%S')}] WS connected room={room}")
-
-def log_ws_disconnect(room: str, client_id: str = ""):
-    if RICH_AVAILABLE:
-        console.print(f"[red]🔗 WebSocket disconnected[/red] room={room} id={client_id}")
-    else:
-        console.print(f"[{datetime.now().strftime('%H:%M:%S')}] WS disconnected room={room}")
-
-def log_ws_message(room: str, msg_type: str, data: dict = None):
-    if RICH_AVAILABLE:
-        console.print(f"[yellow]📩 WS message[/yellow] room={room} type={msg_type}")
-        if data:
-            console.print(f"   {data}")
-    else:
-        console.print(f"[{datetime.now().strftime('%H:%M:%S')}] WS message room={room} type={msg_type}")
-
-def log_tts(book: str, page: int, line: int, voice: str, text_len: int, cached: bool = False, duration: float = None):
-    if RICH_AVAILABLE:
-        status = "[green]CACHED[/green]" if cached else "[yellow]SYNTHESIZED[/yellow]"
-        table = Table(title="TTS Synthesis", box=box.SIMPLE, show_header=False)
-        table.add_row("Book", book or "N/A")
-        table.add_row("Page", str(page))
-        table.add_row("Line", str(line))
-        table.add_row("Voice", voice)
-        table.add_row("Text length", str(text_len))
-        table.add_row("Cached", "✅" if cached else "🆕")
-        if duration:
-            table.add_row("Duration", f"{duration:.2f}s")
-        console.print(table)
-    else:
-        console.print(f"[TTS] book={book} page={page} line={line} voice={voice} cached={cached} len={text_len}")
-
-def log_preload_job(job_id: str, book: str, total: int, done: int = 0, errors: int = 0, status: str = "running"):
-    if RICH_AVAILABLE:
-        table = Table(title=f"Preload Job {job_id[:8]}", box=box.SIMPLE, show_header=False)
-        table.add_row("Book", book)
-        table.add_row("Total sentences", str(total))
-        table.add_row("Done", str(done))
-        table.add_row("Errors", str(errors))
-        table.add_row("Status", status)
-        console.print(table)
-    else:
-        console.print(f"[PRELOAD] {job_id[:8]} book={book} {done}/{total} errors={errors} status={status}")
-
-def log_cache_operation(book: str, page: int, action: str, count: int = None):
-    if RICH_AVAILABLE:
-        console.print(f"[magenta]📦 Cache {action}[/magenta] book={book} page={page}" + (f" count={count}" if count is not None else ""))
-    else:
-        console.print(f"[CACHE] {action} book={book} page={page}")
-
-def log_settings(book: str, page: int, scale: float, speed: float, topSkip: int, bottomSkip: int):
-    if RICH_AVAILABLE:
-        table = Table(title="Settings Update", box=box.SIMPLE, show_header=False)
-        table.add_row("Book", book)
-        table.add_row("Page", str(page))
-        table.add_row("Scale", f"{scale:.2f}")
-        table.add_row("Speed", f"{speed:.2f}x")
-        table.add_row("Skip Top", str(topSkip))
-        table.add_row("Skip Bottom", str(bottomSkip))
-        console.print(table)
-    else:
-        console.print(f"[SETTINGS] book={book} page={page} scale={scale} speed={speed}")
-
-log_startup()
+@app.get("/", response_class=HTMLResponse)
+async def serve_index():
+    try:
+        with open("index.html", "r", encoding="utf-8") as f:
+            return f.read()
+    except FileNotFoundError:
+        return HTMLResponse("<h1>DocReader Pro</h1><p>index.html not found.</p>", status_code=404)
 
 # ─── WebSocket Connection Manager ───
 class ConnectionManager:
@@ -188,11 +59,9 @@ class ConnectionManager:
     async def connect(self, room: str, ws: WebSocket):
         await ws.accept()
         self.rooms.setdefault(room, set()).add(ws)
-        log_ws_connect(room, id(ws))
 
     def disconnect(self, room: str, ws: WebSocket):
         self.rooms.get(room, set()).discard(ws)
-        log_ws_disconnect(room, id(ws))
 
     async def broadcast(self, room: str, data: dict):
         dead = set()
@@ -393,12 +262,10 @@ async def synthesize_audio(text: str, voice: str, speed: float = 1.0) -> bytes:
 
 @app.get("/health")
 async def health():
-    log_request("/health", "GET", {"model_loaded": kokoro is not None})
     return {"status": "ok", "model_loaded": kokoro is not None}
 
 @app.get("/pdfs")
 async def list_pdfs():
-    log_request("/pdfs", "GET")
     if not os.path.isdir(PDF_DIR):
         return {"pdfs": []}
     pdfs = []
@@ -411,7 +278,6 @@ async def list_pdfs():
             pdfs.append({"name": fname, "size": size, "url": f"/pdfs/{fname}"})
         except OSError:
             pass
-    log_request("/pdfs", "GET", {"count": len(pdfs)})
     return {"pdfs": pdfs}
 
 @app.get("/pdfs/{filename}")
@@ -422,7 +288,6 @@ async def serve_pdf(filename: str):
     fpath = os.path.join(PDF_DIR, safe_name)
     if not os.path.isfile(fpath):
         raise HTTPException(status_code=404, detail="PDF not found.")
-    log_request("/pdfs/{filename}", "GET", {"filename": safe_name, "path": fpath})
     return FileResponse(fpath, media_type="application/pdf", filename=safe_name)
 
 # ─── Settings endpoints ───
@@ -430,7 +295,6 @@ async def serve_pdf(filename: str):
 @app.get("/settings")
 async def get_settings(book_name: str):
     data = load_settings(book_name)
-    log_request("/settings", "GET", {"book_name": book_name})
     return {
         "book_name": book_name,
         "page": data.get("page", 1),
@@ -446,7 +310,6 @@ async def set_settings(payload: SettingsPayload):
     if payload.page < 1:
         raise HTTPException(status_code=400, detail="Invalid page number")
     save_settings(payload.book_name, payload.dict())
-    log_settings(payload.book_name, payload.page, payload.scale, payload.speed, payload.topSkipLines, payload.bottomSkipLines)
     # Broadcast to any open session sockets for this book
     await mgr.broadcast(f"session:{payload.book_name}", {"type": "settings", **payload.dict()})
     return {"status": "ok"}
@@ -456,13 +319,11 @@ async def set_settings(payload: SettingsPayload):
 @app.get("/last_document")
 async def get_last():
     filename = get_last_document()
-    log_request("/last_document", "GET", {"filename": filename})
     return {"filename": filename} if filename else {"filename": None}
 
 @app.post("/last_document")
 async def set_last(payload: LastDocPayload):
     set_last_document(payload.filename)
-    log_request("/last_document", "POST", {"filename": payload.filename})
     return {"status": "ok"}
 
 # ─── TTS synthesis ───
@@ -483,16 +344,11 @@ async def synthesize_post(
     line        = int(x_line_number) if x_line_number and x_line_number.isdigit() else None
 
     can_cache = bool(book and page is not None and line is not None)
-    cached = False
-    duration = None
 
     if can_cache:
         book_dir   = get_book_dir(book)
         cache_file = wav_path(book_dir, page, line)
         if not save and not force_regen and os.path.exists(cache_file):
-            duration = get_duration_seconds(cache_file)
-            cached = True
-            log_tts(book, page, line, payload.voice, len(payload.text), cached=True, duration=duration)
             return FileResponse(
                 cache_file,
                 media_type="audio/wav",
@@ -507,31 +363,25 @@ async def synthesize_post(
             f.write(wav_bytes)
         duration = get_duration_seconds(cache_file)
         update_duration(book_dir, page, line, duration)
-        log_tts(book, page, line, payload.voice, len(payload.text), cached=False, duration=duration)
-        # Push cache update
+        # Push cache update to any listeners
         cached_lines = _get_cached_lines(book_dir, page)
         await mgr.broadcast(f"cache:{book}", {
             "type": "cache_update",
             "page": page,
             "cached_lines": cached_lines,
         })
-    else:
-        log_tts(book or "unknown", page or 0, line or 0, payload.voice, len(payload.text), cached=False)
-
-    # Build headers safely
-    headers = {"X-Cached": "false"}
-    if can_cache:
-        headers["X-Cache-Path"] = cache_file
 
     return StreamingResponse(
         io.BytesIO(wav_bytes),
         media_type="audio/wav",
-        headers=headers,
+        headers={
+            "X-Cached": "false",
+            **({**{"X-Cache-Path": cache_file}} if can_cache else {}),
+        },
     )
 
 @app.get("/play")
 async def synthesize_get(text: str, voice: str = "af_sarah", speed: float = 1.0):
-    log_request("/play", "GET", {"text_len": len(text), "voice": voice, "speed": speed})
     wav_bytes = await synthesize_audio(text, voice, speed)
     return StreamingResponse(io.BytesIO(wav_bytes), media_type="audio/wav")
 
@@ -540,7 +390,6 @@ async def synthesize_get(text: str, voice: str = "af_sarah", speed: float = 1.0)
 @app.websocket("/ws/tts")
 async def ws_tts(websocket: WebSocket):
     await websocket.accept()
-    log_ws_connect("tts", id(websocket))
     try:
         while True:
             data = await websocket.receive_json()
@@ -553,16 +402,11 @@ async def ws_tts(websocket: WebSocket):
             save  = data.get("save", False)
 
             can_cache = bool(book and page is not None and line is not None)
-            cached = False
-            duration = None
 
             if can_cache:
                 book_dir   = get_book_dir(book)
                 cache_file = wav_path(book_dir, page, line)
                 if not save and os.path.exists(cache_file):
-                    cached = True
-                    duration = get_duration_seconds(cache_file)
-                    log_tts(book, page, line, voice, len(text), cached=True, duration=duration)
                     with open(cache_file, "rb") as f:
                         chunk = f.read(8192)
                         while chunk:
@@ -574,7 +418,6 @@ async def ws_tts(websocket: WebSocket):
             try:
                 wav_bytes = await synthesize_audio(text, voice, 1.0 if save else speed)
             except Exception as e:
-                log_ws_message("tts", "error", {"detail": str(e)})
                 await websocket.send_json({"type": "error", "detail": str(e)})
                 continue
 
@@ -583,23 +426,20 @@ async def ws_tts(websocket: WebSocket):
                     f.write(wav_bytes)
                 duration = get_duration_seconds(cache_file)
                 update_duration(book_dir, page, line, duration)
-                log_tts(book, page, line, voice, len(text), cached=False, duration=duration)
                 cached_lines = _get_cached_lines(book_dir, page)
                 await mgr.broadcast(f"cache:{book}", {
                     "type": "cache_update",
                     "page": page,
                     "cached_lines": cached_lines,
                 })
-            else:
-                log_tts(book or "unknown", page or 0, line or 0, voice, len(text), cached=False)
 
+            # Stream in chunks
             chunk_size = 8192
             for i in range(0, len(wav_bytes), chunk_size):
                 await websocket.send_bytes(wav_bytes[i:i + chunk_size])
             await websocket.send_json({"type": "done", "cached": False})
 
     except WebSocketDisconnect:
-        log_ws_disconnect("tts", id(websocket))
         pass
 
 # ─── WebSocket: Session sync ───
@@ -616,11 +456,8 @@ async def ws_session(websocket: WebSocket, book_name: str):
             data = await websocket.receive_json()
             if data.get("type") == "settings":
                 save_settings(book_name, data)
-                log_settings(book_name, data.get("page"), data.get("scale"), data.get("speed"),
-                             data.get("topSkipLines"), data.get("bottomSkipLines"))
+                # Broadcast to other tabs (exclude sender by broadcasting to room)
                 await mgr.broadcast(room, {"type": "settings_sync", **data})
-            else:
-                log_ws_message(room, data.get("type"), data)
     except WebSocketDisconnect:
         mgr.disconnect(room, websocket)
 
@@ -691,7 +528,6 @@ def _get_cached_lines(book_dir: str, page: int) -> list:
 
 @app.get("/page_sentence_durations")
 async def page_sentence_durations(book_name: str, page: int):
-    log_request("/page_sentence_durations", "GET", {"book_name": book_name, "page": page})
     book_dir = get_book_dir(book_name)
     if not os.path.isdir(book_dir):
         return {"durations": {}}
@@ -752,7 +588,6 @@ async def _run_preload_job(job_id: str, payload: PreloadPayload):
                     f.write(wav_bytes)
                 duration = get_duration_seconds(cache_file)
                 update_duration(book_dir, page, line, duration)
-                log_tts(payload.book_name, page, line, payload.voice, len(text), cached=False, duration=duration)
                 done += 1
                 # Broadcast cache update
                 cached_lines = _get_cached_lines(book_dir, page)
@@ -775,7 +610,6 @@ async def _run_preload_job(job_id: str, payload: PreloadPayload):
 
     async with _preload_lock:
         _preload_jobs[job_id]["status"] = "done"
-    log_preload_job(job_id, payload.book_name, total, done, errors, "done")
     await mgr.broadcast(f"preload:{job_id}", _preload_jobs[job_id])
 
 @app.post("/preload")
@@ -789,7 +623,6 @@ async def preload(payload: PreloadPayload, background_tasks: BackgroundTasks):
             "errors": 0,
             "book": payload.book_name,
         }
-    log_preload_job(job_id, payload.book_name, len(payload.sentences), status="started")
     background_tasks.add_task(_run_preload_job, job_id, payload)
     return {"job_id": job_id, "total": len(payload.sentences)}
 
@@ -799,34 +632,27 @@ async def preload_status(job_id: str):
         job = _preload_jobs.get(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
-    log_request("/preload_status", "GET", {"job_id": job_id})
     return job
 
 @app.post("/preload_status_bulk")
 async def preload_status_bulk(job_ids: List[str]):
     async with _preload_lock:
-        result = {jid: _preload_jobs.get(jid) for jid in job_ids}
-    log_request("/preload_status_bulk", "POST", {"count": len(job_ids)})
-    return result
+        return {jid: _preload_jobs.get(jid) for jid in job_ids}
 
 @app.get("/preload_jobs")
 async def list_preload_jobs():
     async with _preload_lock:
-        jobs = list(_preload_jobs.values())
-    log_request("/preload_jobs", "GET", {"count": len(jobs)})
-    return jobs
+        return list(_preload_jobs.values())
 
 # ─── Cache status ───
 
 @app.get("/cache_status")
 async def cache_status(book_name: str, page: int):
-    log_request("/cache_status", "GET", {"book_name": book_name, "page": page})
     book_dir = get_book_dir(book_name)
     return {"cached_lines": _get_cached_lines(book_dir, page)}
 
 @app.get("/cache_status_bulk")
 async def cache_status_bulk(book_name: str, page_from: int, page_to: int):
-    log_request("/cache_status_bulk", "GET", {"book_name": book_name, "page_from": page_from, "page_to": page_to})
     book_dir = get_book_dir(book_name)
     result = {}
     if os.path.isdir(book_dir):
@@ -848,7 +674,6 @@ async def cache_status_bulk(book_name: str, page_from: int, page_to: int):
 
 @app.get("/page_duration")
 async def page_duration(book_name: str, page: int):
-    log_request("/page_duration", "GET", {"book_name": book_name, "page": page})
     book_dir = get_book_dir(book_name)
     durations = load_durations(book_dir)
     prefix = f"{page}_"
@@ -868,7 +693,6 @@ async def page_duration(book_name: str, page: int):
 
 @app.get("/chapter_duration")
 async def chapter_duration(book_name: str, start_page: int, end_page: int):
-    log_request("/chapter_duration", "GET", {"book_name": book_name, "start_page": start_page, "end_page": end_page})
     book_dir = get_book_dir(book_name)
     durations = load_durations(book_dir)
     needed = set()
@@ -891,7 +715,6 @@ async def chapter_duration(book_name: str, start_page: int, end_page: int):
 
 @app.post("/delete_cache_range")
 async def delete_cache_range(payload: DeleteCacheRangePayload):
-    log_request("/delete_cache_range", "POST", {"book_name": payload.book_name, "page_from": payload.page_from, "page_to": payload.page_to})
     book_dir = get_book_dir(payload.book_name)
     if not os.path.isdir(book_dir):
         return {"deleted": 0}
@@ -916,7 +739,6 @@ async def delete_cache_range(payload: DeleteCacheRangePayload):
             "cached_lines": [],
         })
     save_durations(book_dir, durations)
-    log_cache_operation(payload.book_name, payload.page_from, "deleted_range", deleted)
     return {"deleted": deleted}
 
 # ─── Upload PDF ───
@@ -933,18 +755,9 @@ async def upload_pdf(file: UploadFile = File(...)):
         content = await file.read()
         f.write(content)
     size = os.path.getsize(fpath)
-    log_request("/upload_pdf", "POST", {"filename": safe_name, "size": size})
     # Broadcast new PDF to library listeners
     await mgr.broadcast("library", {
         "type": "added",
         "pdf": {"name": safe_name, "size": size, "url": f"/pdfs/{safe_name}"},
     })
     return {"status": "uploaded", "filename": safe_name}
-
-@app.get("/", response_class=HTMLResponse)
-async def serve_index():
-    try:
-        with open("index.html", "r", encoding="utf-8") as f:
-            return f.read()
-    except FileNotFoundError:
-        return HTMLResponse("<h1>DocReader Pro</h1><p>index.html not found.</p>", status_code=404)

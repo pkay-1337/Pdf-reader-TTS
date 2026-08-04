@@ -33,6 +33,56 @@ let chapterEndPage = null;
 let saveAudioEnabled = false;
 let isDownloadingRange = false;
 
+/* ─── WebSocket manager ─── */
+const WS = {
+    _sockets: {},
+
+    _base() {
+        return (location.protocol === 'https:' ? 'wss' : 'ws') + '://' + location.host;
+    },
+
+    open(key, path, onmessage, onopen) {
+        this.close(key);
+        const ws = new WebSocket(this._base() + path);
+        ws.onmessage = e => {
+            try { onmessage(JSON.parse(e.data), e); } catch (_) { onmessage(null, e); }
+        };
+        ws.onopen = onopen || null;
+        ws.onerror = () => {};
+        ws.onclose = () => { delete this._sockets[key]; };
+        this._sockets[key] = ws;
+        return ws;
+    },
+
+    openBinary(key, path, onbinary, onjson) {
+        this.close(key);
+        const ws = new WebSocket(this._base() + path);
+        ws.binaryType = 'arraybuffer';
+        ws.onmessage = e => {
+            if (e.data instanceof ArrayBuffer) { onbinary(e.data); }
+            else { try { onjson(JSON.parse(e.data)); } catch (_) {} }
+        };
+        ws.onerror = () => {};
+        ws.onclose = () => { delete this._sockets[key]; };
+        this._sockets[key] = ws;
+        return ws;
+    },
+
+    send(key, data) {
+        const ws = this._sockets[key];
+        if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data));
+    },
+
+    close(key) {
+        const ws = this._sockets[key];
+        if (ws) { try { ws.close(); } catch (_) {} delete this._sockets[key]; }
+    },
+
+    closeAll() {
+        Object.keys(this._sockets).forEach(k => this.close(k));
+    }
+};
+
 /* ─── Highlight customisation state ─── */
 let hlBaseColor = '59,130,246';
 let hlOpacity = 0.32;
@@ -199,69 +249,71 @@ if (window.screen.orientation) {
     });
 }
 
-/* ─── Server PDF Library ─── */
-async function loadServerPDFs() {
+/* ─── Server PDF Library (WebSocket-driven) ─── */
+function renderPdfList(pdfs) {
     const section = document.getElementById('server-pdf-section');
-    const loading = document.getElementById('server-pdf-loading');
-    const listEl = document.getElementById('server-pdf-list');
+    const listEl  = document.getElementById('server-pdf-list');
+    document.getElementById('server-pdf-loading').style.display = 'none';
+    if (!pdfs || pdfs.length === 0) { section.style.display = 'none'; return; }
+    section.style.display = 'block';
+    listEl.innerHTML = '';
+    pdfs.forEach(pdf => addPdfToList(pdf, listEl));
+}
 
-    loading.style.display = 'block';
-
-    try {
-        const res = await fetch('/pdfs', { signal: AbortSignal.timeout(4000) });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
-        const pdfs = data.pdfs || [];
-        loading.style.display = 'none';
-
-        if (pdfs.length === 0) {
-            return;
+function addPdfToList(pdf, listEl) {
+    listEl = listEl || document.getElementById('server-pdf-list');
+    if (listEl.querySelector(`[data-pdf-name="${CSS.escape(pdf.name)}"]`)) return;
+    const item = document.createElement('div');
+    item.className = 'server-pdf-item';
+    item.dataset.pdfName = pdf.name;
+    item.title = `Open: ${pdf.name}`;
+    const sizeMB = (pdf.size / (1024 * 1024)).toFixed(1);
+    item.innerHTML = `
+        <svg class="server-pdf-item-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
+        <span class="server-pdf-item-name">${escapeHtmlWelcome(pdf.name)}</span>
+        <span class="server-pdf-item-size">${sizeMB} MB</span>
+    `;
+    item.addEventListener('click', async () => {
+        item.style.opacity = '0.5';
+        item.style.pointerEvents = 'none';
+        try {
+            const pdfRes = await fetch(`/pdfs/${encodeURIComponent(pdf.name)}`);
+            if (!pdfRes.ok) throw new Error(`HTTP ${pdfRes.status}`);
+            const blob = await pdfRes.blob();
+            const file = new File([blob], pdf.name, { type: 'application/pdf' });
+            loadPDF(file, 1);
+        } catch (err) {
+            console.error(`[SERVER-PDF] Failed to load ${pdf.name}:`, err);
+            alert(`Could not load "${pdf.name}" from server. Is the server running?`);
+            item.style.opacity = '';
+            item.style.pointerEvents = '';
         }
+    });
+    listEl.appendChild(item);
+}
 
-        section.style.display = 'block';
-        listEl.innerHTML = '';
+function removePdfFromList(name) {
+    const el = document.querySelector(`[data-pdf-name="${CSS.escape(name)}"]`);
+    if (el) el.remove();
+}
 
-        pdfs.forEach(pdf => {
-            const item = document.createElement('div');
-            item.className = 'server-pdf-item';
-            item.title = `Open: ${pdf.name}`;
-
-            const sizeMB = (pdf.size / (1024 * 1024)).toFixed(1);
-            item.innerHTML = `
-                <svg class="server-pdf-item-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>
-                <span class="server-pdf-item-name">${escapeHtmlWelcome(pdf.name)}</span>
-                <span class="server-pdf-item-size">${sizeMB} MB</span>
-            `;
-
-            item.addEventListener('click', async () => {
-                item.style.opacity = '0.5';
-                item.style.pointerEvents = 'none';
-                try {
-                    const pdfRes = await fetch(`/pdfs/${encodeURIComponent(pdf.name)}`);
-                    if (!pdfRes.ok) throw new Error(`HTTP ${pdfRes.status}`);
-                    const blob = await pdfRes.blob();
-                    const file = new File([blob], pdf.name, { type: 'application/pdf' });
-                    loadPDF(file, 1);
-                } catch (err) {
-                    console.error(`[SERVER-PDF] Failed to load ${pdf.name}:`, err);
-                    alert(`Could not load "${pdf.name}" from server. Is the server running?`);
-                    item.style.opacity = '';
-                    item.style.pointerEvents = '';
-                }
-            });
-
-            listEl.appendChild(item);
-        });
-    } catch (err) {
-        loading.style.display = 'none';
-    }
+function openLibrarySocket() {
+    WS.open('library', '/ws/library', msg => {
+        if (!msg) return;
+        if (msg.type === 'init')    renderPdfList(msg.pdfs);
+        if (msg.type === 'added')   { addPdfToList(msg.pdf); document.getElementById('server-pdf-section').style.display = 'block'; }
+        if (msg.type === 'removed') removePdfFromList(msg.pdf.name);
+    });
 }
 
 function escapeHtmlWelcome(s) {
     return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
-loadServerPDFs();
+// Keep a stub so existing call-sites don't break
+function loadServerPDFs() { openLibrarySocket(); }
+
+openLibrarySocket();
 
 /* ─── Highlight Customisation ─── */
 
@@ -468,44 +520,74 @@ zoomInBtn.addEventListener('click', () => setZoom(scale + 0.1));
 zoomOutBtn.addEventListener('click', () => setZoom(scale - 0.1));
 zoomResetBtn.addEventListener('click', () => setZoom(1.0));
 
-/* ─── Server settings API ─── */
+/* ─── Server settings API (WebSocket session) ─── */
 let saveTimeout = null;
+let _pendingSettingsResolve = null;
 
-function saveSettingsThrottled(page, scale, sentenceIndex) {
-    clearTimeout(saveTimeout);
-    saveTimeout = setTimeout(() => {
-        saveSettings(page, scale, sentenceIndex);
-    }, 1500);
+function openSessionSocket(bookName) {
+    WS.close('session');
+    WS.open('session', `/ws/session/${encodeURIComponent(bookName)}`, msg => {
+        if (!msg) return;
+        if (msg.type === 'init' && _pendingSettingsResolve) {
+            _pendingSettingsResolve(msg);
+            _pendingSettingsResolve = null;
+        }
+        if (msg.type === 'settings_sync') {
+            // Another tab changed settings — apply without re-saving
+            if (msg.page && msg.page !== pageNum && !isPlaying) {
+                pageNum = msg.page;
+                queueRenderPage(pageNum);
+            }
+            if (msg.scale) setZoom(msg.scale, false);
+        }
+    });
 }
 
-async function saveSettings(page, scale, sentenceIndex) {
+function saveSettingsThrottled(page, scl, sentenceIndex) {
+    clearTimeout(saveTimeout);
+    saveTimeout = setTimeout(() => saveSettings(page, scl, sentenceIndex), 800);
+}
+
+function saveSettings(page, scl, sentenceIndex) {
     if (!currentFileName) return;
-    try {
-        const res = await fetch('/settings', {
+    const payload = {
+        type: 'settings',
+        book_name: currentFileName,
+        page,
+        scale: scl,
+        sentenceIndex: sentenceIndex || 0,
+        speed: playbackSpeed,
+        topSkipLines,
+        bottomSkipLines,
+    };
+    if (WS._sockets['session'] && WS._sockets['session'].readyState === WebSocket.OPEN) {
+        WS.send('session', payload);
+    } else {
+        // Fallback to HTTP if socket isn't open yet
+        fetch('/settings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                book_name: currentFileName,
-                page,
-                scale,
-                sentenceIndex: sentenceIndex || 0,
-                speed: playbackSpeed,
-                topSkipLines,
-                bottomSkipLines
-            })
-        });
-    } catch (e) {}
+            body: JSON.stringify(payload),
+        }).catch(() => {});
+    }
 }
 
 async function loadSettings(bookName) {
-    try {
-        const res = await fetch(`/settings?book_name=${encodeURIComponent(bookName)}`);
-        if (!res.ok) return null;
-        return await res.json();
-    } catch (e) {
-        console.warn('Load settings error:', e);
-        return null;
-    }
+    // Open the session socket, wait for init message which carries current settings
+    openSessionSocket(bookName);
+    return new Promise(resolve => {
+        _pendingSettingsResolve = resolve;
+        // Fallback: if socket doesn't deliver init in 2 s, fetch via HTTP
+        setTimeout(async () => {
+            if (_pendingSettingsResolve) {
+                _pendingSettingsResolve = null;
+                try {
+                    const res = await fetch(`/settings?book_name=${encodeURIComponent(bookName)}`);
+                    resolve(res.ok ? await res.json() : null);
+                } catch { resolve(null); }
+            }
+        }, 2000);
+    });
 }
 
 /* ─── PDF Load ─── */
@@ -556,6 +638,9 @@ async function loadPDF(file, startPage = 1) {
                 zoomVal.textContent = Math.round(scale * 100) + '%';
             }
         }
+
+        // ── Open cache events socket ──
+        openCacheSocket(currentFileName);
 
         // ── Save as last document ──
         try {
@@ -1499,7 +1584,10 @@ document.getElementById('close-file').addEventListener('click', resetUI);
 function resetUI() {
     stopPipeline();
     clearPageAudioCache();
-	pageDurationCache = {};
+    WS.close('session');
+    WS.close('cache');
+    WS.close('tts');
+    pageDurationCache = {};
     clearHighlightCanvas();
     pdfDoc = null;
     currentFile = null;
@@ -1523,6 +1611,7 @@ function resetUI() {
     pageTimeEl.textContent = 'Page: —';
     chapterTimeEl.textContent = 'Chapter: —';
     Object.keys(pageStats).forEach(key => delete pageStats[key]);
+    openLibrarySocket();
 }
 
 /* ─── TTS ─── */
@@ -1708,60 +1797,100 @@ function normalizeTTSText(raw) {
     return t;
 }
 
+/* ─── TTS fetch via WebSocket with arraybuffer streaming ─── */
+const _ttsChunks = {}; // idx -> ArrayBuffer[]
+
+function _ensureTtsSocket() {
+    if (WS._sockets['tts'] && WS._sockets['tts'].readyState === WebSocket.OPEN) return;
+    WS.openBinary('tts', '/ws/tts',
+        // binary chunk
+        (ab) => {
+            const pending = _ttsPendingIdx;
+            if (pending === null) return;
+            if (!_ttsChunks[pending]) _ttsChunks[pending] = [];
+            _ttsChunks[pending].push(ab);
+        },
+        // json control message
+        (msg) => {
+            const idx = _ttsPendingIdx;
+            _ttsPendingIdx = null;
+            if (msg.type === 'done') {
+                if (idx !== null) {
+                    const parts = _ttsChunks[idx] || [];
+                    delete _ttsChunks[idx];
+                    const total = parts.reduce((s, b) => s + b.byteLength, 0);
+                    const merged = new Uint8Array(total);
+                    let offset = 0;
+                    parts.forEach(b => { merged.set(new Uint8Array(b), offset); offset += b.byteLength; });
+                    const blob = new Blob([merged], { type: 'audio/wav' });
+                    if (audioCache[idx] === 'fetching') audioCache[idx] = URL.createObjectURL(blob);
+                    _onTtsDone(idx);
+                }
+            } else if (msg.type === 'error') {
+                if (idx !== null && audioCache[idx] === 'fetching') audioCache[idx] = null;
+                _onTtsDone(idx);
+            }
+        }
+    );
+}
+
+let _ttsPendingIdx = null;
+
+function _onTtsDone(idx) {
+    inFlight--;
+    if (isPlaying) {
+        if (!hasStartedPlaying) {
+            const required = Math.min(REQUIRED_START_BUFFER, sentences.length - currentIndex);
+            let cnt = 0;
+            for (let i = currentIndex; i < currentIndex + required; i++) {
+                if (audioCache[i] && audioCache[i] !== 'fetching') cnt++;
+            }
+            ttsStatusText.textContent = `Generating… ${cnt}/${required}`;
+            if (cnt >= required) { hasStartedPlaying = true; playNextChunk(); }
+        } else {
+            if (idx === currentIndex && audioPlayer.paused) playNextChunk();
+        }
+    }
+    preloadQueue();
+}
+
 async function fetchSentenceAudio(idx, forceRegenerate = false) {
     try {
         const raw = sentences[idx];
-        const text = normalizeTTSText(
-            /^\d{1,2}$/.test(raw.trim()) ? `Page ${raw.trim()}.` : raw
-        );
+        const text = normalizeTTSText(/^\d{1,2}$/.test(raw.trim()) ? `Page ${raw.trim()}.` : raw);
         const voice = document.getElementById('voice-selector').value;
-        const serverSpeed = 1.0;
+        const originalLine = idx + (parseInt(topSkipLines, 10) || 0);
 
-        const headers = { 'Content-Type': 'application/json' };
-        if (currentFileName) {
-            headers['X-Book-Name'] = currentFileName;
-            headers['X-Page-Number'] = String(pageNum);
-            // 🔥 Use the original line number (offset by skipTopLines)
-            const originalLine = idx + (parseInt(topSkipLines, 10) || 0);
-            headers['X-Line-Number'] = String(originalLine);
-            headers['X-Save-Audio'] = saveAudioEnabled ? 'true' : 'false';
-            if (forceRegenerate) {
-                headers['X-Force-Regenerate'] = 'true';
-            }
+        _ensureTtsSocket();
+
+        // Wait until socket is open (max 2 s) then send
+        const ws = WS._sockets['tts'];
+        const sendRequest = () => {
+            _ttsPendingIdx = idx;
+            WS.send('tts', {
+                text,
+                voice,
+                speed: 1.0,
+                book_name: currentFileName || '',
+                page: pageNum,
+                line: originalLine,
+                save: saveAudioEnabled || false,
+                force_regenerate: forceRegenerate || false,
+            });
+        };
+
+        if (ws && ws.readyState === WebSocket.OPEN) {
+            sendRequest();
+        } else if (ws) {
+            ws.addEventListener('open', sendRequest, { once: true });
+        } else {
+            throw new Error('WS not available');
         }
 
-        const res = await fetch('/synthesize', {
-            method: 'POST',
-            headers,
-            body: JSON.stringify({ text, voice, speed: serverSpeed })
-        });
-        if (!res.ok) throw new Error(`Backend ${res.status}`);
-
-        const blob = await res.blob();
-
-        if (audioCache[idx] === 'fetching') audioCache[idx] = URL.createObjectURL(blob);
     } catch (e) {
-        console.error(`[TTS] Fetch FAILED for sentence ${idx}:`, e);
+        console.error(`[TTS] WS fetch FAILED for sentence ${idx}:`, e);
         if (audioCache[idx] === 'fetching') audioCache[idx] = null;
-    } finally {
-        inFlight--;
-        if (isPlaying) {
-            if (!hasStartedPlaying) {
-                const required = Math.min(REQUIRED_START_BUFFER, sentences.length - currentIndex);
-                let cnt = 0;
-                for (let i = currentIndex; i < currentIndex + required; i++) {
-                    if (audioCache[i] && audioCache[i] !== 'fetching') cnt++;
-                }
-                ttsStatusText.textContent = `Generating… ${cnt}/${required}`;
-                if (cnt >= required) {
-                    hasStartedPlaying = true;
-                    playNextChunk();
-                }
-            } else {
-                if (idx === currentIndex && audioPlayer.paused) playNextChunk();
-            }
-        }
-        preloadQueue();
+        _onTtsDone(idx);
     }
 }
 
@@ -1872,9 +2001,32 @@ mobilePlayBtn.addEventListener('click', () => {
     startReadingPage(si);
 });
 
-/* ─── Cache badge update ─── */
+/* ─── Cache badge (WebSocket-driven) ─── */
+function openCacheSocket(bookName) {
+    WS.close('cache');
+    if (!bookName) return;
+    WS.open('cache', `/ws/cache/${encodeURIComponent(bookName)}`, msg => {
+        if (!msg) return;
+        if (msg.page !== pageNum) {
+            // Invalidate pageDurationCache for that page
+            delete pageDurationCache[msg.page];
+            return;
+        }
+        const lines = msg.cached_lines || [];
+        if (lines.length > 0) {
+            cacheBadge.textContent = `${lines.length} cached`;
+            cacheBadge.classList.add('visible');
+        } else {
+            cacheBadge.classList.remove('visible');
+        }
+        // Update duration cache
+        delete pageDurationCache[msg.page];
+    });
+}
+
 async function updateCacheBadge() {
     if (!currentFileName || !pdfDoc) { cacheBadge.classList.remove('visible'); return; }
+    // Fallback HTTP fetch (used on page navigation when WS hasn't pushed yet)
     try {
         const res = await fetch(`/cache_status?book_name=${encodeURIComponent(currentFileName)}&page=${pageNum}`);
         if (!res.ok) { cacheBadge.classList.remove('visible'); return; }
@@ -2026,48 +2178,36 @@ downloadRangeBtn.addEventListener('click', async () => {
 });
 
 function startPollingPreloadJobs(jobIds, totalSentences) {
-    let pollCount = 0;
-    const MAX_POLLS = 600;
+    let donePerJob = {};
+    let finishedJobs = new Set();
 
-    const interval = setInterval(async () => {
-        pollCount++;
-        if (pollCount > MAX_POLLS) {
-            clearInterval(interval);
-            finishDownload(jobIds.length);
-            return;
-        }
+    jobIds.forEach(jobId => {
+        donePerJob[jobId] = 0;
+        WS.open(`preload:${jobId}`, `/ws/preload/${jobId}`, msg => {
+            if (!msg) return;
+            donePerJob[jobId] = msg.done || 0;
+            if (msg.status === 'done') finishedJobs.add(jobId);
 
-        try {
-            const res = await fetch('/preload_status_bulk', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(jobIds),
-            });
-
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const statusMap = await res.json();
-
-            let totalDone = 0;
-            let allFinished = true;
-            for (const [jobId, job] of Object.entries(statusMap)) {
-                if (!job) continue;
-                totalDone += job.done || 0;
-                if (job.status !== 'done') allFinished = false;
-            }
-
+            const totalDone = Object.values(donePerJob).reduce((s, v) => s + v, 0);
             const pct = Math.min(99, Math.round(70 + (totalDone / Math.max(1, totalSentences)) * 29));
             dlProgressFill.style.width = pct + '%';
             dlStatusText.textContent = `Server generating… ${totalDone} / ${totalSentences} sentences`;
 
-            if (allFinished) {
-                clearInterval(interval);
+            if (finishedJobs.size === jobIds.length) {
+                jobIds.forEach(jid => WS.close(`preload:${jid}`));
                 finishDownload(jobIds.length);
             }
-        } catch (e) {
-            console.warn('[POLL] Bulk status request failed:', e.message);
-            dlStatusText.textContent = 'Waiting for server…';
+        });
+    });
+
+    // Safety timeout: fall back after 10 min
+    setTimeout(() => {
+        const allDone = jobIds.every(jid => finishedJobs.has(jid));
+        if (!allDone) {
+            jobIds.forEach(jid => WS.close(`preload:${jid}`));
+            finishDownload(jobIds.length);
         }
-    }, 1000);
+    }, 600_000);
 }
 
 function finishDownload(pageCount) {
@@ -2561,18 +2701,12 @@ async function refreshTimeEstimates() {
 
     // Chapter remaining time (sum all pages from start to end)
     let chapDur = 0;
-    for (let p = chapterStartPage; p <= chapterEndPage; p++) {
-        const dur = await fetchPageDuration(currentFileName, p);
-        if (dur !== null && dur > 0) {
-            chapDur += dur;
-        } else {
-            const stats = pageStats[p];
-            if (stats) {
-                const words = stats.totalChars / 5;
-                chapDur += (words / (150 * playbackSpeed)) * 60;
-            }
-        }
-    }
+	const res = await fetch(
+		`/chapter_duration?book_name=${encodeURIComponent(currentFileName)}&start_page=${chapterStartPage}&end_page=${chapterEndPage}`
+	);
+	const data = await res.json();
+	chapterRemaining = data.duration || 0;
+
     chapterRemaining = chapDur;
 
     updateTimeDisplay();
