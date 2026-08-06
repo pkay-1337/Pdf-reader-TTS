@@ -658,22 +658,19 @@ class EPUBHandler {
         this._rendering = false; // guard against concurrent renders
     }
 
-    async load(file, startPage, containerEl, scale, theme) {
+	async load(file, startPage, containerEl, scale, theme) {
         this._destroyed = false;
         const arrayBuffer = await file.arrayBuffer();
         const EpubJS = window.ePub || window.epub || (window.ePub = ePub);
         this.book = EpubJS(arrayBuffer);
         await this.book.ready;
 
-        // Build chapter list from spine
         this.spineItems = [];
         this.book.spine.each(item => this.spineItems.push(item));
         this.pageCount = this.spineItems.length || 1;
-        console.log(`[EPUB] Spine has ${this.pageCount} chapters`);
 
         const viewerEl = document.getElementById('epub-viewer');
         viewerEl.innerHTML = '';
-
         const epubContainer = document.getElementById('epub-container');
         const width  = epubContainer.clientWidth  || window.innerWidth;
         const height = epubContainer.clientHeight || window.innerHeight;
@@ -681,32 +678,47 @@ class EPUBHandler {
         this.rendition = this.book.renderTo(viewerEl, {
             width:  width,
             height: height,
-            flow:   'scrolled-doc',   // full chapter, scrollable
+            flow:   'scrolled-doc',
             spread: 'none',
             minSpreadWidth: 9999,
         });
 
-		this.rendition.hooks.content.register((contents) => {
-            const iframeWin = contents.window;
-            const iframeDoc = contents.document;
+        // --- THE MAGIC HOOK: Runs on EVERY render/resize ---
+        this.rendition.hooks.content.register((contents) => {
+            const doc = contents.document;
+            const win = contents.window;
             
-            // Bridge keyboard events to parent
-            iframeWin.addEventListener('keydown', (e) => {
-                const event = new KeyboardEvent('keydown', { key: e.key });
-                window.dispatchEvent(event);
+            // 1. Bridge keyboard events (j, k, arrows) to parent window
+            win.addEventListener('keydown', (e) => {
+                window.dispatchEvent(new KeyboardEvent('keydown', { key: e.key }));
             });
             
-            // Fix scrolling lag
+            // 2. Hardware scroll lag fix
             let epubScrollTimeout;
-            iframeWin.addEventListener('scroll', () => {
-                if (!iframeDoc.body.classList.contains('is-scrolling')) iframeDoc.body.classList.add('is-scrolling');
+            win.addEventListener('scroll', () => {
+                if (!doc.body.classList.contains('is-scrolling')) doc.body.classList.add('is-scrolling');
                 clearTimeout(epubScrollTimeout);
-                epubScrollTimeout = setTimeout(() => iframeDoc.body.classList.remove('is-scrolling'), 150);
+                epubScrollTimeout = setTimeout(() => doc.body.classList.remove('is-scrolling'), 150);
             }, { passive: true });
-            
-            const s = iframeDoc.createElement('style');
-            s.textContent = `body { will-change: scroll-position; transform: translateZ(0); } body.is-scrolling * { pointer-events: none !important; }`;
-            iframeDoc.head.appendChild(s);
+
+            // 3. Group consecutive code blocks natively into one div
+            const codeBlocks = Array.from(doc.querySelectorAll('p.snippet, p.code, div.snippet, div.code, pre'));
+            let currentWrapper = null;
+            codeBlocks.forEach(el => {
+                const prev = el.previousElementSibling;
+                if (prev && prev === currentWrapper) {
+                    currentWrapper.appendChild(el);
+                } else {
+                    currentWrapper = doc.createElement('div');
+                    currentWrapper.className = 'docreader-code-wrapper';
+                    el.parentNode.insertBefore(currentWrapper, el);
+                    currentWrapper.appendChild(el);
+                }
+            });
+
+            // 4. Force-inject styles to survive resizes
+            this._injectReadingStyle(doc);
+            this._injectHighlightStyle(doc);
         });
 
         this._registerThemes();
@@ -717,28 +729,6 @@ class EPUBHandler {
         this._loadChapterStats();
     }
 
-	_injectReadingStyle() {
-        try {
-            const contents = this.rendition.getContents();
-            if (!contents || !contents.length) return;
-            const doc = contents[0].document;
-            if (!doc || !doc.head) return;
-            const id = 'epub-reader-style';
-            if (doc.getElementById(id)) return;
-            const s = doc.createElement('style');
-            s.id = id;
-            s.textContent = `
-                @font-face { font-family: 'Mononoki'; src: url('${window.location.origin}/static/fonts/mononoki-Regular.ttf') format('truetype'); }
-                * { font-family: 'Mononoki', monospace !important; }
-                body {  margin: 0 auto; padding: 20px 28px 60px; box-sizing: border-box; word-wrap: break-word; }
-                img, svg, figure { max-width: 100%; height: auto; }
-                h1,h2,h3,h4,h5,h6 { margin-top: 1.4em; margin-bottom: 0.5em; line-height: 1.3; }
-                p { margin: 0 0 0.9em; }
-                pre, code { white-space: pre-wrap; word-break: break-all; }
-            `;
-            doc.head.appendChild(s);
-        } catch(e) {}
-    }
 
     _registerThemes() {
         const resetStyles = { 'background': 'transparent !important', 'border-color': 'currentColor !important' };
@@ -809,48 +799,6 @@ class EPUBHandler {
         try { this.rendition.themes.fontSize(pct + '%'); } catch (e) {}
     }
 
-    async renderPage(pageNum) {
-        if (this._destroyed) return;
-        if (this._rendering) return;   // block concurrent calls
-        this._rendering = true;
-        try {
-            this.currentPage = Math.max(1, Math.min(pageNum, this.pageCount));
-            const item = this.spineItems[this.currentPage - 1];
-            if (!item) return;
-
-            await new Promise(async (resolve) => {
-                let done = false;
-                const finish = () => { if (!done) { done = true; resolve(); } };
-                // timeout safety net
-                const timer = setTimeout(finish, 4000);
-                try {
-                    this.rendition.once('rendered', () => { clearTimeout(timer); finish(); });
-                    await this.rendition.display(item.href);
-                } catch(e) {
-                    clearTimeout(timer);
-                    finish();
-                }
-            });
-
-            // Scroll iframe back to top for this new chapter
-            try {
-                const contents = this.rendition.getContents();
-                if (contents && contents[0] && contents[0].window) {
-                    contents[0].window.scrollTo(0, 0);
-                }
-            } catch(e) {}
-
-            // Inject reading style + extract text
-            this._injectReadingStyle();
-            const { text, sentenceCfiMap } = this._extractTextFromRendition();
-            this.currentText = text;
-            this.currentSentences = splitIntoTTSChunks(text, 250);
-            this.sentenceCfiMap = sentenceCfiMap;
-            return { text, sentences: this.currentSentences };
-        } finally {
-            this._rendering = false;
-        }
-    }
 
 
 	_extractTextFromRendition() {
@@ -860,20 +808,16 @@ class EPUBHandler {
             const doc = contents[0].document;
             if (!doc || !doc.body) return { text: '', sentenceCfiMap: {} };
 
-            const BLOCK_TAGS = new Set(['p','div','h1','h2','h3','h4','h5','h6',
-                'li','tr','blockquote','section','article','header','footer',
-                'figure','figcaption','pre','br']);
-            const INLINE_TAGS = new Set(['em', 'i', 'b', 'strong', 'a', 'span', 'sub', 'sup', 'code', 'mark']);
-
-            const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, {
-                acceptNode: (node) => {
-                    const p = node.parentElement;
-                    if (!p) return NodeFilter.FILTER_REJECT;
-                    const tag = (p.tagName || '').toLowerCase();
-                    if (['script','style','nav','aside'].includes(tag)) return NodeFilter.FILTER_REJECT;
-                    const cs = doc.defaultView ? doc.defaultView.getComputedStyle(p) : null;
-                    if (cs && (cs.display === 'none' || cs.visibility === 'hidden')) return NodeFilter.FILTER_REJECT;
-                    return NodeFilter.FILTER_ACCEPT;
+            // We use SHOW_ALL to catch <br> tags cleanly
+            const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_ALL, {
+                acceptNode: (n) => {
+                    if (n.nodeType === Node.TEXT_NODE) return NodeFilter.FILTER_ACCEPT;
+                    if (n.nodeType === Node.ELEMENT_NODE) {
+                        const tag = n.tagName.toLowerCase();
+                        if (['script','style','nav','aside'].includes(tag)) return NodeFilter.FILTER_REJECT;
+                        if (tag === 'br') return NodeFilter.FILTER_ACCEPT;
+                    }
+                    return NodeFilter.FILTER_SKIP;
                 }
             });
 
@@ -883,33 +827,39 @@ class EPUBHandler {
             let node;
 
             while ((node = walker.nextNode())) {
-                const t = node.textContent.replace(/[\r\n\t]+/g, ' '); 
-                if (!t.trim() && t !== ' ') continue;
+                if (node.nodeType === Node.ELEMENT_NODE) { // It's a <br>
+                    if (!fullText.endsWith('\n')) fullText += '\n';
+                    continue;
+                }
 
+                // Check visibility
                 const parent = node.parentElement;
-                const tag = parent ? (parent.tagName || '').toLowerCase() : '';
-                const isBlock = BLOCK_TAGS.has(tag);
-                const isInline = INLINE_TAGS.has(tag);
-                
+                if (parent) {
+                    const cs = doc.defaultView ? doc.defaultView.getComputedStyle(parent) : null;
+                    if (cs && (cs.display === 'none' || cs.visibility === 'hidden')) continue;
+                }
+
+                let t = node.textContent.replace(/\s+/g, ' ');
+                if (t === '') continue;
+
+                // Manage Block boundaries perfectly
                 const nearestBlock = parent ? parent.closest('p,div,h1,h2,h3,h4,h5,h6,li,blockquote,section,article,pre') : null;
                 if (nearestBlock && nearestBlock !== lastParentBlock) {
-                    if (fullText.length > 0 && !fullText.endsWith('\n')) fullText += '\n';
+                    if (fullText.length > 0 && !fullText.endsWith('\n')) {
+                        fullText = fullText.trimEnd() + '\n';
+                    }
                     lastParentBlock = nearestBlock;
                 }
-                
+
+                if (t === ' ' && (fullText.endsWith(' ') || fullText.endsWith('\n'))) continue;
+
                 nodeRanges.push({ start: fullText.length, end: fullText.length + t.length, node });
                 fullText += t;
-                
-                if (isBlock) {
-                    if (!fullText.endsWith('\n')) fullText += '\n';
-                } else if (!isInline && !fullText.endsWith(' ')) {
-                    fullText += ' ';
-                }
             }
-            
+
             const structuredText = fullText.replace(/\n{3,}/g, '\n\n').replace(/[ \t]+\n/g, '\n').trim();
             const sentencesArr = splitIntoTTSChunks(structuredText, 250);
-            
+
             const sentenceCfiMap = {};
             let cursor = 0;
             sentencesArr.forEach((sent, si) => {
@@ -1010,7 +960,52 @@ class EPUBHandler {
     }
 
 
-	_highlightByText(idx) {
+	async renderPage(pageNum) {
+        if (this._destroyed) return;
+        if (this._rendering) return;   
+        this._rendering = true;
+        try {
+            this.currentPage = Math.max(1, Math.min(pageNum, this.pageCount));
+            const item = this.spineItems[this.currentPage - 1];
+            if (!item) return;
+
+            await new Promise(async (resolve) => {
+                let done = false;
+                const finish = () => { if (!done) { done = true; resolve(); } };
+                const timer = setTimeout(finish, 4000);
+                try {
+                    this.rendition.once('rendered', () => { clearTimeout(timer); finish(); });
+                    await this.rendition.display(item.href);
+                } catch(e) {
+                    clearTimeout(timer);
+                    finish();
+                }
+            });
+
+            try {
+                const contents = this.rendition.getContents();
+                if (contents && contents[0] && contents[0].window) {
+                    contents[0].window.scrollTo(0, 0);
+                }
+            } catch(e) {}
+
+            this._injectReadingStyle();
+            
+            // RESET THE HIGHLIGHT CURSOR FOR THE NEW PAGE
+            this._lastHighlightNormIndex = 0; 
+            
+            const { text, sentenceCfiMap } = this._extractTextFromRendition();
+            this.currentText = text;
+            this.currentSentences = splitIntoTTSChunks(text, 250);
+            this.sentenceCfiMap = sentenceCfiMap;
+            return { text, sentences: this.currentSentences };
+        } finally {
+            this._rendering = false;
+        }
+    }
+
+
+    _highlightByText(idx) {
         const sent = (this.currentSentences[idx] || '').trim();
         if (!sent) return;
         try {
@@ -1039,10 +1034,21 @@ class EPUBHandler {
             }
 
             const domNorm = combinedText.toLowerCase().replace(/[^a-z0-9]/g, '');
-            const matchStartNorm = domNorm.indexOf(needleNorm.slice(0, 40)); 
+            
+            // Search forward from the last known good position
+            const searchStart = Math.max(0, (this._lastHighlightNormIndex || 0) - 50);
+            let matchStartNorm = domNorm.indexOf(needleNorm.slice(0, 40), searchStart);
+            
+            if (matchStartNorm === -1) {
+                // Fallback to start if we somehow got lost
+                matchStartNorm = domNorm.indexOf(needleNorm.slice(0, 40), 0);
+            }
             if (matchStartNorm === -1) return;
-            const matchEndNorm = matchStartNorm + needleNorm.length;
+            
+            // Advance tracker so the next sentence searches forward
+            this._lastHighlightNormIndex = matchStartNorm + needleNorm.length;
 
+            const matchEndNorm = matchStartNorm + needleNorm.length;
             let rawStart = -1, rawEnd = -1, alphaCount = 0;
             const combinedLower = combinedText.toLowerCase();
 
@@ -1055,6 +1061,9 @@ class EPUBHandler {
             }
 
             if (rawStart === -1 || rawEnd === -1) return;
+			while (rawEnd < combinedText.length && /[.,!?;:'"’”\]\)]/.test(combinedText[rawEnd])) {
+                rawEnd++;
+            }
 
             let firstMark = null;
             textNodes.forEach(tn => {
@@ -1083,12 +1092,85 @@ class EPUBHandler {
 
 
 
-	_injectHighlightStyle() {
+	_injectReadingStyle(targetDoc) {
         try {
-            const contents = this.rendition.getContents();
-            if (!contents || !contents.length) return;
-            const doc = contents[0].document;
+            let doc = targetDoc;
+            if (!doc) {
+                const contents = this.rendition.getContents();
+                if (!contents || !contents.length) return;
+                doc = contents[0].document;
+            }
             if (!doc || !doc.head) return;
+            
+            const id = 'epub-reader-style';
+            let s = doc.getElementById(id);
+            if (!s) {
+                s = doc.createElement('style');
+                s.id = id;
+                doc.head.appendChild(s);
+            }
+            s.textContent = `
+                @font-face { font-family: 'Mononoki'; src: url('${window.location.origin}/static/fonts/mononoki-Regular.ttf') format('truetype'); }
+                
+                /* Force strict box-sizing inside the isolated iframe */
+                * { 
+                    font-family: 'Mononoki', monospace !important; 
+                    box-sizing: border-box !important; 
+                }
+                
+                /* Kill horizontal scrolling at the root level */
+                html, body {
+                    overflow-x: hidden !important;
+                    max-width: 100% !important;
+                }
+                
+                body { 
+                    width: 100% !important;
+                    margin: 0 auto !important; 
+                    padding: 20px 28px 60px !important; 
+                    word-wrap: break-word !important; 
+                    overflow-wrap: anywhere !important; /* Force breaks on long URLs */
+                    will-change: scroll-position; 
+                    transform: translateZ(0); 
+                }
+                body.is-scrolling * { pointer-events: none !important; }
+                
+                /* Ensure media doesn't break the layout */
+                img, svg, figure, video, audio { max-width: 100% !important; height: auto !important; }
+                h1,h2,h3,h4,h5,h6 { margin-top: 1.4em; margin-bottom: 0.5em; line-height: 1.3; }
+                p { margin: 0 0 0.9em; }
+                
+                /* Grouped Code Block Theming */
+                .docreader-code-wrapper {
+                    background: rgba(120, 120, 120, 0.12) !important;
+                    border: 1px solid rgba(120, 120, 120, 0.25) !important;
+                    border-radius: 6px !important;
+                    padding: 14px !important;
+                    margin: 12px 0 !important;
+                    overflow-x: auto !important; /* Code scrolls internally, doesn't break page */
+                    width: 100% !important;
+                }
+                .docreader-code-wrapper p, .docreader-code-wrapper pre, .docreader-code-wrapper div {
+                    margin: 0 !important;
+                    padding: 0 !important;
+                    background: transparent !important;
+                    border: none !important;
+                    line-height: 1.5 !important;
+                }
+            `;
+        } catch(e) {}
+    }
+
+    _injectHighlightStyle(targetDoc) {
+        try {
+            let doc = targetDoc;
+            if (!doc) {
+                const contents = this.rendition.getContents();
+                if (!contents || !contents.length) return;
+                doc = contents[0].document;
+            }
+            if (!doc || !doc.head) return;
+            
             const id = 'epub-hl-style';
             let s = doc.getElementById(id);
             if (!s) {
@@ -1100,14 +1182,14 @@ class EPUBHandler {
             const color = `rgba(${hlBaseColor}, ${hlOpacity})`;
             const outline = hlOutline ? `0 0 0 1px rgba(${hlBaseColor},${Math.min(1, hlOpacity * 2.5)})` : 'none';
             const radius = hlRadius + 'px';
-            const pad = hlPadding + 'px';
+            const pad = hlPadding + 2; // Added vertical padding
             
             s.textContent = `
                 .epub-reading-hl, mark.epub-reading-hl {
                     background: ${color} !important;
                     border-radius: ${radius} !important;
                     color: inherit !important;
-                    padding: 0 ${pad} !important;
+                    padding: ${pad}px 3px !important; 
                     box-shadow: ${outline} !important;
                     box-decoration-break: clone !important;
                     -webkit-box-decoration-break: clone !important;
@@ -2964,7 +3046,10 @@ loadGlobalPrefs();
 
 /* ─── Batch download ─── */
 downloadRangeBtn.addEventListener('click', async () => {
-    if (!pdfDoc || !currentFileName || isDownloadingRange) return;
+    const isPdf = !!pdfDoc;
+    const isEpub = documentHandler instanceof EPUBHandler;
+    if (!currentFileName || isDownloadingRange || (!isPdf && !isEpub)) return;
+    
     const rangeStr = pageRangeInput.value.trim();
     if (!rangeStr) { pageRangeInput.focus(); return; }
     const match = rangeStr.match(/^(\d+)\s*[-–]\s*(\d+)$/);
@@ -2973,16 +3058,20 @@ downloadRangeBtn.addEventListener('click', async () => {
         setTimeout(() => pageRangeInput.style.borderColor = '', 1500);
         return;
     }
+    
+    const totalDocs = isPdf ? pdfDoc.numPages : documentHandler.pageCount;
     const fromPage = Math.max(1, parseInt(match[1], 10));
-    const toPage = Math.min(pdfDoc.numPages, parseInt(match[2], 10));
+    const toPage = Math.min(totalDocs, parseInt(match[2], 10));
     if (fromPage > toPage) return;
+    
     const voice = document.getElementById('voice-selector').value;
     const totalPages = toPage - fromPage + 1;
     isDownloadingRange = true;
     downloadRangeBtn.disabled = true;
     dlProgress.classList.add('active');
-    dlStatusText.textContent = 'Scanning pages…';
+    dlStatusText.textContent = 'Scanning...';
     dlProgressFill.style.width = '0%';
+    
     let cachedByPage = {};
     try {
         const statusRes = await fetch(
@@ -2992,16 +3081,33 @@ downloadRangeBtn.addEventListener('click', async () => {
             const statusData = await statusRes.json();
             cachedByPage = statusData.pages || {};
         }
-    } catch (e) { console.warn('[DL] cache_status_bulk failed', e); }
+    } catch (e) {}
+    
     let allSentences = {};
     let extractedPages = 0;
+    
     for (let p = fromPage; p <= toPage; p++) {
-        dlStatusText.textContent = `Extracting page ${p} / ${toPage}…`;
+        dlStatusText.textContent = `Extracting ${isEpub ? 'chapter' : 'page'} ${p} / ${toPage}…`;
         dlProgressFill.style.width = Math.round((extractedPages / totalPages) * 40) + '%';
+        
         try {
-            const page = await pdfDoc.getPage(p);
-            const textContent = await page.getTextContent();
-            const pageSentences = extractSentencesFromTextContent(textContent, page, topSkipLines, bottomSkipLines);
+            let pageSentences = [];
+            if (isPdf) {
+                const page = await pdfDoc.getPage(p);
+                const textContent = await page.getTextContent();
+                pageSentences = extractSentencesFromTextContent(textContent, page, topSkipLines, bottomSkipLines);
+            } else {
+                // Parse EPUB chapters directly
+                const content = await documentHandler.book.load(documentHandler.spineItems[p - 1].href);
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(content, 'application/xhtml+xml');
+                doc.querySelectorAll('p,div,h1,h2,h3,h4,h5,h6,li,blockquote,pre,br').forEach(el => {
+                    el.appendChild(doc.createTextNode('\n'));
+                });
+                const text = doc.body ? doc.body.textContent.replace(/[ \t]+/g, ' ').replace(/\n\s+/g, '\n').trim() : '';
+                pageSentences = splitIntoTTSChunks(text, 250);
+            }
+            
             const alreadyCached = new Set((cachedByPage[String(p)] || []));
             for (let si = 0; si < pageSentences.length; si++) {
                 if (alreadyCached.has(si)) continue;
@@ -3011,13 +3117,14 @@ downloadRangeBtn.addEventListener('click', async () => {
                 );
                 allSentences[`${p}_${si}`] = text;
             }
-        } catch (e) { console.warn(`[DL] Page ${p} extract failed:`, e); }
+        } catch (e) { console.warn(`[DL] Extract failed:`, e); }
         extractedPages++;
     }
+    
     const newSentenceCount = Object.keys(allSentences).length;
     if (newSentenceCount === 0) {
         dlProgressFill.style.width = '100%';
-        dlStatusText.textContent = `All ${totalPages} page(s) already cached ✓`;
+        dlStatusText.textContent = `All cached ✓`;
         setTimeout(() => {
             dlProgress.classList.remove('active');
             dlProgressFill.style.width = '0%';
@@ -3027,8 +3134,10 @@ downloadRangeBtn.addEventListener('click', async () => {
         }, 2000);
         return;
     }
-    dlStatusText.textContent = `Queuing ${newSentenceCount} sentences on server…`;
+    
+    dlStatusText.textContent = `Queuing ${newSentenceCount} chunks…`;
     dlProgressFill.style.width = '45%';
+    
     try {
         const res = await fetch('/preload', {
             method: 'POST',
@@ -3044,34 +3153,29 @@ downloadRangeBtn.addEventListener('click', async () => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         const jobId = data.job_id;
+        
         if (jobId) {
             dlProgressFill.style.width = '70%';
-            dlStatusText.textContent = `${newSentenceCount} sentences queued on server (job ${jobId})`;
             WS.open(`preload:${jobId}`, `/ws/preload/${jobId}`, msg => {
                 if (!msg) return;
                 const done = msg.done || 0;
                 const total = msg.total || newSentenceCount;
                 const pct = Math.min(99, Math.round(70 + (done / Math.max(1, total)) * 29));
                 dlProgressFill.style.width = pct + '%';
-                dlStatusText.textContent = `Server generating… ${done} / ${total} sentences`;
+                dlStatusText.textContent = `Server generating… ${done} / ${total}`;
                 if (msg.status === 'done') {
                     WS.close(`preload:${jobId}`);
                     finishDownload(totalPages);
                 }
             });
-            setTimeout(() => {
-                WS.close(`preload:${jobId}`);
-                finishDownload(totalPages);
-            }, 600000);
+            setTimeout(() => { WS.close(`preload:${jobId}`); finishDownload(totalPages); }, 600000);
         } else {
             finishDownload(totalPages);
         }
     } catch (e) {
-        console.warn('[DL] preload send failed:', e);
         dlStatusText.textContent = `Error: ${e.message}`;
         setTimeout(() => {
             dlProgress.classList.remove('active');
-            dlProgressFill.style.width = '0%';
             isDownloadingRange = false;
             downloadRangeBtn.disabled = false;
         }, 3000);
