@@ -956,13 +956,61 @@ audio {
 /* ─── PDF Viewer Area ─── */
 .pdf-viewer-area {
     flex: 1;
+    min-width: 0;
+    width: 0; /* forces flex to recalculate after sidebar collapse */
     height: 100%;
     overflow: auto;
     background: var(--bg);
     display: flex;
     justify-content: center;
     align-items: flex-start;
-    padding: 32px;
+    padding: 0px;
+	will-change: scroll-position, transform;
+    transform: translateZ(0);
+}
+
+/* ─── EPUB Container ─── */
+#epub-container {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-start;
+    overflow: hidden;
+    position: relative;
+}
+
+#epub-viewer {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    position: relative;
+}
+
+/* Ensure epub iframe fills its container */
+#epub-viewer iframe {
+    border: none !important;
+    width: 100% !important;
+    height: 100% !important;
+}
+
+/* EPUB page navigation controls overlay */
+.epub-page-controls {
+    position: absolute;
+    bottom: 12px;
+    left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-md);
+    padding: 6px 14px;
+    box-shadow: var(--shadow-md);
+    z-index: 10;
+    pointer-events: auto;
 }
 .pdf-viewer-area::-webkit-scrollbar {
     width: 8px;
@@ -1818,298 +1866,44 @@ body.topbar-hidden .sidebar-overlay {
 }
 
 .theme-default-dark {
-    /* same as existing dark mode */
-    --bg: #0d1117;
-    --surface: #161b22;
-    --surface-2: #21262d;
-    --border: #30363d;
-    --border-focus: #58a6ff;
-    --brand: #79c0ff;
-    --accent: #58a6ff;
-    --accent-soft: #0d1117;
-    --accent-glow: rgba(88, 166, 255, 0.12);
-    --text-primary: #e6edf3;
-    --text-secondary: #8b949e;
-    --text-tertiary: #6e7681;
-    --danger: #f85149;
-    --danger-soft: #160b0b;
-    --success: #3fb950;
-    --warning: #d29922;
-    --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.3);
-    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4);
-    --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.5);
-    --toc-chapter-bg: rgba(88, 166, 255, 0.08);
-    --toc-chapter-border: rgba(88, 166, 255, 0.2);
-    --toc-subtopic-color: #ffffff;
-    --toc-subsub-color: #ffffff;
-    --toc-line-color: #6e7681;
+    --bg: #0d1117; --surface: #161b22; --surface-2: #21262d; --border: #30363d; --border-focus: #58a6ff; --brand: #79c0ff; --accent: #58a6ff; --accent-soft: #0d1117; --text-primary: #e6edf3; --text-secondary: #8b949e; --text-tertiary: #6e7681; --toc-chapter-bg: rgba(88, 166, 255, 0.08); --toc-chapter-border: rgba(88, 166, 255, 0.2); --toc-subtopic-color: #ffffff; --toc-subsub-color: #ffffff;
     --pdf-filter: invert(0.88) hue-rotate(180deg);
 }
-
 .theme-gruvbox-dark {
-    --bg: #282828;
-    --surface: #3c3836;
-    --surface-2: #504945;
-    --border: #665c54;
-    --border-focus: #fabd2f;
-    --brand: #fabd2f;
-    --accent: #fabd2f;
-    --accent-soft: #3c3836;
-    --accent-glow: rgba(250, 189, 47, 0.15);
-    --text-primary: #ebdbb2;
-    --text-secondary: #d5c4a1;
-    --text-tertiary: #bdae93;
-    --danger: #fb4934;
-    --danger-soft: #3c1a1a;
-    --success: #b8bb26;
-    --warning: #fabd2f;
-    --shadow-sm: 0 1px 3px rgba(0,0,0,0.4);
-    --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.5);
-    --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.6);
-    --toc-chapter-bg: rgba(250, 189, 47, 0.1);
-    --toc-chapter-border: rgba(250, 189, 47, 0.25);
-    --toc-subtopic-color: #d5c4a1;
-    --toc-subsub-color: #bdae93;
-    --toc-line-color: #665c54;
+    --bg: #282828; --surface: #3c3836; --surface-2: #504945; --border: #665c54; --border-focus: #fabd2f; --brand: #fabd2f; --accent: #fabd2f; --accent-soft: #3c3836; --text-primary: #ebdbb2; --text-secondary: #d5c4a1; --text-tertiary: #bdae93; --toc-chapter-bg: rgba(250, 189, 47, 0.1); --toc-chapter-border: rgba(250, 189, 47, 0.25); --toc-subtopic-color: #d5c4a1; --toc-subsub-color: #bdae93;
     --pdf-filter: invert(0.88) sepia(0.2) hue-rotate(180deg) saturate(0.8) brightness(0.9);
 }
-
 .theme-gruvbox-light {
-    --bg: #fbf1c7;
-    --surface: #ebdbb2;
-    --surface-2: #d5c4a1;
-    --border: #bdae93;
-    --border-focus: #b57614;
-    --brand: #b57614;
-    --accent: #b57614;
-    --accent-soft: #ebdbb2;
-    --accent-glow: rgba(181, 118, 20, 0.15);
-    --text-primary: #3c3836;
-    --text-secondary: #504945;
-    --text-tertiary: #665c54;
-    --danger: #9d0006;
-    --danger-soft: #f2d5d5;
-    --success: #79740e;
-    --warning: #b57614;
-    --shadow-sm: 0 1px 3px rgba(0,0,0,0.08);
-    --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.1);
-    --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.12);
-    --toc-chapter-bg: rgba(181, 118, 20, 0.08);
-    --toc-chapter-border: rgba(181, 118, 20, 0.2);
-    --toc-subtopic-color: #504945;
-    --toc-subsub-color: #665c54;
-    --toc-line-color: #bdae93;
+    --bg: #fbf1c7; --surface: #ebdbb2; --surface-2: #d5c4a1; --border: #bdae93; --border-focus: #b57614; --brand: #b57614; --accent: #b57614; --accent-soft: #ebdbb2; --text-primary: #3c3836; --text-secondary: #504945; --text-tertiary: #665c54; --toc-chapter-bg: rgba(181, 118, 20, 0.08); --toc-chapter-border: rgba(181, 118, 20, 0.2); --toc-subtopic-color: #504945; --toc-subsub-color: #665c54;
     --pdf-filter: sepia(0.3) brightness(1.05) saturate(0.9);
 }
-
 .theme-nord {
-    --bg: #2e3440;
-    --surface: #3b4252;
-    --surface-2: #434c5e;
-    --border: #4c566a;
-    --border-focus: #88c0d0;
-    --brand: #88c0d0;
-    --accent: #88c0d0;
-    --accent-soft: #3b4252;
-    --accent-glow: rgba(136, 192, 208, 0.15);
-    --text-primary: #e5e9f0;
-    --text-secondary: #d8dee9;
-    --text-tertiary: #b0b8c4;
-    --danger: #bf616a;
-    --danger-soft: #3a2226;
-    --success: #a3be8c;
-    --warning: #ebcb8b;
-    --shadow-sm: 0 1px 3px rgba(0,0,0,0.4);
-    --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.5);
-    --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.6);
-    --toc-chapter-bg: rgba(136, 192, 208, 0.08);
-    --toc-chapter-border: rgba(136, 192, 208, 0.2);
-    --toc-subtopic-color: #d8dee9;
-    --toc-subsub-color: #b0b8c4;
-    --toc-line-color: #4c566a;
+    --bg: #2e3440; --surface: #3b4252; --surface-2: #434c5e; --border: #4c566a; --border-focus: #88c0d0; --brand: #88c0d0; --accent: #88c0d0; --accent-soft: #3b4252; --text-primary: #e5e9f0; --text-secondary: #d8dee9; --text-tertiary: #b0b8c4; --toc-chapter-bg: rgba(136, 192, 208, 0.08); --toc-chapter-border: rgba(136, 192, 208, 0.2); --toc-subtopic-color: #d8dee9; --toc-subsub-color: #b0b8c4;
     --pdf-filter: invert(0.9) hue-rotate(190deg) saturate(1.1) brightness(0.95);
 }
-
 .theme-solarized-dark {
-    --bg: #002b36;
-    --surface: #073642;
-    --surface-2: #0b4b59;
-    --border: #586e75;
-    --border-focus: #b58900;
-    --brand: #b58900;
-    --accent: #b58900;
-    --accent-soft: #073642;
-    --accent-glow: rgba(181, 137, 0, 0.15);
-    --text-primary: #839496;
-    --text-secondary: #93a1a1;
-    --text-tertiary: #657b83;
-    --danger: #dc322f;
-    --danger-soft: #3a1c1c;
-    --success: #859900;
-    --warning: #b58900;
-    --shadow-sm: 0 1px 3px rgba(0,0,0,0.5);
-    --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.6);
-    --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.7);
-    --toc-chapter-bg: rgba(181, 137, 0, 0.08);
-    --toc-chapter-border: rgba(181, 137, 0, 0.2);
-    --toc-subtopic-color: #93a1a1;
-    --toc-subsub-color: #657b83;
-    --toc-line-color: #586e75;
+    --bg: #002b36; --surface: #073642; --surface-2: #0b4b59; --border: #586e75; --border-focus: #b58900; --brand: #b58900; --accent: #b58900; --accent-soft: #073642; --text-primary: #839496; --text-secondary: #93a1a1; --text-tertiary: #657b83; --toc-chapter-bg: rgba(181, 137, 0, 0.08); --toc-chapter-border: rgba(181, 137, 0, 0.2); --toc-subtopic-color: #93a1a1; --toc-subsub-color: #657b83;
     --pdf-filter: invert(0.9) sepia(0.15) hue-rotate(170deg) saturate(0.9) brightness(0.95);
 }
-
 .theme-solarized-light {
-    --bg: #fdf6e3;
-    --surface: #eee8d5;
-    --surface-2: #e0d5b0;
-    --border: #93a1a1;
-    --border-focus: #b58900;
-    --brand: #b58900;
-    --accent: #b58900;
-    --accent-soft: #eee8d5;
-    --accent-glow: rgba(181, 137, 0, 0.15);
-    --text-primary: #657b83;
-    --text-secondary: #586e75;
-    --text-tertiary: #93a1a1;
-    --danger: #dc322f;
-    --danger-soft: #f2d5d5;
-    --success: #859900;
-    --warning: #b58900;
-    --shadow-sm: 0 1px 3px rgba(0,0,0,0.08);
-    --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.1);
-    --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.12);
-    --toc-chapter-bg: rgba(181, 137, 0, 0.08);
-    --toc-chapter-border: rgba(181, 137, 0, 0.2);
-    --toc-subtopic-color: #586e75;
-    --toc-subsub-color: #93a1a1;
-    --toc-line-color: #93a1a1;
+    --bg: #fdf6e3; --surface: #eee8d5; --surface-2: #e0d5b0; --border: #93a1a1; --border-focus: #b58900; --brand: #b58900; --accent: #b58900; --accent-soft: #eee8d5; --text-primary: #657b83; --text-secondary: #586e75; --text-tertiary: #93a1a1; --toc-chapter-bg: rgba(181, 137, 0, 0.08); --toc-chapter-border: rgba(181, 137, 0, 0.2); --toc-subtopic-color: #586e75; --toc-subsub-color: #93a1a1;
     --pdf-filter: sepia(0.2) brightness(1.05) saturate(0.9);
 }
-
 .theme-monokai {
-    --bg: #272822;
-    --surface: #3e3d32;
-    --surface-2: #4c4b3e;
-    --border: #75715e;
-    --border-focus: #f92672;
-    --brand: #f92672;
-    --accent: #f92672;
-    --accent-soft: #3e3d32;
-    --accent-glow: rgba(249, 38, 114, 0.15);
-    --text-primary: #f8f8f2;
-    --text-secondary: #d0d0b0;
-    --text-tertiary: #a6a68a;
-    --danger: #f92672;
-    --danger-soft: #3a1a1a;
-    --success: #a6e22e;
-    --warning: #fd971f;
-    --shadow-sm: 0 1px 3px rgba(0,0,0,0.5);
-    --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.6);
-    --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.7);
-    --toc-chapter-bg: rgba(249, 38, 114, 0.08);
-    --toc-chapter-border: rgba(249, 38, 114, 0.2);
-    --toc-subtopic-color: #d0d0b0;
-    --toc-subsub-color: #a6a68a;
-    --toc-line-color: #75715e;
+    --bg: #272822; --surface: #3e3d32; --surface-2: #4c4b3e; --border: #75715e; --border-focus: #f92672; --brand: #f92672; --accent: #f92672; --accent-soft: #3e3d32; --text-primary: #f8f8f2; --text-secondary: #d0d0b0; --text-tertiary: #a6a68a; --toc-chapter-bg: rgba(249, 38, 114, 0.08); --toc-chapter-border: rgba(249, 38, 114, 0.2); --toc-subtopic-color: #d0d0b0; --toc-subsub-color: #a6a68a;
     --pdf-filter: invert(0.9) hue-rotate(80deg) saturate(1.4) brightness(0.95);
 }
-
 .theme-dracula {
-    --bg: #282a36;
-    --surface: #44475a;
-    --surface-2: #4b4d65;
-    --border: #6272a4;
-    --border-focus: #bd93f9;
-    --brand: #bd93f9;
-    --accent: #bd93f9;
-    --accent-soft: #44475a;
-    --accent-glow: rgba(189, 147, 249, 0.15);
-    --text-primary: #f8f8f2;
-    --text-secondary: #d0d0e0;
-    --text-tertiary: #a0a0b0;
-    --danger: #ff5555;
-    --danger-soft: #3a1a1a;
-    --success: #50fa7b;
-    --warning: #f1fa8c;
-    --shadow-sm: 0 1px 3px rgba(0,0,0,0.5);
-    --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.6);
-    --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.7);
-    --toc-chapter-bg: rgba(189, 147, 249, 0.08);
-    --toc-chapter-border: rgba(189, 147, 249, 0.2);
-    --toc-subtopic-color: #d0d0e0;
-    --toc-subsub-color: #a0a0b0;
-    --toc-line-color: #6272a4;
+    --bg: #282a36; --surface: #44475a; --surface-2: #4b4d65; --border: #6272a4; --border-focus: #bd93f9; --brand: #bd93f9; --accent: #bd93f9; --accent-soft: #44475a; --text-primary: #f8f8f2; --text-secondary: #d0d0e0; --text-tertiary: #a0a0b0; --toc-chapter-bg: rgba(189, 147, 249, 0.08); --toc-chapter-border: rgba(189, 147, 249, 0.2); --toc-subtopic-color: #d0d0e0; --toc-subsub-color: #a0a0b0;
     --pdf-filter: invert(0.9) hue-rotate(260deg) saturate(1.2) brightness(0.95);
 }
-
 .theme-catppuccin {
-    --bg: #1e1e2e;
-    --surface: #313244;
-    --surface-2: #45475a;
-    --border: #585b70;
-    --border-focus: #cba6f7;
-    --brand: #cba6f7;
-    --accent: #cba6f7;
-    --accent-soft: #313244;
-    --accent-glow: rgba(203, 166, 247, 0.15);
-    --text-primary: #cdd6f4;
-    --text-secondary: #a6adc8;
-    --text-tertiary: #9399b2;
-    --danger: #f38ba8;
-    --danger-soft: #3a1a1a;
-    --success: #a6e3a1;
-    --warning: #f9e2af;
-    --shadow-sm: 0 1px 3px rgba(0,0,0,0.5);
-    --shadow-md: 0 4px 6px -1px rgba(0,0,0,0.6);
-    --shadow-lg: 0 10px 15px -3px rgba(0,0,0,0.7);
-    --toc-chapter-bg: rgba(203, 166, 247, 0.08);
-    --toc-chapter-border: rgba(203, 166, 247, 0.2);
-    --toc-subtopic-color: #a6adc8;
-    --toc-subsub-color: #9399b2;
-    --toc-line-color: #585b70;
+    --bg: #1e1e2e; --surface: #313244; --surface-2: #45475a; --border: #585b70; --border-focus: #cba6f7; --brand: #cba6f7; --accent: #cba6f7; --accent-soft: #313244; --text-primary: #cdd6f4; --text-secondary: #a6adc8; --text-tertiary: #9399b2; --toc-chapter-bg: rgba(203, 166, 247, 0.08); --toc-chapter-border: rgba(203, 166, 247, 0.2); --toc-subtopic-color: #a6adc8; --toc-subsub-color: #9399b2;
     --pdf-filter: invert(0.9) sepia(0.1) hue-rotate(200deg) saturate(0.9) brightness(0.95);
 }
+/* Ensure the filter applies cleanly to the canvas wrapper */
+#pdf-container { filter: var(--pdf-filter, none); }
 
-/* Apply PDF filter to container */
-#pdf-container {
-    filter: var(--pdf-filter, none);
-}
-.theme-gruvbox-dark {
-    /* ... other variables ... */
-    --pdf-filter: brightness(0.85) contrast(1.15) sepia(0.35) hue-rotate(-10deg) saturate(0.9);
-}
-
-.theme-gruvbox-light {
-    /* ... */
-    --pdf-filter: brightness(1.05) contrast(1.1) sepia(0.25) hue-rotate(-5deg) saturate(0.85);
-}
-
-.theme-nord {
-    /* ... */
-    --pdf-filter: brightness(0.9) contrast(1.1) saturate(0.8) hue-rotate(190deg) invert(0.92);
-}
-
-.theme-solarized-dark {
-    /* ... */
-    --pdf-filter: brightness(0.85) contrast(1.15) sepia(0.2) hue-rotate(165deg) saturate(0.9);
-}
-
-.theme-solarized-light {
-    /* ... */
-    --pdf-filter: brightness(1.05) contrast(1.05) sepia(0.15) hue-rotate(160deg) saturate(0.85);
-}
-
-.theme-monokai {
-    /* ... */
-    --pdf-filter: brightness(0.9) contrast(1.2) saturate(1.3) hue-rotate(80deg) invert(0.88);
-}
-
-.theme-dracula {
-    /* ... */
-    --pdf-filter: brightness(0.9) contrast(1.15) saturate(1.2) hue-rotate(260deg) invert(0.88);
-}
-
-.theme-catppuccin {
-    /* ... */
-    --pdf-filter: brightness(0.9) contrast(1.1) sepia(0.1) hue-rotate(200deg) saturate(0.85) invert(0.88);
+body.is-scrolling .textLayer {
+    pointer-events: none !important;
 }

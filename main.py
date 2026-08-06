@@ -396,34 +396,48 @@ async def health():
     log_request("/health", "GET", {"model_loaded": kokoro is not None})
     return {"status": "ok", "model_loaded": kokoro is not None}
 
-@app.get("/pdfs")
-async def list_pdfs():
-    log_request("/pdfs", "GET")
+@app.get("/documents")
+async def list_documents():
+    log_request("/documents", "GET")
     if not os.path.isdir(PDF_DIR):
-        return {"pdfs": []}
-    pdfs = []
+        return {"documents": [], "pdfs": []}
+    docs = []
     for fname in sorted(os.listdir(PDF_DIR)):
-        if not fname.lower().endswith(".pdf"):
+        fl = fname.lower()
+        if not (fl.endswith(".pdf") or fl.endswith(".epub")):
             continue
         fpath = os.path.join(PDF_DIR, fname)
         try:
             size = os.path.getsize(fpath)
-            pdfs.append({"name": fname, "size": size, "url": f"/pdfs/{fname}"})
+            doc_type = "epub" if fl.endswith(".epub") else "pdf"
+            docs.append({"name": fname, "size": size, "type": doc_type, "url": f"/documents/{fname}"})
         except OSError:
             pass
-    log_request("/pdfs", "GET", {"count": len(pdfs)})
-    return {"pdfs": pdfs}
+    log_request("/documents", "GET", {"count": len(docs)})
+    # Also return pdfs key for backward compat with old library WS handler
+    return {"documents": docs, "pdfs": docs}
+
+@app.get("/pdfs")
+async def list_pdfs():
+    result = await list_documents()
+    return {"pdfs": result["documents"]}
+
+@app.get("/documents/{filename}")
+async def serve_document(filename: str):
+    safe_name = os.path.basename(filename)
+    fl = safe_name.lower()
+    if not (fl.endswith(".pdf") or fl.endswith(".epub")):
+        raise HTTPException(status_code=400, detail="Only PDF and EPUB files are served.")
+    fpath = os.path.join(PDF_DIR, safe_name)
+    if not os.path.isfile(fpath):
+        raise HTTPException(status_code=404, detail="Document not found.")
+    log_request("/documents/{filename}", "GET", {"filename": safe_name, "path": fpath})
+    media_type = "application/epub+zip" if fl.endswith(".epub") else "application/pdf"
+    return FileResponse(fpath, media_type=media_type, filename=safe_name)
 
 @app.get("/pdfs/{filename}")
 async def serve_pdf(filename: str):
-    safe_name = os.path.basename(filename)
-    if not safe_name.lower().endswith(".pdf"):
-        raise HTTPException(status_code=400, detail="Only PDF files are served.")
-    fpath = os.path.join(PDF_DIR, safe_name)
-    if not os.path.isfile(fpath):
-        raise HTTPException(status_code=404, detail="PDF not found.")
-    log_request("/pdfs/{filename}", "GET", {"filename": safe_name, "path": fpath})
-    return FileResponse(fpath, media_type="application/pdf", filename=safe_name)
+    return await serve_document(filename)
 
 # ─── Settings endpoints ───
 
@@ -651,7 +665,21 @@ async def ws_cache(websocket: WebSocket, book_name: str):
     room = f"cache:{book_name}"
     await mgr.connect(room, websocket)
     try:
-        await websocket.receive_text()  # keep alive until client closes
+        while True:
+            # Wait for client messages (e.g., to request cache status for a page)
+            data = await websocket.receive_json()
+            if data.get("type") == "get_status":
+                page = data.get("page")
+                if page is not None:
+                    book_dir = get_book_dir(book_name)
+                    cached_lines = _get_cached_lines(book_dir, page)
+                    await mgr.send(websocket, {
+                        "type": "cache_update",
+                        "page": page,
+                        "cached_lines": cached_lines,
+                    })
+            else:
+                log_ws_message(room, data.get("type"), data)
     except WebSocketDisconnect:
         pass
     finally:
@@ -663,8 +691,8 @@ async def ws_cache(websocket: WebSocket, book_name: str):
 async def ws_library(websocket: WebSocket):
     await mgr.connect("library", websocket)
     # Send current list on connect
-    pdfs_data = await list_pdfs()
-    await mgr.send(websocket, {"type": "init", "pdfs": pdfs_data["pdfs"]})
+    docs_data = await list_documents()
+    await mgr.send(websocket, {"type": "init", "documents": docs_data["documents"], "pdfs": docs_data["documents"]})
     try:
         await websocket.receive_text()
     except WebSocketDisconnect:
@@ -698,6 +726,7 @@ async def page_sentence_durations(book_name: str, page: int):
     durations = load_durations(book_dir)
     result = {}
     prefix = f"{page}_"
+    missing = False
     for fname in os.listdir(book_dir):
         if fname.startswith(prefix) and fname.endswith(".wav"):
             key = fname[:-4]
@@ -708,10 +737,12 @@ async def page_sentence_durations(book_name: str, page: int):
                 dur = get_duration_seconds(wav_file)
                 if dur > 0:
                     durations[key] = dur
+                    missing = True
             if dur is not None and dur > 0:
                 line = int(key.split("_")[1])
                 result[line] = dur
-    if durations:
+    # Only save if we added new durations
+    if missing:
         save_durations(book_dir, durations)
     return {"durations": result}
 
@@ -778,6 +809,13 @@ async def _run_preload_job(job_id: str, payload: PreloadPayload):
     log_preload_job(job_id, payload.book_name, total, done, errors, "done")
     await mgr.broadcast(f"preload:{job_id}", _preload_jobs[job_id])
 
+    # Clean up after 60 seconds
+    async def cleanup():
+        await asyncio.sleep(60)
+        async with _preload_lock:
+            _preload_jobs.pop(job_id, None)
+    asyncio.create_task(cleanup())
+
 @app.post("/preload")
 async def preload(payload: PreloadPayload, background_tasks: BackgroundTasks):
     job_id = str(uuid.uuid4())
@@ -830,7 +868,7 @@ async def cache_status_bulk(book_name: str, page_from: int, page_to: int):
     book_dir = get_book_dir(book_name)
     result = {}
     if os.path.isdir(book_dir):
-        all_files = os.listdir(book_dir)
+        all_files = os.listdir(book_dir)  # list once
         for p in range(page_from, page_to + 1):
             prefix = f"{p}_"
             cached = []
@@ -853,7 +891,8 @@ async def page_duration(book_name: str, page: int):
     durations = load_durations(book_dir)
     prefix = f"{page}_"
     needed = set()
-    for fname in os.listdir(book_dir):
+    all_files = os.listdir(book_dir)  # list once
+    for fname in all_files:
         if fname.startswith(prefix) and fname.endswith(".wav"):
             needed.add(fname[:-4])
     missing = needed - set(durations.keys())
@@ -872,9 +911,10 @@ async def chapter_duration(book_name: str, start_page: int, end_page: int):
     book_dir = get_book_dir(book_name)
     durations = load_durations(book_dir)
     needed = set()
+    all_files = os.listdir(book_dir)  # list once
     for p in range(start_page, end_page + 1):
         prefix = f"{p}_"
-        for fname in os.listdir(book_dir):
+        for fname in all_files:
             if fname.startswith(prefix) and fname.endswith(".wav"):
                 needed.add(fname[:-4])
     missing = needed - set(durations.keys())
@@ -921,25 +961,32 @@ async def delete_cache_range(payload: DeleteCacheRangePayload):
 
 # ─── Upload PDF ───
 
-@app.post("/upload_pdf")
-async def upload_pdf(file: UploadFile = File(...)):
-    if not file.filename.lower().endswith(".pdf"):
-        raise HTTPException(400, "Only PDF files are allowed")
+@app.post("/upload")
+async def upload_document(file: UploadFile = File(...)):
+    fl = (file.filename or "").lower()
+    if not (fl.endswith(".pdf") or fl.endswith(".epub")):
+        raise HTTPException(400, "Only PDF and EPUB files are allowed")
     safe_name = os.path.basename(file.filename)
     fpath = os.path.join(PDF_DIR, safe_name)
     if os.path.exists(fpath):
         raise HTTPException(409, f"File {safe_name} already exists on server")
+    content = await file.read()
     with open(fpath, "wb") as f:
-        content = await file.read()
         f.write(content)
     size = os.path.getsize(fpath)
-    log_request("/upload_pdf", "POST", {"filename": safe_name, "size": size})
-    # Broadcast new PDF to library listeners
+    doc_type = "epub" if fl.endswith(".epub") else "pdf"
+    log_request("/upload", "POST", {"filename": safe_name, "size": size, "type": doc_type})
+    doc = {"name": safe_name, "size": size, "type": doc_type, "url": f"/documents/{safe_name}"}
     await mgr.broadcast("library", {
         "type": "added",
-        "pdf": {"name": safe_name, "size": size, "url": f"/pdfs/{safe_name}"},
+        "document": doc,
+        "pdf": doc,  # backward compat
     })
     return {"status": "uploaded", "filename": safe_name}
+
+@app.post("/upload_pdf")
+async def upload_pdf(file: UploadFile = File(...)):
+    return await upload_document(file)
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_index():
