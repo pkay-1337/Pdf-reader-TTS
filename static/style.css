@@ -35,7 +35,8 @@
     --toc-line-color: #d1d5db;
 }
 
-[data-theme="dark"] {
+/* default-dark — mirrors the old [data-theme="dark"] block, now applied via body class */
+body.theme-default-dark {
     --bg:           #0d1117;
     --surface:      #161b22;
     --surface-2:    #21262d;
@@ -55,13 +56,12 @@
     --shadow-sm:    0 1px 3px rgba(0, 0, 0, 0.3);
     --shadow-md:    0 4px 6px -1px rgba(0, 0, 0, 0.4);
     --shadow-lg:    0 10px 15px -3px rgba(0, 0, 0, 0.5);
-
     --toc-chapter-bg:  rgba(88, 166, 255, 0.08);
     --toc-chapter-border: rgba(88, 166, 255, 0.2);
-	    --toc-subtopic-color: #ffffff;   /* was #b0b8c4 */
-    --toc-subsub-color: #ffffff;     /* was #8b949e */
-    --toc-line-color: #6e7681;       /* keep as is, or make lighter */
-
+    --toc-subtopic-color: #ffffff;
+    --toc-subsub-color: #ffffff;
+    --toc-line-color: #6e7681;
+    --pdf-filter: invert(0.88) hue-rotate(180deg);
 }
 
 * {
@@ -1033,9 +1033,7 @@ audio {
     flex-shrink: 0;
     transition: filter var(--transition);
 }
-[data-theme="dark"] #pdf-container {
-    filter: invert(0.88) hue-rotate(180deg);
-}
+/* PDF filter is set per-theme via --pdf-filter variable on body.theme-* */
 
 canvas {
     display: block;
@@ -1062,9 +1060,6 @@ canvas {
     border-radius: 2px;
     transition: background-color 0.1s ease;
 }
-.textLayer span:hover {
-    background-color: rgba(37, 99, 235, 0.12);
-}
 
 ::selection {
     background: rgba(37, 99, 235, 0.3);
@@ -1081,13 +1076,7 @@ canvas {
     --hl-outline: none;
 }
 
-mark.reading-highlight {
-    background-color: var(--hl-color) !important;
-    border-radius: var(--hl-radius);
-    color: transparent !important;
-    padding: 0 var(--hl-padding);
-    box-shadow: var(--hl-outline);
-}
+/* PDF active-sentence highlight is drawn on #highlight-canvas — no mark injection */
 
 #highlight-canvas {
     position: absolute;
@@ -1859,46 +1848,89 @@ body.topbar-hidden .sidebar-overlay {
 /* ─── Theme Classes ─── */
 
 /* Each theme sets UI variables and a PDF filter. */
-/* Base :root is Default Light. */
+/* Base :root is Default Light — body.theme-default-light is a no-op */
+body.theme-default-light { /* already :root */ }
 
-.theme-default-light {
-    /* already :root */
-}
+/* default-dark is defined at the top of the file near the old [data-theme=dark] block */
 
-.theme-default-dark {
-    --bg: #0d1117; --surface: #161b22; --surface-2: #21262d; --border: #30363d; --border-focus: #58a6ff; --brand: #79c0ff; --accent: #58a6ff; --accent-soft: #0d1117; --text-primary: #e6edf3; --text-secondary: #8b949e; --text-tertiary: #6e7681; --toc-chapter-bg: rgba(88, 166, 255, 0.08); --toc-chapter-border: rgba(88, 166, 255, 0.2); --toc-subtopic-color: #ffffff; --toc-subsub-color: #ffffff;
-    --pdf-filter: invert(0.88) hue-rotate(180deg);
-}
-.theme-gruvbox-dark {
-    --bg: #282828; --surface: #3c3836; --surface-2: #504945; --border: #665c54; --border-focus: #fabd2f; --brand: #fabd2f; --accent: #fabd2f; --accent-soft: #3c3836; --text-primary: #ebdbb2; --text-secondary: #d5c4a1; --text-tertiary: #bdae93; --toc-chapter-bg: rgba(250, 189, 47, 0.1); --toc-chapter-border: rgba(250, 189, 47, 0.25); --toc-subtopic-color: #d5c4a1; --toc-subsub-color: #bdae93;
+body.theme-gruvbox-dark {
+    --bg: #282828; --surface: #3c3836; --surface-2: #504945; --border: #665c54; --border-focus: #fabd2f;
+    --brand: #fabd2f; --accent: #fabd2f; --accent-soft: #3c3836; --accent-glow: rgba(250,189,47,0.12);
+    --text-primary: #ebdbb2; --text-secondary: #d5c4a1; --text-tertiary: #bdae93;
+    --danger: #fb4934; --danger-soft: #3a1a10; --success: #b8bb26; --warning: #fabd2f;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.3); --shadow-md: 0 4px 6px rgba(0,0,0,0.4); --shadow-lg: 0 10px 15px rgba(0,0,0,0.5);
+    --toc-chapter-bg: rgba(250,189,47,0.1); --toc-chapter-border: rgba(250,189,47,0.25);
+    --toc-subtopic-color: #d5c4a1; --toc-subsub-color: #bdae93; --toc-line-color: #665c54;
     --pdf-filter: invert(0.88) sepia(0.2) hue-rotate(180deg) saturate(0.8) brightness(0.9);
 }
-.theme-gruvbox-light {
-    --bg: #fbf1c7; --surface: #ebdbb2; --surface-2: #d5c4a1; --border: #bdae93; --border-focus: #b57614; --brand: #b57614; --accent: #b57614; --accent-soft: #ebdbb2; --text-primary: #3c3836; --text-secondary: #504945; --text-tertiary: #665c54; --toc-chapter-bg: rgba(181, 118, 20, 0.08); --toc-chapter-border: rgba(181, 118, 20, 0.2); --toc-subtopic-color: #504945; --toc-subsub-color: #665c54;
+body.theme-gruvbox-light {
+    --bg: #fbf1c7; --surface: #ebdbb2; --surface-2: #d5c4a1; --border: #bdae93; --border-focus: #b57614;
+    --brand: #b57614; --accent: #b57614; --accent-soft: #ebdbb2; --accent-glow: rgba(181,118,20,0.1);
+    --text-primary: #3c3836; --text-secondary: #504945; --text-tertiary: #665c54;
+    --danger: #9d0006; --danger-soft: #fce8e0; --success: #79740e; --warning: #b57614;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.06); --shadow-md: 0 4px 6px rgba(0,0,0,0.08); --shadow-lg: 0 10px 15px rgba(0,0,0,0.1);
+    --toc-chapter-bg: rgba(181,118,20,0.08); --toc-chapter-border: rgba(181,118,20,0.2);
+    --toc-subtopic-color: #504945; --toc-subsub-color: #665c54; --toc-line-color: #bdae93;
     --pdf-filter: sepia(0.3) brightness(1.05) saturate(0.9);
 }
-.theme-nord {
-    --bg: #2e3440; --surface: #3b4252; --surface-2: #434c5e; --border: #4c566a; --border-focus: #88c0d0; --brand: #88c0d0; --accent: #88c0d0; --accent-soft: #3b4252; --text-primary: #e5e9f0; --text-secondary: #d8dee9; --text-tertiary: #b0b8c4; --toc-chapter-bg: rgba(136, 192, 208, 0.08); --toc-chapter-border: rgba(136, 192, 208, 0.2); --toc-subtopic-color: #d8dee9; --toc-subsub-color: #b0b8c4;
+body.theme-nord {
+    --bg: #2e3440; --surface: #3b4252; --surface-2: #434c5e; --border: #4c566a; --border-focus: #88c0d0;
+    --brand: #88c0d0; --accent: #88c0d0; --accent-soft: #3b4252; --accent-glow: rgba(136,192,208,0.12);
+    --text-primary: #e5e9f0; --text-secondary: #d8dee9; --text-tertiary: #b0b8c4;
+    --danger: #bf616a; --danger-soft: #2a1010; --success: #a3be8c; --warning: #ebcb8b;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.3); --shadow-md: 0 4px 6px rgba(0,0,0,0.4); --shadow-lg: 0 10px 15px rgba(0,0,0,0.5);
+    --toc-chapter-bg: rgba(136,192,208,0.08); --toc-chapter-border: rgba(136,192,208,0.2);
+    --toc-subtopic-color: #d8dee9; --toc-subsub-color: #b0b8c4; --toc-line-color: #4c566a;
     --pdf-filter: invert(0.9) hue-rotate(190deg) saturate(1.1) brightness(0.95);
 }
-.theme-solarized-dark {
-    --bg: #002b36; --surface: #073642; --surface-2: #0b4b59; --border: #586e75; --border-focus: #b58900; --brand: #b58900; --accent: #b58900; --accent-soft: #073642; --text-primary: #839496; --text-secondary: #93a1a1; --text-tertiary: #657b83; --toc-chapter-bg: rgba(181, 137, 0, 0.08); --toc-chapter-border: rgba(181, 137, 0, 0.2); --toc-subtopic-color: #93a1a1; --toc-subsub-color: #657b83;
+body.theme-solarized-dark {
+    --bg: #002b36; --surface: #073642; --surface-2: #0b4b59; --border: #586e75; --border-focus: #b58900;
+    --brand: #b58900; --accent: #b58900; --accent-soft: #073642; --accent-glow: rgba(181,137,0,0.12);
+    --text-primary: #839496; --text-secondary: #93a1a1; --text-tertiary: #657b83;
+    --danger: #dc322f; --danger-soft: #1a0808; --success: #859900; --warning: #b58900;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.4); --shadow-md: 0 4px 6px rgba(0,0,0,0.5); --shadow-lg: 0 10px 15px rgba(0,0,0,0.6);
+    --toc-chapter-bg: rgba(181,137,0,0.08); --toc-chapter-border: rgba(181,137,0,0.2);
+    --toc-subtopic-color: #93a1a1; --toc-subsub-color: #657b83; --toc-line-color: #586e75;
     --pdf-filter: invert(0.9) sepia(0.15) hue-rotate(170deg) saturate(0.9) brightness(0.95);
 }
-.theme-solarized-light {
-    --bg: #fdf6e3; --surface: #eee8d5; --surface-2: #e0d5b0; --border: #93a1a1; --border-focus: #b58900; --brand: #b58900; --accent: #b58900; --accent-soft: #eee8d5; --text-primary: #657b83; --text-secondary: #586e75; --text-tertiary: #93a1a1; --toc-chapter-bg: rgba(181, 137, 0, 0.08); --toc-chapter-border: rgba(181, 137, 0, 0.2); --toc-subtopic-color: #586e75; --toc-subsub-color: #93a1a1;
+body.theme-solarized-light {
+    --bg: #fdf6e3; --surface: #eee8d5; --surface-2: #e0d5b0; --border: #93a1a1; --border-focus: #b58900;
+    --brand: #b58900; --accent: #b58900; --accent-soft: #eee8d5; --accent-glow: rgba(181,137,0,0.1);
+    --text-primary: #657b83; --text-secondary: #586e75; --text-tertiary: #93a1a1;
+    --danger: #dc322f; --danger-soft: #fce8e0; --success: #859900; --warning: #b58900;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.05); --shadow-md: 0 4px 6px rgba(0,0,0,0.07); --shadow-lg: 0 10px 15px rgba(0,0,0,0.09);
+    --toc-chapter-bg: rgba(181,137,0,0.08); --toc-chapter-border: rgba(181,137,0,0.2);
+    --toc-subtopic-color: #586e75; --toc-subsub-color: #93a1a1; --toc-line-color: #93a1a1;
     --pdf-filter: sepia(0.2) brightness(1.05) saturate(0.9);
 }
-.theme-monokai {
-    --bg: #272822; --surface: #3e3d32; --surface-2: #4c4b3e; --border: #75715e; --border-focus: #f92672; --brand: #f92672; --accent: #f92672; --accent-soft: #3e3d32; --text-primary: #f8f8f2; --text-secondary: #d0d0b0; --text-tertiary: #a6a68a; --toc-chapter-bg: rgba(249, 38, 114, 0.08); --toc-chapter-border: rgba(249, 38, 114, 0.2); --toc-subtopic-color: #d0d0b0; --toc-subsub-color: #a6a68a;
+body.theme-monokai {
+    --bg: #272822; --surface: #3e3d32; --surface-2: #4c4b3e; --border: #75715e; --border-focus: #f92672;
+    --brand: #f92672; --accent: #f92672; --accent-soft: #3e3d32; --accent-glow: rgba(249,38,114,0.12);
+    --text-primary: #f8f8f2; --text-secondary: #d0d0b0; --text-tertiary: #a6a68a;
+    --danger: #f92672; --danger-soft: #2a0810; --success: #a6e22e; --warning: #fd971f;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.3); --shadow-md: 0 4px 6px rgba(0,0,0,0.4); --shadow-lg: 0 10px 15px rgba(0,0,0,0.5);
+    --toc-chapter-bg: rgba(249,38,114,0.08); --toc-chapter-border: rgba(249,38,114,0.2);
+    --toc-subtopic-color: #d0d0b0; --toc-subsub-color: #a6a68a; --toc-line-color: #75715e;
     --pdf-filter: invert(0.9) hue-rotate(80deg) saturate(1.4) brightness(0.95);
 }
-.theme-dracula {
-    --bg: #282a36; --surface: #44475a; --surface-2: #4b4d65; --border: #6272a4; --border-focus: #bd93f9; --brand: #bd93f9; --accent: #bd93f9; --accent-soft: #44475a; --text-primary: #f8f8f2; --text-secondary: #d0d0e0; --text-tertiary: #a0a0b0; --toc-chapter-bg: rgba(189, 147, 249, 0.08); --toc-chapter-border: rgba(189, 147, 249, 0.2); --toc-subtopic-color: #d0d0e0; --toc-subsub-color: #a0a0b0;
+body.theme-dracula {
+    --bg: #282a36; --surface: #44475a; --surface-2: #4b4d65; --border: #6272a4; --border-focus: #bd93f9;
+    --brand: #bd93f9; --accent: #bd93f9; --accent-soft: #44475a; --accent-glow: rgba(189,147,249,0.12);
+    --text-primary: #f8f8f2; --text-secondary: #d0d0e0; --text-tertiary: #a0a0b0;
+    --danger: #ff5555; --danger-soft: #2a0808; --success: #50fa7b; --warning: #ffb86c;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.3); --shadow-md: 0 4px 6px rgba(0,0,0,0.4); --shadow-lg: 0 10px 15px rgba(0,0,0,0.5);
+    --toc-chapter-bg: rgba(189,147,249,0.08); --toc-chapter-border: rgba(189,147,249,0.2);
+    --toc-subtopic-color: #d0d0e0; --toc-subsub-color: #a0a0b0; --toc-line-color: #6272a4;
     --pdf-filter: invert(0.9) hue-rotate(260deg) saturate(1.2) brightness(0.95);
 }
-.theme-catppuccin {
-    --bg: #1e1e2e; --surface: #313244; --surface-2: #45475a; --border: #585b70; --border-focus: #cba6f7; --brand: #cba6f7; --accent: #cba6f7; --accent-soft: #313244; --text-primary: #cdd6f4; --text-secondary: #a6adc8; --text-tertiary: #9399b2; --toc-chapter-bg: rgba(203, 166, 247, 0.08); --toc-chapter-border: rgba(203, 166, 247, 0.2); --toc-subtopic-color: #a6adc8; --toc-subsub-color: #9399b2;
+body.theme-catppuccin {
+    --bg: #1e1e2e; --surface: #313244; --surface-2: #45475a; --border: #585b70; --border-focus: #cba6f7;
+    --brand: #cba6f7; --accent: #cba6f7; --accent-soft: #313244; --accent-glow: rgba(203,166,247,0.12);
+    --text-primary: #cdd6f4; --text-secondary: #a6adc8; --text-tertiary: #9399b2;
+    --danger: #f38ba8; --danger-soft: #2a0e14; --success: #a6e3a1; --warning: #fab387;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.3); --shadow-md: 0 4px 6px rgba(0,0,0,0.4); --shadow-lg: 0 10px 15px rgba(0,0,0,0.5);
+    --toc-chapter-bg: rgba(203,166,247,0.08); --toc-chapter-border: rgba(203,166,247,0.2);
+    --toc-subtopic-color: #a6adc8; --toc-subsub-color: #9399b2; --toc-line-color: #585b70;
     --pdf-filter: invert(0.9) sepia(0.1) hue-rotate(200deg) saturate(0.9) brightness(0.95);
 }
 /* Ensure the filter applies cleanly to the canvas wrapper */
@@ -1906,4 +1938,162 @@ body.topbar-hidden .sidebar-overlay {
 
 body.is-scrolling .textLayer {
     pointer-events: none !important;
+}
+/* ═══════════════════════════════════════════════════════════════
+   DocReader Pro — style_additions.css
+   Paste these blocks into your existing style.css
+   ═══════════════════════════════════════════════════════════════ */
+
+
+/* ── 1. EPUB hover-to-click cursor ──────────────────────────────
+   Makes it obvious to the user that clicking a paragraph starts
+   reading from that line.                                         */
+#epub-viewer iframe {
+    cursor: default;
+}
+
+
+/* ── 2. New Themes (10) ─────────────────────────────────────────
+   Each theme sets CSS custom properties used throughout the UI.
+   The EPUB iframe body styles are registered inside script.js
+   via rendition.themes.register(); these rules cover the OUTER
+   shell (sidebar, topbar, controls, etc.)                         */
+
+/* Tokyo Night Dark */
+body.theme-tokyo-night {
+    --bg: #1a1b26; --surface: #16161e; --surface-2: #1f2335; --border: #292e42; --border-focus: #7aa2f7;
+    --brand: #7aa2f7; --accent: #7aa2f7; --accent-soft: #1f2335; --accent-glow: rgba(122,162,247,0.12);
+    --text-primary: #a9b1d6; --text-secondary: #9aa5ce; --text-tertiary: #565f89;
+    --danger: #f7768e; --danger-soft: #2a1220; --success: #9ece6a; --warning: #e0af68;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.4); --shadow-md: 0 4px 6px rgba(0,0,0,0.5); --shadow-lg: 0 10px 15px rgba(0,0,0,0.6);
+    --toc-chapter-bg: rgba(122,162,247,0.08); --toc-chapter-border: rgba(122,162,247,0.2);
+    --toc-subtopic-color: #9aa5ce; --toc-subsub-color: #565f89; --toc-line-color: #292e42;
+    --pdf-filter: invert(0.88) hue-rotate(200deg) saturate(1.1) brightness(0.95);
+}
+
+/* Tokyo Night Light */
+body.theme-tokyo-night-light {
+    --bg: #d5d6db; --surface: #cbccd1; --surface-2: #c0c1c6; --border: #aaaab1; --border-focus: #3760bf;
+    --brand: #3760bf; --accent: #3760bf; --accent-soft: #cbccd1; --accent-glow: rgba(55,96,191,0.1);
+    --text-primary: #343b58; --text-secondary: #4a5176; --text-tertiary: #767da1;
+    --danger: #f52a65; --danger-soft: #fde8ef; --success: #587539; --warning: #8f5e15;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.08); --shadow-md: 0 4px 6px rgba(0,0,0,0.1); --shadow-lg: 0 10px 15px rgba(0,0,0,0.12);
+    --toc-chapter-bg: rgba(55,96,191,0.07); --toc-chapter-border: rgba(55,96,191,0.18);
+    --toc-subtopic-color: #4a5176; --toc-subsub-color: #767da1; --toc-line-color: #aaaab1;
+    --pdf-filter: none;
+}
+
+/* Everforest Dark */
+body.theme-everforest-dark {
+    --bg: #2d353b; --surface: #323d43; --surface-2: #3a464c; --border: #475258; --border-focus: #a7c080;
+    --brand: #a7c080; --accent: #a7c080; --accent-soft: #323d43; --accent-glow: rgba(167,192,128,0.1);
+    --text-primary: #d3c6aa; --text-secondary: #9da9a0; --text-tertiary: #7a8478;
+    --danger: #e67e80; --danger-soft: #3a2828; --success: #a7c080; --warning: #dbbc7f;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.3); --shadow-md: 0 4px 6px rgba(0,0,0,0.4); --shadow-lg: 0 10px 15px rgba(0,0,0,0.5);
+    --toc-chapter-bg: rgba(167,192,128,0.08); --toc-chapter-border: rgba(167,192,128,0.2);
+    --toc-subtopic-color: #9da9a0; --toc-subsub-color: #7a8478; --toc-line-color: #475258;
+    --pdf-filter: invert(0.88) sepia(0.1) hue-rotate(90deg) saturate(0.8) brightness(0.95);
+}
+
+/* Everforest Light */
+body.theme-everforest-light {
+    --bg: #fdf6e3; --surface: #f4ede0; --surface-2: #eae4d4; --border: #c9c0a8; --border-focus: #8da101;
+    --brand: #8da101; --accent: #8da101; --accent-soft: #f4ede0; --accent-glow: rgba(141,161,1,0.1);
+    --text-primary: #5c6a72; --text-secondary: #708090; --text-tertiary: #939f91;
+    --danger: #f85552; --danger-soft: #fdeaea; --success: #8da101; --warning: #dfa000;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.06); --shadow-md: 0 4px 6px rgba(0,0,0,0.08); --shadow-lg: 0 10px 15px rgba(0,0,0,0.1);
+    --toc-chapter-bg: rgba(141,161,1,0.07); --toc-chapter-border: rgba(141,161,1,0.18);
+    --toc-subtopic-color: #708090; --toc-subsub-color: #939f91; --toc-line-color: #c9c0a8;
+    --pdf-filter: sepia(0.15) brightness(1.02) saturate(0.9);
+}
+
+/* Ayu Dark */
+body.theme-ayu-dark {
+    --bg: #0b0e14; --surface: #0d1017; --surface-2: #111419; --border: #1e2229; --border-focus: #39bae6;
+    --brand: #39bae6; --accent: #39bae6; --accent-soft: #0d1017; --accent-glow: rgba(57,186,230,0.1);
+    --text-primary: #b3b1ad; --text-secondary: #8d9198; --text-tertiary: #5c6370;
+    --danger: #ff8f40; --danger-soft: #1a1008; --success: #aad94c; --warning: #ffb454;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.5); --shadow-md: 0 4px 6px rgba(0,0,0,0.6); --shadow-lg: 0 10px 15px rgba(0,0,0,0.7);
+    --toc-chapter-bg: rgba(57,186,230,0.07); --toc-chapter-border: rgba(57,186,230,0.18);
+    --toc-subtopic-color: #8d9198; --toc-subsub-color: #5c6370; --toc-line-color: #1e2229;
+    --pdf-filter: invert(0.9) hue-rotate(170deg) saturate(1.1) brightness(0.9);
+}
+
+/* Ayu Light */
+body.theme-ayu-light {
+    --bg: #fafafa; --surface: #f0f0f0; --surface-2: #e8e8e8; --border: #d0d0d0; --border-focus: #399ee6;
+    --brand: #399ee6; --accent: #399ee6; --accent-soft: #e8f4fc; --accent-glow: rgba(57,158,230,0.1);
+    --text-primary: #575f66; --text-secondary: #787e87; --text-tertiary: #abb0b6;
+    --danger: #f2ae49; --danger-soft: #fff6e0; --success: #86b300; --warning: #f2ae49;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.05); --shadow-md: 0 4px 6px rgba(0,0,0,0.07); --shadow-lg: 0 10px 15px rgba(0,0,0,0.09);
+    --toc-chapter-bg: rgba(57,158,230,0.07); --toc-chapter-border: rgba(57,158,230,0.18);
+    --toc-subtopic-color: #787e87; --toc-subsub-color: #abb0b6; --toc-line-color: #d0d0d0;
+    --pdf-filter: none;
+}
+
+/* Rosé Pine */
+body.theme-rosepine {
+    --bg: #191724; --surface: #1f1d2e; --surface-2: #26233a; --border: #403d52; --border-focus: #c4a7e7;
+    --brand: #c4a7e7; --accent: #c4a7e7; --accent-soft: #26233a; --accent-glow: rgba(196,167,231,0.1);
+    --text-primary: #e0def4; --text-secondary: #908caa; --text-tertiary: #6e6a86;
+    --danger: #eb6f92; --danger-soft: #2a1520; --success: #31748f; --warning: #f6c177;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.4); --shadow-md: 0 4px 6px rgba(0,0,0,0.5); --shadow-lg: 0 10px 15px rgba(0,0,0,0.6);
+    --toc-chapter-bg: rgba(196,167,231,0.08); --toc-chapter-border: rgba(196,167,231,0.2);
+    --toc-subtopic-color: #908caa; --toc-subsub-color: #6e6a86; --toc-line-color: #403d52;
+    --pdf-filter: invert(0.88) hue-rotate(230deg) saturate(0.9) brightness(0.95);
+}
+
+/* Rosé Pine Dawn */
+body.theme-rosepine-dawn {
+    --bg: #faf4ed; --surface: #f2e9de; --surface-2: #ede0d4; --border: #d4c5b4; --border-focus: #907aa9;
+    --brand: #907aa9; --accent: #907aa9; --accent-soft: #f2e9de; --accent-glow: rgba(144,122,169,0.1);
+    --text-primary: #575279; --text-secondary: #6e6a86; --text-tertiary: #9893a5;
+    --danger: #b4637a; --danger-soft: #fce8ee; --success: #286983; --warning: #ea9d34;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.06); --shadow-md: 0 4px 6px rgba(0,0,0,0.08); --shadow-lg: 0 10px 15px rgba(0,0,0,0.1);
+    --toc-chapter-bg: rgba(144,122,169,0.07); --toc-chapter-border: rgba(144,122,169,0.18);
+    --toc-subtopic-color: #6e6a86; --toc-subsub-color: #9893a5; --toc-line-color: #d4c5b4;
+    --pdf-filter: sepia(0.1) brightness(1.02) saturate(0.95);
+}
+
+/* Paper */
+body.theme-paper {
+    --bg: #f2ede4; --surface: #e8e0d5; --surface-2: #ddd5c8; --border: #bbb0a0; --border-focus: #7c4a1e;
+    --brand: #7c4a1e; --accent: #7c4a1e; --accent-soft: #e8e0d5; --accent-glow: rgba(124,74,30,0.1);
+    --text-primary: #3a3226; --text-secondary: #5a4e3e; --text-tertiary: #8a7e6e;
+    --danger: #c0392b; --danger-soft: #fcecea; --success: #5a7a1e; --warning: #b8860b;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.06); --shadow-md: 0 4px 6px rgba(0,0,0,0.08); --shadow-lg: 0 10px 15px rgba(0,0,0,0.1);
+    --toc-chapter-bg: rgba(124,74,30,0.07); --toc-chapter-border: rgba(124,74,30,0.18);
+    --toc-subtopic-color: #5a4e3e; --toc-subsub-color: #8a7e6e; --toc-line-color: #bbb0a0;
+    --pdf-filter: sepia(0.25) brightness(1.02) saturate(0.85);
+}
+
+/* Midnight (Pure Black) */
+body.theme-midnight {
+    --bg: #000000; --surface: #0a0a0a; --surface-2: #111111; --border: #222222; --border-focus: #888888;
+    --brand: #aaaaaa; --accent: #888888; --accent-soft: #111111; --accent-glow: rgba(136,136,136,0.1);
+    --text-primary: #cccccc; --text-secondary: #999999; --text-tertiary: #666666;
+    --danger: #cc3333; --danger-soft: #1a0808; --success: #449944; --warning: #aa7722;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.6); --shadow-md: 0 4px 6px rgba(0,0,0,0.7); --shadow-lg: 0 10px 15px rgba(0,0,0,0.8);
+    --toc-chapter-bg: rgba(136,136,136,0.06); --toc-chapter-border: rgba(136,136,136,0.15);
+    --toc-subtopic-color: #999999; --toc-subsub-color: #666666; --toc-line-color: #222222;
+    --pdf-filter: invert(0.9) brightness(0.9);
+}
+
+
+#hover-canvas {
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    pointer-events: none;
+    z-index: 4;   /* highlight-canvas should be z-index 5 or higher */
+}
+ 
+/* ── 5. PDF text layer — pointer cursor so hover feels interactive ───────── */
+#text-layer {
+    cursor: pointer !important;
+}
+
+mark.reading-highlight {
+    background: transparent !important;
+    color: inherit !important;
 }

@@ -573,7 +573,9 @@ async def ws_tts(websocket: WebSocket):
             if can_cache:
                 book_dir   = get_book_dir(book)
                 cache_file = wav_path(book_dir, page, line)
-                if not save and os.path.exists(cache_file):
+                
+                # ── FIXED: Removed 'not save' so it always serves from cache if the file exists ──
+                if os.path.exists(cache_file):
                     cached = True
                     duration = get_duration_seconds(cache_file)
                     log_tts(book, page, line, voice, len(text), cached=True, duration=duration)
@@ -592,7 +594,7 @@ async def ws_tts(websocket: WebSocket):
                 await websocket.send_json({"type": "error", "detail": str(e)})
                 continue
 
-            if can_cache and save:
+            if can_cache: # Save newly generated audio if caching is enabled
                 with open(cache_file, "wb") as f:
                     f.write(wav_bytes)
                 duration = get_duration_seconds(cache_file)

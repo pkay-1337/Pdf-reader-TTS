@@ -1,22 +1,3 @@
-<ul>
-				<li class="list"><strong class="bold">Preprocessor directives, macros, and conditional compilation</strong>: Preprocessing is one of those C features that you can't easily find in other programming languages. Preprocessing brings a lot of advantages, and we'll dive into some of its interesting applications, including <em class="italics">macros</em> and <em class="italics">conditional directives</em>.</li>
-				<li class="list"><strong class="bold">Variable pointers</strong>: This section deep-dives into <em class="italics">variable pointers</em> and their uses. We'll also find some helpful insights by looking at some of the flaws that could be introduced by misusing variable pointers.</li>
-				<li class="list"><strong class="bold">Functions</strong>: This section of the chapter is a deep dive into everything we know about functions, beyond just their syntax. In fact, the syntax is the easy part! In this section, we will look at functions as the building blocks for writing <em class="italics">procedural</em> code. This section also talks about the <em class="italics">function call mechanism</em> and how a function receives its arguments from the caller function.</li>
-				<li class="list"><strong class="bold">Function pointers</strong>: Undoubtedly, <em class="italics">function pointers</em> are one of the most important features of C. A function<a id="_idIndexMarker000"></a> pointer is a pointer that points to an&nbsp;existing function instead of a variable. The ability to store a pointer to an existing logic is profoundly important in algorithm design, and that's why we have a dedicated section on this topic. Function pointers appear in a vast range of applications ranging from loading dynamic libraries to <em class="italics">polymorphism</em>, and we'll be seeing plenty more of function pointers across the next couple of chapters.</li>
-				<li class="list"><strong class="bold">Structures</strong>: C structures might have a simple syntax and convey a simple idea, but they are the main building blocks for writing <em class="italics">well-organized</em> and more <em class="italics">object-oriented</em> code. Their importance, together with function pointers, simply cannot be overstated! In the last section of this chapter, we'll revisit all the things that you need to know about structures in C and the tricks around them.</li>
-			</ul>
-
-
-problem in this, Preprocessing brings a lot of advantages, and we'll dive into some of its interesting applications, including <em class="italics">macros</em> and <em class="italics">conditional directives</em>.</li>
-it breaks before macroc, line goes onlt till including, that shouldn't happen, treat it like a line macros and conditional directive in the same line.
-
-also when reading this "macros and" the highlight jumped in the begining of th list where both the word appeared in the same order that's not good right?
-
-also check is chaching, buck caching, deleting is working properly
-
-<p class="snippet code">  int x = 2;</p>
-also there are special blocks like
-<p class="snippet code">  int x = 2;</p>
-code line in the book, one after another lines, 
-some better styling and theming for these please
+refference for tts fix,
+don't kill tts, sort enque, 
 
