@@ -1,6 +1,7 @@
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/static/pdfjs/pdf.worker.min.js';
 
 /* ─── State ─── */
+let rest = 500;
 let topSkipLines = 0;
 let bottomSkipLines = 0;
 let pdfDoc = null;          // kept for PDF-specific legacy references
@@ -3279,7 +3280,9 @@ function playNextChunk() {
             currentIndex++;
             saveSettingsThrottled(pageNum, scale, currentIndex);
             preloadQueue();
-            playNextChunk();
+			setTimeout(() => {
+                playNextChunk();
+            }, rest);
         };
     } else if (url === null) {
         // If Kokoro returned an error for this sentence, it was marked null. Skip it.
