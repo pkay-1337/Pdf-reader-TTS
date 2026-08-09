@@ -1114,12 +1114,15 @@ class EPUBHandler {
                 const activeSpans = doc.querySelectorAll(`.dr-sent[data-sent-idx="${idx}"]`);
                 if (activeSpans.length > 0) {
                     const firstSpan = activeSpans[0];
-                    const rect = firstSpan.getBoundingClientRect();
-                    const viewHeight = contents[0].window.innerHeight;
-                    // Scroll if the sentence is outside the middle 50% of the viewport
-                    if (rect.top < viewHeight * 0.25 || rect.bottom > viewHeight * 0.75) {
-                        firstSpan.scrollIntoView({ block: 'center', behavior: 'smooth' });
-                    }
+			const rect = firstSpan.getBoundingClientRect();
+const iframeEl = document.querySelector('#epub-container iframe');
+const iframeRect = iframeEl ? iframeEl.getBoundingClientRect() : { top: 0 };
+const absTop = rect.top + iframeRect.top;
+const absBottom = rect.bottom + iframeRect.top;
+const vh = window.innerHeight;
+if (absTop < vh * 0.25 || absBottom > vh * 0.75) {
+    firstSpan.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
                 }
             }
         } catch(e) {}
@@ -1176,12 +1179,32 @@ class EPUBHandler {
             try {
                 // Try rendering the requested href first
                 await this.rendition.display(hrefToRender);
-                await new Promise(r => setTimeout(r, 80));
+		    await new Promise(r => {
+    const check = () => {
+        try {
+            const contents = this.rendition.getContents();
+            const doc = contents && contents[0] && contents[0].document;
+            if (doc && doc.readyState === 'complete') return r();
+        } catch(e) {}
+        setTimeout(check, 20);
+    };
+    setTimeout(check, 20);
+});
             } catch(e) {
                 console.warn('Custom href display failed, falling back to canonical spine href:', e);
                 // Fallback to the guaranteed safe spine item href if the TOC path format mismatches
                 await this.rendition.display(item.href);
-                await new Promise(r => setTimeout(r, 80));
+		    await new Promise(r => {
+    const check = () => {
+        try {
+            const contents = this.rendition.getContents();
+            const doc = contents && contents[0] && contents[0].document;
+            if (doc && doc.readyState === 'complete') return r();
+        } catch(e) {}
+        setTimeout(check, 20);
+    };
+    setTimeout(check, 20);
+});
             }
 
             if (fragment) {
@@ -1661,19 +1684,31 @@ async function loadEPUB(file, startPage = 1) {
             window._epubResizeObserver.disconnect();
         }
         const epubContainerEl = document.getElementById('epub-container');
-        if (epubContainerEl && typeof ResizeObserver !== 'undefined') {
+if (epubContainerEl && typeof ResizeObserver !== 'undefined') {
             window._epubResizeObserver = new ResizeObserver((entries) => {
                 if (!documentHandler || !(documentHandler instanceof EPUBHandler)) return;
                 const entry = entries[0];
                 if (!entry) return;
                 const { width, height } = entry.contentRect;
                 if (width > 0 && height > 0) {
-                    try { documentHandler.rendition.resize(width, height); } catch(e) {}
+                    try {
+                        documentHandler.rendition.resize(width, height);
+                        setTimeout(() => {
+                            try {
+                                documentHandler._injectReadingStyle();
+                                const { text, sentenceCfiMap } = documentHandler._extractTextFromRendition();
+                                documentHandler.currentText = text;
+                                documentHandler.currentSentences = splitIntoTTSChunks(text, 250);
+                                documentHandler.sentenceCfiMap = sentenceCfiMap;
+                                sentences = documentHandler.currentSentences;
+                                if (isPlaying) highlightActiveSentence(currentIndex, sentences);
+                            } catch(e) {}
+                        }, 150);
+                    } catch(e) {}
                 }
             });
             window._epubResizeObserver.observe(epubContainerEl);
         }
-
     } catch (err) {
         console.error('[EPUB] Load error:', err);
         alert('Failed to load EPUB: ' + err.message);
@@ -2984,9 +3019,27 @@ function resetUI() {
 
 /* ─── TTS ─── */
 function splitIntoTTSChunks(text, maxLength = 120) {
-    let chunks = text.split('\n').flatMap(c => c.split(/(?<=[.!?])\s+/)).map(s => s.trim()).filter(s => s.length > 0);
+    const titleAbbrevs = /^(Mr|Mrs|Ms|Dr|Prof|Rev|Hon|Capt|Lt|Col|Maj|Gen)$/i;
+    const rawChunks = text.split('\n').flatMap(c => c.split(/(?<=[.!?])\s+/)).map(s => s.trim()).filter(s => s.length > 0);
+
+    // Re-join chunks where the split happened after a title abbreviation
+    // e.g. "My dear Mr." + "Bennet, ..." → "My dear Mr. Bennet, ..."
+    const joined = [];
+    let carry = '';
+    for (const chunk of rawChunks) {
+        const combined = carry ? carry + ' ' + chunk : chunk;
+        const lastWord = chunk.trimEnd().split(/\s+/).pop().replace(/\.$/, '');
+        if (titleAbbrevs.test(lastWord)) {
+            carry = combined;
+        } else {
+            joined.push(combined);
+            carry = '';
+        }
+    }
+    if (carry) joined.push(carry);
+
     let final = [];
-    chunks.forEach(chunk => {
+    joined.forEach(chunk => {
         if (chunk.length <= maxLength) { final.push(chunk); return; }
         let subs = chunk.split(/(?<=[,;:\-—])\s+/);
         let cur = '';
@@ -3120,7 +3173,7 @@ function normalizeTTSText(raw) {
         (_, a, b, c, d) => `${a} dot ${b} dot ${c} dot ${d}`);
     t = t.replace(/\bv?(\d+)(?:\.(\d+)){1,3}\b/g, m =>
         m.replace(/\./g, ' dot '));
-    t = t.replace(/(?<!\s)\.(?!\s*([A-Z]|$))/g, ' dot ');
+t = t.replace(/(?<!\s)\.(?!\s*([A-Z]|$|["""''\)\]]))/g, ' dot ');
     t = t.replace(/(\w)\.(\w)/g, '$1 dot $2');
     t = t.replace(/\.{2,}|…/g, ', ');
     t = t.replace(/[—–]/g, ', ');
@@ -3489,6 +3542,53 @@ if (saveAudioToggle) {
 
 // Initialize preferences immediately
 loadGlobalPrefs();
+/* ─── EPUB text extraction helper (used by batch download) ─── */
+async function extractEpubPageSentences(book, spineItem) {
+    const content = await book.load(spineItem.href);
+    let doc;
+    if (typeof content === 'string') {
+        const parser = new DOMParser();
+        doc = parser.parseFromString(content, 'application/xhtml+xml');
+    } else if (content && typeof content === 'object') {
+        doc = content;
+    }
+    if (!doc || !doc.body) return [];
+
+    const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_ALL, {
+        acceptNode: (n) => {
+            if (n.nodeType === Node.TEXT_NODE) return NodeFilter.FILTER_ACCEPT;
+            if (n.nodeType === Node.ELEMENT_NODE) {
+                const tag = n.tagName.toLowerCase();
+                if (['script','style','nav','aside'].includes(tag)) return NodeFilter.FILTER_REJECT;
+                if (tag === 'br') return NodeFilter.FILTER_ACCEPT;
+            }
+            return NodeFilter.FILTER_SKIP;
+        }
+    });
+
+    let fullText = '';
+    let lastParentBlock = null;
+    let node;
+    while ((node = walker.nextNode())) {
+        if (node.nodeType === Node.ELEMENT_NODE) {
+            if (!fullText.endsWith('\n')) fullText += '\n';
+            continue;
+        }
+        const parent = node.parentElement;
+        let t = node.textContent.replace(/\s+/g, ' ');
+        if (t === '') continue;
+        const nearestBlock = parent ? parent.closest('p,div,h1,h2,h3,h4,h5,h6,li,blockquote,section,article,pre') : null;
+        if (nearestBlock && nearestBlock !== lastParentBlock) {
+            if (fullText.length > 0 && !fullText.endsWith('\n')) fullText = fullText.trimEnd() + '\n';
+            lastParentBlock = nearestBlock;
+        }
+        if (t === ' ' && (fullText.endsWith(' ') || fullText.endsWith('\n'))) continue;
+        fullText += t;
+    }
+
+    const structuredText = fullText.replace(/\n{3,}/g, '\n\n').replace(/[ \t]+\n/g, '\n').trim();
+    return splitIntoTTSChunks(structuredText, 250);
+}
 
 /* ─── Batch download ─── */
 downloadRangeBtn.addEventListener('click', async () => {
@@ -3535,34 +3635,19 @@ downloadRangeBtn.addEventListener('click', async () => {
     for (let p = fromPage; p <= toPage; p++) {
         dlStatusText.textContent = `Extracting ${isEpub ? 'chapter' : 'page'} ${p} / ${toPage}…`;
         dlProgressFill.style.width = Math.round((extractedPages / totalPages) * 40) + '%';
-        
+
         try {
             let pageSentences = [];
             if (isPdf) {
                 const page = await pdfDoc.getPage(p);
                 const textContent = await page.getTextContent();
                 pageSentences = extractSentencesFromTextContent(textContent, page, topSkipLines, bottomSkipLines);
-           } else {
-                // Parse EPUB chapters safely (handles strings and pre-parsed DOM documents)
+
+                // Use the same renderPage path as live reading so sentence indices match exactly
+		} else {
                 const item = documentHandler.spineItems[p - 1];
-                const content = await documentHandler.book.load(item.href);
-                let text = '';
-                
-                if (typeof content === 'string') {
-                    const parser = new DOMParser();
-                    const doc = parser.parseFromString(content, 'application/xhtml+xml');
-                    doc.querySelectorAll('p,div,h1,h2,h3,h4,h5,h6,li,blockquote,pre,br').forEach(el => {
-                        el.appendChild(doc.createTextNode('\n'));
-                    });
-                    text = doc.body ? doc.body.textContent.replace(/[ \t]+/g, ' ').replace(/\n\s+/g, '\n').trim() : '';
-                } else if (content && typeof content === 'object') {
-                    // content is already a Document or XMLDocument
-                    const doc = content;
-                    text = doc.body ? doc.body.textContent.replace(/[ \t]+/g, ' ').replace(/\n\s+/g, '\n').trim() : (doc.textContent ? doc.textContent.replace(/[ \t]+/g, ' ').replace(/\n\s+/g, '\n').trim() : '');
-                }
-                
-                pageSentences = splitIntoTTSChunks(text, 250);
-            } 
+                pageSentences = await extractEpubPageSentences(documentHandler.book, item);
+            }
             const alreadyCached = new Set((cachedByPage[String(p)] || []));
             for (let si = 0; si < pageSentences.length; si++) {
                 if (alreadyCached.has(si)) continue;

@@ -18,6 +18,7 @@ import numpy as np
 import time
 from datetime import datetime
 import sys
+import traceback
 
 # --- Rich logging (optional) ---
 try:
@@ -26,6 +27,7 @@ try:
     from rich.panel import Panel
     from rich.text import Text
     from rich import box
+    from rich.syntax import Syntax
     RICH_AVAILABLE = True
 except ImportError:
     RICH_AVAILABLE = False
@@ -45,7 +47,7 @@ PDF_DIR = os.getenv("PDF_DIR", "/home/pk/books/books/language")
 AUDIO_CACHE_DIR = os.getenv("AUDIO_CACHE_DIR", "./tts_cache")
 KOKORO_MODEL_PATH = os.getenv("KOKORO_MODEL", "kokoro-v1.0.onnx")
 KOKORO_VOICES_PATH = os.getenv("KOKORO_VOICES", "voices-v1.0.bin")
-MAX_WORKERS = int(os.getenv("TTS_WORKERS", "1"))
+MAX_WORKERS = int(os.getenv("TTS_WORKERS", "2"))
 
 os.makedirs(PDF_DIR, exist_ok=True)
 os.makedirs(AUDIO_CACHE_DIR, exist_ok=True)
@@ -102,6 +104,9 @@ def log_request(endpoint: str, method: str, details: dict = None):
         if details:
             for k, v in details.items():
                 if v is not None:
+                    # Truncate long text for display
+                    if isinstance(v, str) and len(v) > 200:
+                        v = v[:200] + "..."
                     table.add_row(k, str(v))
         console.print(table)
     else:
@@ -109,6 +114,8 @@ def log_request(endpoint: str, method: str, details: dict = None):
         if details:
             for k, v in details.items():
                 if v is not None:
+                    if isinstance(v, str) and len(v) > 200:
+                        v = v[:200] + "..."
                     console.print(f"  {k}: {v}")
 
 def log_ws_connect(room: str, client_id: str = ""):
@@ -127,25 +134,73 @@ def log_ws_message(room: str, msg_type: str, data: dict = None):
     if RICH_AVAILABLE:
         console.print(f"[yellow]📩 WS message[/yellow] room={room} type={msg_type}")
         if data:
-            console.print(f"   {data}")
+            # Truncate long text
+            display_data = {}
+            for k, v in data.items():
+                if isinstance(v, str) and len(v) > 200:
+                    display_data[k] = v[:200] + "..."
+                else:
+                    display_data[k] = v
+            console.print(f"   {display_data}")
     else:
         console.print(f"[{datetime.now().strftime('%H:%M:%S')}] WS message room={room} type={msg_type}")
 
-def log_tts(book: str, page: int, line: int, voice: str, text_len: int, cached: bool = False, duration: float = None):
+def log_tts(book: str, page: int, line: int, voice: str, text: str, cached: bool = False, duration: float = None, speed: float = 1.0, original_text: str = None):
+    """Enhanced TTS logging with full text."""
     if RICH_AVAILABLE:
-        status = "[green]CACHED[/green]" if cached else "[yellow]SYNTHESIZED[/yellow]"
-        table = Table(title="TTS Synthesis", box=box.SIMPLE, show_header=False)
+        status = "[green]✅ CACHED[/green]" if cached else "[yellow]🆕 SYNTHESIZED[/yellow]"
+        
+        # Create main table
+        table = Table(title=f"TTS Synthesis", box=box.ROUNDED, show_header=False)
+        table.add_column("Attribute", style="bold cyan")
+        table.add_column("Value", style="white")
+        
         table.add_row("Book", book or "N/A")
         table.add_row("Page", str(page))
         table.add_row("Line", str(line))
         table.add_row("Voice", voice)
-        table.add_row("Text length", str(text_len))
-        table.add_row("Cached", "✅" if cached else "🆕")
+        table.add_row("Speed", f"{speed:.2f}x")
+        table.add_row("Text length", str(len(text)))
+        table.add_row("Status", status)
         if duration:
             table.add_row("Duration", f"{duration:.2f}s")
+        if original_text and original_text != text:
+            table.add_row("Original text", original_text[:100] + "..." if len(original_text) > 100 else original_text)
+            table.add_row("Cleaned text", text[:100] + "..." if len(text) > 100 else text)
+        
         console.print(table)
+        
+        # Print the full text in a separate panel
+        if RICH_AVAILABLE:
+            title = "📝 Cleaned Text Content"
+            if original_text and original_text != text:
+                title = "📝 Cleaned Text Content (Original was modified)"
+            text_panel = Panel(
+                text,
+                title=title,
+                border_style="cyan",
+                width=120
+            )
+            console.print(text_panel)
+            
+            # If text was modified, show original as well
+            if original_text and original_text != text:
+                original_panel = Panel(
+                    original_text,
+                    title="📄 Original Text",
+                    border_style="yellow",
+                    width=120
+                )
+                console.print(original_panel)
+        else:
+            console.print(f"Text: {text}")
+            if original_text and original_text != text:
+                console.print(f"Original: {original_text}")
     else:
-        console.print(f"[TTS] book={book} page={page} line={line} voice={voice} cached={cached} len={text_len}")
+        console.print(f"[TTS] book={book} page={page} line={line} voice={voice} cached={cached} len={len(text)} speed={speed}")
+        console.print(f"  Text: {text}")
+        if original_text and original_text != text:
+            console.print(f"  Original: {original_text}")
 
 def log_preload_job(job_id: str, book: str, total: int, done: int = 0, errors: int = 0, status: str = "running"):
     if RICH_AVAILABLE:
@@ -178,7 +233,93 @@ def log_settings(book: str, page: int, scale: float, speed: float, topSkip: int,
     else:
         console.print(f"[SETTINGS] book={book} page={page} scale={scale} speed={speed}")
 
+def log_error(context: str, error: Exception, details: dict = None):
+    """Log errors with full traceback."""
+    if RICH_AVAILABLE:
+        error_text = Text(f"❌ ERROR in {context}", style="bold red")
+        console.print(error_text)
+        console.print(f"  Type: {type(error).__name__}")
+        console.print(f"  Message: {str(error)}")
+        if details:
+            console.print("  Details:")
+            for k, v in details.items():
+                console.print(f"    {k}: {v}")
+        console.print("  Traceback:")
+        console.print(traceback.format_exc())
+    else:
+        console.print(f"[ERROR] {context}: {type(error).__name__}: {str(error)}")
+        if details:
+            for k, v in details.items():
+                console.print(f"  {k}: {v}")
+        console.print(traceback.format_exc())
+
+def log_synthesis_start(book: str, page: int, line: int, voice: str, text: str, speed: float = 1.0):
+    """Log when synthesis begins."""
+    if RICH_AVAILABLE:
+        console.print(f"[cyan]🎵 Starting synthesis[/cyan] book={book} page={page} line={line}")
+        console.print(f"  Voice: {voice}, Speed: {speed}x")
+        console.print(f"  Text: {text}")
+    else:
+        console.print(f"[SYNTHESIS START] book={book} page={page} line={line} voice={voice} speed={speed}")
+        console.print(f"  Text: {text}")
+
+def log_synthesis_complete(duration_ms: float, audio_size: int):
+    """Log when synthesis completes."""
+    if RICH_AVAILABLE:
+        console.print(f"[green]✅ Synthesis complete[/green] in {duration_ms:.2f}ms, audio size: {audio_size} bytes")
+    else:
+        console.print(f"[SYNTHESIS COMPLETE] duration={duration_ms:.2f}ms size={audio_size}")
+
 log_startup()
+
+# ─── Text Cleaning Functions ───
+
+def clean_text_for_tts(text: str) -> str:
+    """
+    Clean text before TTS synthesis.
+    Removes the dot after Mr, Mrs, Ms, Dr, etc. to avoid awkward pauses.
+    """
+    if not text:
+        return text
+    
+    original_text = text
+    
+    # Pattern to match Mr., Mrs., Ms., Dr., etc. followed by a dot
+    # We use word boundaries to ensure we match whole words
+    # The pattern matches: word boundary + title + . + (optional space)
+    # Then we replace with just the title (no dot)
+    
+    # Common titles with dots
+    titles = ['Mr', 'Mrs', 'Ms', 'Dr', 'Prof', 'Rev', 'Hon', 'Capt', 'Lt', 'Col', 'Maj', 'Gen']
+    
+    for title in titles:
+        # Match title followed by a dot
+        # Use lookbehind and lookahead to ensure we only replace the dot
+        # Pattern: \bTitle\.\s?  (word boundary, Title, dot, optional space)
+        pattern = rf'\b{title}\.\s*'
+        # Replace with title and a space (preserving any following space)
+        replacement = f'{title} '
+        text = re.sub(pattern, replacement, text)
+    
+    # Also handle cases where there's no space after the dot
+    for title in titles:
+        # Match title with dot followed by a non-space character
+        pattern = rf'\b{title}\.([^\s])'
+        replacement = f'{title} \\1'
+        text = re.sub(pattern, replacement, text)
+    
+    # Log if text was modified
+    if original_text != text:
+        if RICH_AVAILABLE:
+            console.print(f"[yellow]✏️ Text cleaned: Removed dot from titles[/yellow]")
+            console.print(f"  Original: {original_text}")
+            console.print(f"  Cleaned:  {text}")
+        else:
+            console.print(f"[TEXT CLEAN] Removed dot from titles")
+            console.print(f"  Original: {original_text}")
+            console.print(f"  Cleaned:  {text}")
+    
+    return text
 
 # ─── WebSocket Connection Manager ───
 class ConnectionManager:
@@ -347,47 +488,80 @@ class DeleteCacheRangePayload(BaseModel):
 
 # ─── Core TTS synthesis ───
 
-async def synthesize_audio(text: str, voice: str, speed: float = 1.0) -> bytes:
+async def synthesize_audio(text: str, voice: str, speed: float = 1.0, original_text: str = None) -> bytes:
+    """Synthesize audio from text with comprehensive logging."""
+    start_time = time.time()
+    
+    # Clean the text before synthesis
+    cleaned_text = clean_text_for_tts(text)
+    
+    log_synthesis_start("N/A", 0, 0, voice, cleaned_text, speed)
+    
     if not kokoro:
-        raise HTTPException(status_code=503, detail="Kokoro model not loaded.")
-    if not text.strip():
-        raise HTTPException(status_code=400, detail="Text cannot be empty.")
+        error_msg = "Kokoro model not loaded."
+        log_error("synthesize_audio", Exception(error_msg))
+        raise HTTPException(status_code=503, detail=error_msg)
+    if not cleaned_text.strip():
+        error_msg = "Text cannot be empty."
+        log_error("synthesize_audio", ValueError(error_msg))
+        raise HTTPException(status_code=400, detail=error_msg)
 
-    func = partial(kokoro.create, text, voice=voice, speed=speed, lang="en-us")
+    func = partial(kokoro.create, cleaned_text, voice=voice, speed=speed, lang="en-us")
     loop = asyncio.get_running_loop()
 
     try:
+        console.print(f"[cyan]⏳ Running TTS model...[/cyan]")
         audio_data, sample_rate = await loop.run_in_executor(_tts_executor, func)
+        console.print(f"[green]✅ Model inference complete[/green]")
+        
     except IndexError as e:
         if "index 510 is out of bounds" not in str(e):
+            log_error("synthesize_audio", e, {"text": cleaned_text[:200], "voice": voice, "speed": speed})
             raise
-        mid = len(text) // 2
-        cut = max(text.rfind('.', 0, mid), text.rfind('!', 0, mid), text.rfind('?', 0, mid))
+        
+        console.print(f"[yellow]⚠️ Index error detected, splitting text for processing[/yellow]")
+        
+        mid = len(cleaned_text) // 2
+        cut = max(cleaned_text.rfind('.', 0, mid), cleaned_text.rfind('!', 0, mid), cleaned_text.rfind('?', 0, mid))
         if cut <= 0:
-            cut = text.rfind(' ', 0, mid)
+            cut = cleaned_text.rfind(' ', 0, mid)
         if cut <= 0:
             cut = mid
-        part1 = text[:cut + 1].strip()
-        part2 = text[cut + 1:].strip()
+        part1 = cleaned_text[:cut + 1].strip()
+        part2 = cleaned_text[cut + 1:].strip()
         parts = []
+        
+        console.print(f"  Split into: part1={len(part1)} chars, part2={len(part2)} chars")
+        
         for part in (part1, part2):
             if not part:
                 continue
+            # Clean each part separately (though they're already cleaned)
             f = partial(kokoro.create, part, voice=voice, speed=speed, lang="en-us")
             ad, sample_rate = await loop.run_in_executor(_tts_executor, f)
             if len(ad) > 0:
                 parts.append(ad)
         if not parts:
-            raise ValueError("Model generated empty audio after split.")
+            error_msg = "Model generated empty audio after split."
+            log_error("synthesize_audio", ValueError(error_msg))
+            raise ValueError(error_msg)
         audio_data = np.concatenate(parts) if len(parts) > 1 else parts[0]
+        console.print(f"[green]✅ Split synthesis complete, {len(parts)} parts combined[/green]")
 
     if len(audio_data) == 0:
-        raise ValueError("Model generated empty audio.")
+        error_msg = "Model generated empty audio."
+        log_error("synthesize_audio", ValueError(error_msg))
+        raise ValueError(error_msg)
 
     wav_io = io.BytesIO()
     sf.write(wav_io, audio_data, sample_rate, format='WAV', subtype='PCM_16')
     wav_io.seek(0)
-    return wav_io.read()
+    audio_bytes = wav_io.read()
+    
+    elapsed_ms = (time.time() - start_time) * 1000
+    log_synthesis_complete(elapsed_ms, len(audio_bytes))
+    
+    return audio_bytes
 
 # ─── Endpoints ───
 
@@ -496,9 +670,34 @@ async def synthesize_post(
     page        = int(x_page_number) if x_page_number and x_page_number.isdigit() else None
     line        = int(x_line_number) if x_line_number and x_line_number.isdigit() else None
 
+    # Clean the text first
+    original_text = payload.text
+    cleaned_text = clean_text_for_tts(original_text)
+
+    log_request("/synthesize", "POST", {
+        "book": book,
+        "page": page,
+        "line": line,
+        "voice": payload.voice,
+        "speed": payload.speed,
+        "original_text_len": len(original_text),
+        "cleaned_text_len": len(cleaned_text),
+        "text_modified": original_text != cleaned_text,
+        "save": save,
+        "force_regen": force_regen
+    })
+    
+    # Log the full text being synthesized
+    console.print(f"[cyan]📝 Original synthesis text:[/cyan] {original_text}")
+    if original_text != cleaned_text:
+        console.print(f"[cyan]📝 Cleaned synthesis text:[/cyan] {cleaned_text}")
+
     can_cache = bool(book and page is not None and line is not None)
     cached = False
     duration = None
+
+    # Use cleaned text for cache key generation
+    cache_text = cleaned_text
 
     if can_cache:
         book_dir   = get_book_dir(book)
@@ -506,7 +705,7 @@ async def synthesize_post(
         if not save and not force_regen and os.path.exists(cache_file):
             duration = get_duration_seconds(cache_file)
             cached = True
-            log_tts(book, page, line, payload.voice, len(payload.text), cached=True, duration=duration)
+            log_tts(book, page, line, payload.voice, cache_text, cached=True, duration=duration, speed=payload.speed, original_text=original_text if original_text != cache_text else None)
             return FileResponse(
                 cache_file,
                 media_type="audio/wav",
@@ -514,14 +713,20 @@ async def synthesize_post(
             )
 
     synthesis_speed = 1.0 if (can_cache and (save or force_regen)) else payload.speed
-    wav_bytes = await synthesize_audio(payload.text, payload.voice, synthesis_speed)
+    
+    try:
+        # Pass both cleaned and original text
+        wav_bytes = await synthesize_audio(cache_text, payload.voice, synthesis_speed, original_text)
+    except Exception as e:
+        log_error("synthesize_post", e, {"text": cache_text[:200], "voice": payload.voice})
+        raise
 
     if can_cache and (save or force_regen):
         with open(cache_file, "wb") as f:
             f.write(wav_bytes)
         duration = get_duration_seconds(cache_file)
         update_duration(book_dir, page, line, duration)
-        log_tts(book, page, line, payload.voice, len(payload.text), cached=False, duration=duration)
+        log_tts(book, page, line, payload.voice, cache_text, cached=False, duration=duration, speed=synthesis_speed, original_text=original_text if original_text != cache_text else None)
         # Push cache update
         cached_lines = _get_cached_lines(book_dir, page)
         await mgr.broadcast(f"cache:{book}", {
@@ -530,7 +735,7 @@ async def synthesize_post(
             "cached_lines": cached_lines,
         })
     else:
-        log_tts(book or "unknown", page or 0, line or 0, payload.voice, len(payload.text), cached=False)
+        log_tts(book or "unknown", page or 0, line or 0, payload.voice, cache_text, cached=False, speed=synthesis_speed, original_text=original_text if original_text != cache_text else None)
 
     # Build headers safely
     headers = {"X-Cached": "false"}
@@ -545,8 +750,25 @@ async def synthesize_post(
 
 @app.get("/play")
 async def synthesize_get(text: str, voice: str = "af_sarah", speed: float = 1.0):
-    log_request("/play", "GET", {"text_len": len(text), "voice": voice, "speed": speed})
-    wav_bytes = await synthesize_audio(text, voice, speed)
+    original_text = text
+    cleaned_text = clean_text_for_tts(original_text)
+    
+    log_request("/play", "GET", {
+        "text_len": len(text), 
+        "voice": voice, 
+        "speed": speed,
+        "text_modified": original_text != cleaned_text
+    })
+    console.print(f"[cyan]📝 Original synthesis text:[/cyan] {text}")
+    if original_text != cleaned_text:
+        console.print(f"[cyan]📝 Cleaned synthesis text:[/cyan] {cleaned_text}")
+    
+    try:
+        wav_bytes = await synthesize_audio(cleaned_text, voice, speed, original_text)
+    except Exception as e:
+        log_error("synthesize_get", e, {"text": cleaned_text[:200], "voice": voice})
+        raise
+    
     return StreamingResponse(io.BytesIO(wav_bytes), media_type="audio/wav")
 
 # ─── WebSocket: TTS streaming ───
@@ -566,19 +788,42 @@ async def ws_tts(websocket: WebSocket):
             line  = data.get("line")
             save  = data.get("save", False)
 
+            # Clean the text
+            original_text = text
+            cleaned_text = clean_text_for_tts(original_text)
+
+            log_ws_message("tts", "synthesis_request", {
+                "book": book,
+                "page": page,
+                "line": line,
+                "voice": voice,
+                "speed": speed,
+                "original_text_len": len(original_text),
+                "cleaned_text_len": len(cleaned_text),
+                "text_modified": original_text != cleaned_text,
+                "save": save
+            })
+            
+            # Log the full text
+            console.print(f"[cyan]📝 WebSocket original TTS text:[/cyan] {original_text}")
+            if original_text != cleaned_text:
+                console.print(f"[cyan]📝 WebSocket cleaned TTS text:[/cyan] {cleaned_text}")
+
             can_cache = bool(book and page is not None and line is not None)
             cached = False
             duration = None
 
+            # Use cleaned text for cache
+            cache_text = cleaned_text
+
             if can_cache:
                 book_dir   = get_book_dir(book)
                 cache_file = wav_path(book_dir, page, line)
-                
-                # ── FIXED: Removed 'not save' so it always serves from cache if the file exists ──
+
                 if os.path.exists(cache_file):
                     cached = True
                     duration = get_duration_seconds(cache_file)
-                    log_tts(book, page, line, voice, len(text), cached=True, duration=duration)
+                    log_tts(book, page, line, voice, cache_text, cached=True, duration=duration, speed=speed, original_text=original_text if original_text != cache_text else None)
                     with open(cache_file, "rb") as f:
                         chunk = f.read(8192)
                         while chunk:
@@ -588,18 +833,19 @@ async def ws_tts(websocket: WebSocket):
                     continue
 
             try:
-                wav_bytes = await synthesize_audio(text, voice, 1.0 if save else speed)
+                wav_bytes = await synthesize_audio(cache_text, voice, 1.0 if save else speed, original_text)
             except Exception as e:
+                log_error("ws_tts", e, {"text": cache_text[:200], "voice": voice})
                 log_ws_message("tts", "error", {"detail": str(e)})
                 await websocket.send_json({"type": "error", "detail": str(e)})
                 continue
 
-            if can_cache: # Save newly generated audio if caching is enabled
+            if can_cache:  # Save newly generated audio if caching is enabled
                 with open(cache_file, "wb") as f:
                     f.write(wav_bytes)
                 duration = get_duration_seconds(cache_file)
                 update_duration(book_dir, page, line, duration)
-                log_tts(book, page, line, voice, len(text), cached=False, duration=duration)
+                log_tts(book, page, line, voice, cache_text, cached=False, duration=duration, speed=speed, original_text=original_text if original_text != cache_text else None)
                 cached_lines = _get_cached_lines(book_dir, page)
                 await mgr.broadcast(f"cache:{book}", {
                     "type": "cache_update",
@@ -607,7 +853,7 @@ async def ws_tts(websocket: WebSocket):
                     "cached_lines": cached_lines,
                 })
             else:
-                log_tts(book or "unknown", page or 0, line or 0, voice, len(text), cached=False)
+                log_tts(book or "unknown", page or 0, line or 0, voice, cache_text, cached=False, speed=speed, original_text=original_text if original_text != cache_text else None)
 
             chunk_size = 8192
             for i in range(0, len(wav_bytes), chunk_size):
@@ -616,6 +862,9 @@ async def ws_tts(websocket: WebSocket):
 
     except WebSocketDisconnect:
         log_ws_disconnect("tts", id(websocket))
+        pass
+    except Exception as e:
+        log_error("ws_tts", e)
         pass
 
 # ─── WebSocket: Session sync ───
@@ -756,6 +1005,8 @@ async def _run_preload_job(job_id: str, payload: PreloadPayload):
     done = 0
     errors = 0
 
+    console.print(f"[cyan]📚 Starting preload job {job_id[:8]} for {payload.book_name}, total: {total} sentences[/cyan]")
+
     def sort_key(k):
         parts = k.split("_")
         return (int(parts[0]), int(parts[1]))
@@ -763,29 +1014,35 @@ async def _run_preload_job(job_id: str, payload: PreloadPayload):
     sorted_items = sorted(payload.sentences.items(), key=lambda kv: sort_key(kv[0]))
 
     async with _page_processing_semaphore:
-        for key, text in sorted_items:
+        for key, original_text in sorted_items:
             try:
                 parts = key.split("_")
                 page, line = int(parts[0]), int(parts[1])
             except (ValueError, IndexError):
                 errors += 1
+                console.print(f"[red]❌ Invalid key format: {key}[/red]")
                 continue
+
+            # Clean the text
+            cleaned_text = clean_text_for_tts(original_text)
 
             cache_file = wav_path(book_dir, page, line)
             if os.path.exists(cache_file):
                 done += 1
+                console.print(f"[green]✅ Cache hit: {key}[/green]")
                 async with _preload_lock:
                     _preload_jobs[job_id]["done"] = done
                 await mgr.broadcast(f"preload:{job_id}", _preload_jobs[job_id])
                 continue
 
             try:
-                wav_bytes = await synthesize_audio(text, payload.voice, speed=1.0)
+                console.print(f"[cyan]🎵 Preloading: {key} - {cleaned_text[:50]}...[/cyan]")
+                wav_bytes = await synthesize_audio(cleaned_text, payload.voice, speed=1.0, original_text=original_text)
                 with open(cache_file, "wb") as f:
                     f.write(wav_bytes)
                 duration = get_duration_seconds(cache_file)
                 update_duration(book_dir, page, line, duration)
-                log_tts(payload.book_name, page, line, payload.voice, len(text), cached=False, duration=duration)
+                log_tts(payload.book_name, page, line, payload.voice, cleaned_text, cached=False, duration=duration, speed=1.0, original_text=original_text if original_text != cleaned_text else None)
                 done += 1
                 # Broadcast cache update
                 cached_lines = _get_cached_lines(book_dir, page)
@@ -794,8 +1051,9 @@ async def _run_preload_job(job_id: str, payload: PreloadPayload):
                     "page": page,
                     "cached_lines": cached_lines,
                 })
+                console.print(f"[green]✅ Preloaded: {key} in {duration:.2f}s[/green]")
             except Exception as e:
-                print(f"[PRELOAD ERROR] {key}: {e}")
+                log_error(f"preload job {job_id[:8]}", e, {"key": key, "text": cleaned_text[:100]})
                 errors += 1
 
             async with _preload_lock:
@@ -811,11 +1069,14 @@ async def _run_preload_job(job_id: str, payload: PreloadPayload):
     log_preload_job(job_id, payload.book_name, total, done, errors, "done")
     await mgr.broadcast(f"preload:{job_id}", _preload_jobs[job_id])
 
+    console.print(f"[green]✅ Preload job {job_id[:8]} complete: {done}/{total} success, {errors} errors[/green]")
+
     # Clean up after 60 seconds
     async def cleanup():
         await asyncio.sleep(60)
         async with _preload_lock:
             _preload_jobs.pop(job_id, None)
+        console.print(f"[dim]🧹 Cleaned up preload job {job_id[:8]}[/dim]")
     asyncio.create_task(cleanup())
 
 @app.post("/preload")
@@ -830,6 +1091,7 @@ async def preload(payload: PreloadPayload, background_tasks: BackgroundTasks):
             "book": payload.book_name,
         }
     log_preload_job(job_id, payload.book_name, len(payload.sentences), status="started")
+    console.print(f"[cyan]🚀 Starting preload job {job_id[:8]}, total sentences: {len(payload.sentences)}[/cyan]")
     background_tasks.add_task(_run_preload_job, job_id, payload)
     return {"job_id": job_id, "total": len(payload.sentences)}
 
@@ -959,6 +1221,7 @@ async def delete_cache_range(payload: DeleteCacheRangePayload):
         })
     save_durations(book_dir, durations)
     log_cache_operation(payload.book_name, payload.page_from, "deleted_range", deleted)
+    console.print(f"[magenta]🗑️ Deleted {deleted} cache files for {payload.book_name} pages {payload.page_from}-{payload.page_to}[/magenta]")
     return {"deleted": deleted}
 
 # ─── Upload PDF ───
@@ -984,6 +1247,7 @@ async def upload_document(file: UploadFile = File(...)):
         "document": doc,
         "pdf": doc,  # backward compat
     })
+    console.print(f"[green]📤 Uploaded document: {safe_name} ({size} bytes)[/green]")
     return {"status": "uploaded", "filename": safe_name}
 
 @app.post("/upload_pdf")
