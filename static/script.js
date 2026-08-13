@@ -87,6 +87,7 @@ const WS = {
 
 /* ─── Highlight customisation state ─── */
 let hlBaseColor = '59,130,246';
+let epubSidePadding = 28;
 let hlOpacity = 0.32;
 let hlHoverOpacity = 0.18;
 let hlRadius = 3;
@@ -222,6 +223,22 @@ window.addEventListener('resize', applyLandscapeMode);
 if (window.screen.orientation) {
     window.screen.orientation.addEventListener('change', () => {
         setTimeout(applyLandscapeMode, 120);
+    });
+}
+
+/*update padding*/
+const epubPaddingSlider = document.getElementById('epub-padding-slider');
+const epubPaddingVal = document.getElementById('epub-padding-val');
+
+if (epubPaddingSlider) {
+    epubPaddingSlider.addEventListener('input', e => {
+        epubSidePadding = parseInt(e.target.value, 10);
+        if (epubPaddingVal) epubPaddingVal.textContent = epubSidePadding + 'px';
+        
+        // Live update the iframe styling if an EPUB is currently active
+        if (documentHandler instanceof EPUBHandler) {
+            documentHandler._injectReadingStyle();
+        }
     });
 }
 
@@ -1106,26 +1123,38 @@ class EPUBHandler {
         // 1. Move the active highlight class to the current sentence spans
         this._syncActiveSentenceClass(idx);
         
-        // 2. Scroll into view if it's off-screen
+        // 2. Scroll into view — always, with a reliable cross-iframe approach
+        this._scrollEpubSentenceIntoView(idx);
+    }
+
+	_scrollEpubSentenceIntoView(idx, attempt = 0) {
         try {
             const contents = this.rendition.getContents();
-            if (contents && contents[0] && contents[0].document) {
-                const doc = contents[0].document;
-                const activeSpans = doc.querySelectorAll(`.dr-sent[data-sent-idx="${idx}"]`);
-                if (activeSpans.length > 0) {
-                    const firstSpan = activeSpans[0];
-			const rect = firstSpan.getBoundingClientRect();
-const iframeEl = document.querySelector('#epub-container iframe');
-const iframeRect = iframeEl ? iframeEl.getBoundingClientRect() : { top: 0 };
-const absTop = rect.top + iframeRect.top;
-const absBottom = rect.bottom + iframeRect.top;
-const vh = window.innerHeight;
-if (absTop < vh * 0.25 || absBottom > vh * 0.75) {
-    firstSpan.scrollIntoView({ block: 'center', behavior: 'smooth' });
-}
-                }
+            if (!contents || !contents[0] || !contents[0].document) return;
+            const doc = contents[0].document;
+            const win = contents[0].window;
+            const activeSpans = doc.querySelectorAll(`.dr-sent[data-sent-idx="${idx}"]`);
+            if (!activeSpans.length) return;
+
+            const firstSpan = activeSpans[0];
+            const rect = firstSpan.getBoundingClientRect(); // relative to iframe viewport
+
+            if (rect.width < 1 && attempt < 10) {
+                setTimeout(() => this._scrollEpubSentenceIntoView(idx, attempt + 1), 80);
+                return;
             }
-        } catch(e) {}
+
+            // FIX: Use the container/viewport height instead of win.innerHeight (which equals total document height in scrolled-doc mode)
+            const epubContainer = document.getElementById('epub-container');
+            const viewportHeight = (epubContainer ? epubContainer.clientHeight : 0) || win.innerHeight || 600;
+
+            const inBand = rect.top > viewportHeight * 0.2 && rect.bottom < viewportHeight * 0.8;
+            if (!inBand) {
+                firstSpan.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            }
+        } catch(e) {
+            console.log(e);
+        }
     }
 
 	_syncActiveSentenceClass(idx) {
@@ -1265,35 +1294,46 @@ if (absTop < vh * 0.25 || absBottom > vh * 0.75) {
             s.textContent = `
                 @font-face { font-family: 'Mononoki'; src: url('${window.location.origin}/static/fonts/mononoki-Regular.ttf') format('truetype'); }
                 
-                /* Force strict box-sizing inside the isolated iframe */
+                /* Force strict box-sizing and global max-width inside the iframe */
                 * { 
                     font-family: 'Mononoki', monospace !important; 
                     box-sizing: border-box !important; 
-                }
-                
-                /* Kill horizontal scrolling at the root level */
-                html, body {
-                    overflow-x: hidden !important;
                     max-width: 100% !important;
                 }
                 
-                body { 
+                /* Completely kill horizontal scrolling at the iframe root */
+                html, body {
+                    overflow-x: hidden !important;
                     width: 100% !important;
+                    max-width: 100% !important;
+                    margin: 0 !important;
+                }
+                
+                body { 
                     margin: 0 auto !important; 
-                    padding: 20px 28px 60px !important; 
+                    padding: 20px ${epubSidePadding}px 60px !important; 
                     word-wrap: break-word !important; 
-                    overflow-wrap: anywhere !important; /* Force breaks on long URLs */
+                    overflow-wrap: break-word !important; 
                     will-change: scroll-position; 
                     transform: translateZ(0); 
                 }
                 body.is-scrolling * { pointer-events: none !important; }
                 
-                /* Ensure media doesn't break the layout */
-                img, svg, figure, video, audio { max-width: 100% !important; height: auto !important; }
+                /* Prevent images, media, and tables from spilling out */
+                img, svg, figure, video, audio, table { 
+                    max-width: 100% !important; 
+                    height: auto !important; 
+                }
+                
+                /* Force wide code/pre blocks to handle overflow internally */
+                pre, code, table {
+                    overflow-x: auto !important;
+                    max-width: 100% !important;
+                }
+
                 h1,h2,h3,h4,h5,h6 { margin-top: 1.4em; margin-bottom: 0.5em; line-height: 1.3; }
                 p { margin: 0 0 0.9em; }
                 
-                /* Kill browser-default blue link color — inherit theme text color instead */
                 a, a:visited, a:hover, a:active {
                     color: inherit !important;
                     text-decoration: underline !important;
@@ -1302,15 +1342,15 @@ if (absTop < vh * 0.25 || absBottom > vh * 0.75) {
                 }
                 a:hover { opacity: 1; }
                 
-                /* Grouped Code Block Theming */
                 .docreader-code-wrapper {
                     background: rgba(120, 120, 120, 0.12) !important;
                     border: 1px solid rgba(120, 120, 120, 0.25) !important;
                     border-radius: 6px !important;
                     padding: 14px !important;
                     margin: 12px 0 !important;
-                    overflow-x: auto !important; /* Code scrolls internally, doesn't break page */
+                    overflow-x: auto !important;
                     width: 100% !important;
+                    max-width: 100% !important;
                 }
                 .docreader-code-wrapper p, .docreader-code-wrapper pre, .docreader-code-wrapper div {
                     margin: 0 !important;
@@ -1634,7 +1674,7 @@ async function loadEPUB(file, startPage = 1) {
         if (isMobileSidebar()) closeMobileSidebar();
 
 		// Set up epub rendition click-to-read handler
-        documentHandler.rendition.on('click', (e) => {
+		documentHandler.rendition.on('click', (e) => {
             if (!sentences || !sentences.length) return;
             const clickedNode = e.target;
             if (!clickedNode) return;
@@ -1642,41 +1682,14 @@ async function loadEPUB(file, startPage = 1) {
             // Don't hijack real link clicks
             if (clickedNode.closest && clickedNode.closest('a[href]')) return;
 
-            // Primary path: Fast native DOM check via our generated spans
+            // STRICT CHECK: Only proceed if the user clicked directly on an active sentence span
             const span = clickedNode.closest && clickedNode.closest('.dr-sent');
-            if (span) {
-                const targetIdx = Number(span.getAttribute('data-sent-idx'));
-                if (!isNaN(targetIdx) && targetIdx < sentences.length) {
-                    startReadingPage(targetIdx);
-                    return; 
-                }
-            }
+            if (!span) return; // Ignores empty space completely!
 
-            // Fallback: text-based matching against the clicked element's text (in case user clicks outside a span)
-            let el = clickedNode;
-            while (el && el.nodeType === Node.ELEMENT_NODE) {
-                const tag = el.tagName.toLowerCase();
-                if (['p','li','h1','h2','h3','h4','h5','h6','blockquote','div','section','article','pre'].includes(tag)) break;
-                el = el.parentElement;
+            const targetIdx = Number(span.getAttribute('data-sent-idx'));
+            if (!isNaN(targetIdx) && targetIdx < sentences.length) {
+                startReadingPage(targetIdx);
             }
-            const clickedText = (el ? el.textContent : clickedNode.textContent || '').trim();
-            if (!clickedText) return;
-            const normalize = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-            const clickedNorm = normalize(clickedText.slice(0, 80));
-            if (!clickedNorm) return;
-            let best = -1, bestScore = 0;
-            for (let i = 0; i < sentences.length; i++) {
-                const sNorm = normalize(sentences[i]);
-                const prefix = sNorm.slice(0, Math.min(40, sNorm.length));
-                if (prefix && clickedNorm.includes(prefix)) {
-                    if (prefix.length > bestScore) { bestScore = prefix.length; best = i; }
-                }
-                const cp = clickedNorm.slice(0, Math.min(40, clickedNorm.length));
-                if (cp && sNorm.includes(cp)) {
-                    if (cp.length > bestScore) { bestScore = cp.length; best = i; }
-                }
-            }
-            if (best !== -1) startReadingPage(best);
         });
 
         // ResizeObserver: keep epub rendition sized to its container
@@ -2946,9 +2959,15 @@ document.addEventListener('keydown', e => {
         if (newIndex !== currentIndex || !isPlaying) {
             // The smart queue redirect is now handled natively inside startReadingPage()
             currentIndex = newIndex;
-            highlightActiveSentence(currentIndex, sentences);
             updateTtsStatus();
             startReadingPage(currentIndex);
+            // Re-highlight after startReadingPage (which calls stopPipeline → clearHighlightCanvas)
+            // so the scroll target is drawn on a clean canvas.
+            requestAnimationFrame(() => {
+                if (sentences && sentences.length && currentIndex < sentences.length) {
+                    highlightActiveSentence(currentIndex, sentences);
+                }
+            });
             saveSettingsThrottled(pageNum, scale, currentIndex);
         }
     }
@@ -3835,6 +3854,12 @@ function highlightActiveSentence(sentenceIndex, allSentences) {
     const container = document.getElementById('pdf-container');
     if (!hlCanvas || !container) return;
 
+    // If the offset map is stale (e.g. after zoom, click, or j/k navigation),
+    // rebuild it immediately so the scroll target is always accurate.
+    if (_pdfSentenceOffsets.size === 0 && sentences && sentences.length) {
+        _rebuildPdfSentenceOffsets();
+    }
+
     const normalize = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
     const allSpans = Array.from(document.querySelectorAll('.textLayer span'));
     const targetNorm = normalize(sentences[sentenceIndex]);
@@ -3951,18 +3976,48 @@ function highlightActiveSentence(sentenceIndex, allSentences) {
     });
     ctx.setTransform(1, 0, 0, 1, 0, 0);
 
-    // 4. Scroll tracking
-    if (firstSpan && viewerArea) {
-        const vr = viewerArea.getBoundingClientRect();
-        const hr = firstSpan.getBoundingClientRect();
-        const elementCenter = hr.top - vr.top + (hr.height / 2);
-        const viewportCenter = vr.height / 2;
-        if (elementCenter < vr.height * 0.25 || elementCenter > vr.height * 0.75) {
-            viewerArea.scrollTo({ 
-                top: viewerArea.scrollTop + elementCenter - viewportCenter, 
-                behavior: 'smooth' 
-            });
+    // 4. Scroll tracking — robust version
+    _scrollToHighlightedSentence(firstSpan);
+}
+
+/**
+ * Scrolls the PDF viewer so the highlighted sentence is vertically centred.
+ * Handles:
+ *  - zero-size rects during layout transitions (retries up to 3×)
+ *  - always scrolls on the first sentence of a page (no dead-zone guard)
+ *  - ignores the is-scrolling class so auto-scroll always wins
+ */
+let _autoScrollRetryTimer = null;
+function _scrollToHighlightedSentence(span, attempt = 0) {
+    if (!span || !viewerArea) return;
+
+    // Cancel any pending retry from a previous sentence
+    clearTimeout(_autoScrollRetryTimer);
+
+    const vr  = viewerArea.getBoundingClientRect();
+    const hr  = span.getBoundingClientRect();
+
+    // If the viewer or span has no layout yet, retry after a short delay (max 3×)
+    if (vr.height < 10 || hr.width < 1) {
+        if (attempt < 3) {
+            _autoScrollRetryTimer = setTimeout(() => _scrollToHighlightedSentence(span, attempt + 1), 80);
         }
+        return;
+    }
+
+    const elementTop    = hr.top    - vr.top;
+    const elementBottom = hr.bottom - vr.top;
+    const elementCenter = elementTop + hr.height / 2;
+    const viewportCenter = vr.height / 2;
+
+    // Always scroll if element is outside the middle 50 % band, OR if this is
+    // the very first sentence (elementTop near 0 means page just turned).
+    const inBand = elementTop > vr.height * 0.2 && elementBottom < vr.height * 0.8;
+    if (!inBand) {
+        viewerArea.scrollTo({
+            top: viewerArea.scrollTop + elementCenter - viewportCenter,
+            behavior: 'smooth',
+        });
     }
 }
 
@@ -4258,7 +4313,16 @@ _textLayerEl.addEventListener('click', e => {
         }
     }
 
-    if (found !== -1) startReadingPage(found);
+    if (found !== -1) {
+        startReadingPage(found);
+        // Re-highlight on the next frame so the scroll fires after stopPipeline
+        // clears the canvas inside startReadingPage.
+        requestAnimationFrame(() => {
+            if (sentences && sentences.length && found < sentences.length) {
+                highlightActiveSentence(found, sentences);
+            }
+        });
+    }
 });
 
 /* ─── Delete Cache Range ─── */
