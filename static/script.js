@@ -1294,19 +1294,27 @@ class EPUBHandler {
             s.textContent = `
                 @font-face { font-family: 'Mononoki'; src: url('${window.location.origin}/static/fonts/mononoki-Regular.ttf') format('truetype'); }
                 
-                /* Force strict box-sizing and global max-width inside the iframe */
                 * { 
                     font-family: 'Mononoki', monospace !important; 
                     box-sizing: border-box !important; 
                     max-width: 100% !important;
                 }
                 
-                /* Completely kill horizontal scrolling at the iframe root */
+                /* Chromium & global scrollbar hiding inside the EPUB iframe */
+                ::-webkit-scrollbar {
+                    display: none !important;
+                    width: 0px !important;
+                    height: 0px !important;
+                    background: transparent !important;
+                }
+                
                 html, body {
                     overflow-x: hidden !important;
                     width: 100% !important;
                     max-width: 100% !important;
                     margin: 0 !important;
+                    scrollbar-width: none !important;
+                    -ms-overflow-style: none !important;
                 }
                 
                 body { 
@@ -1319,13 +1327,11 @@ class EPUBHandler {
                 }
                 body.is-scrolling * { pointer-events: none !important; }
                 
-                /* Prevent images, media, and tables from spilling out */
                 img, svg, figure, video, audio, table { 
                     max-width: 100% !important; 
                     height: auto !important; 
                 }
                 
-                /* Force wide code/pre blocks to handle overflow internally */
                 pre, code, table {
                     overflow-x: auto !important;
                     max-width: 100% !important;

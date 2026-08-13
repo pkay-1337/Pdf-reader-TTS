@@ -2098,3 +2098,19 @@ mark.reading-highlight {
     background: transparent !important;
     color: inherit !important;
 }
+/* ─── Hide Scrollbars on EPUB Viewers (Chromium, Firefox, Edge) ─── */
+#epub-container,
+#epub-viewer,
+#epub-viewer iframe {
+    -ms-overflow-style: none !important;  /* IE and Edge */
+    scrollbar-width: none !important;     /* Firefox */
+    overflow-x: hidden !important;
+}
+
+#epub-container::-webkit-scrollbar,
+#epub-viewer::-webkit-scrollbar,
+#epub-viewer iframe::-webkit-scrollbar {
+    display: none !important;
+    width: 0px !important;
+    background: transparent !important;
+}
