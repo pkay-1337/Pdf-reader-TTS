@@ -763,7 +763,6 @@ class EPUBHandler {
 			// 5. Hover: pinpoint which individual sentence the cursor is over.
             let _epubHoverIdx = -1;
             win.addEventListener('mousemove', (e) => {
-                // Find the nearest inline sentence span
                 const span = e.target.closest && e.target.closest('.dr-sent');
                 if (!span) { _clearEpubHover(); return; }
 
@@ -773,16 +772,28 @@ class EPUBHandler {
                 _clearEpubHover();
                 _epubHoverIdx = bestSentIdx;
 
-                // Apply hover class to all span fragments sharing this sentence index
-                doc.querySelectorAll(`.dr-sent[data-sent-idx="${bestSentIdx}"]`).forEach(el => {
+                // Apply hover class and fragment stitching
+                const fragments = doc.querySelectorAll(`.dr-sent[data-sent-idx="${bestSentIdx}"]`);
+                fragments.forEach((el, i) => {
                     el.classList.add('dr-sentence-hover');
+                    if (fragments.length > 1) {
+                        if (i === 0) el.classList.add('dr-fragment-start');
+                        else if (i === fragments.length - 1) el.classList.add('dr-fragment-end');
+                        else el.classList.add('dr-fragment-middle');
+                    }
                 });
             });
 
-            function _clearEpubHover() {
+			function _clearEpubHover() {
                 if (_epubHoverIdx === -1) return;
                 doc.querySelectorAll('.dr-sent.dr-sentence-hover')
-                   .forEach(el => el.classList.remove('dr-sentence-hover'));
+                   .forEach(el => {
+                       el.classList.remove('dr-sentence-hover');
+                       // Only remove stitching if it isn't currently playing!
+                       if (!el.classList.contains('dr-sentence-active')) {
+                           el.classList.remove('dr-fragment-start', 'dr-fragment-middle', 'dr-fragment-end');
+                       }
+                   });
                 _epubHoverIdx = -1;
             }
 
@@ -1165,11 +1176,23 @@ class EPUBHandler {
             
             // Remove active class from all sentence spans
             doc.querySelectorAll('.dr-sent.dr-sentence-active')
-               .forEach(el => el.classList.remove('dr-sentence-active'));
+               .forEach(el => {
+                   el.classList.remove('dr-sentence-active');
+                   // Only remove stitching if the mouse isn't currently hovering over it!
+                   if (!el.classList.contains('dr-sentence-hover')) {
+                       el.classList.remove('dr-fragment-start', 'dr-fragment-middle', 'dr-fragment-end');
+                   }
+               });
                
             // Find all span fragments that belong to this sentence index and mark them active
-            doc.querySelectorAll(`.dr-sent[data-sent-idx="${idx}"]`).forEach(el => {
+            const fragments = doc.querySelectorAll(`.dr-sent[data-sent-idx="${idx}"]`);
+            fragments.forEach((el, i) => {
                 el.classList.add('dr-sentence-active');
+                if (fragments.length > 1) {
+                    if (i === 0) el.classList.add('dr-fragment-start');
+                    else if (i === fragments.length - 1) el.classList.add('dr-fragment-end');
+                    else el.classList.add('dr-fragment-middle');
+                }
             });
         } catch(e) {}
     }
@@ -1182,7 +1205,12 @@ class EPUBHandler {
                 
                 // Clear active spans
                 doc.querySelectorAll('.dr-sent.dr-sentence-active')
-                   .forEach(el => el.classList.remove('dr-sentence-active'));
+                   .forEach(el => {
+                       el.classList.remove('dr-sentence-active');
+                       if (!el.classList.contains('dr-sentence-hover')) {
+                           el.classList.remove('dr-fragment-start', 'dr-fragment-middle', 'dr-fragment-end');
+                       }
+                   });
                    
                 // Failsafe: clean up any legacy marks just in case
                 try { this.rendition.annotations.remove('epub-reading-hl', 'highlight'); } catch(e) {}
@@ -1387,32 +1415,29 @@ class EPUBHandler {
                 doc.head.appendChild(s);
             }
             
+            // Restore all the original plush styles
             const color = `rgba(${hlBaseColor}, ${hlOpacity})`;
             const hoverColor = `rgba(${hlBaseColor}, ${hlHoverOpacity})`;
             const radius = hlRadius + 'px';
             const pad = hlPadding;
 
-            // A perfectly crisp 1px outer shadow (no inset doubling)
             const activeOutline = hlOutline 
                 ? `0 0 0 1px rgba(${hlBaseColor}, ${Math.min(1, hlOpacity * 2.5)})` 
                 : 'none';
-
-            // Matching PDF behavior: a faint 1px outer ring on hover (or 'none' if you prefer)
             const hoverOutline = `0 0 0 1px rgba(${hlBaseColor}, ${Math.min(1, hlOpacity)})`;
 
             s.textContent = `
                 /* ── Sentence hover & active highlight ── */
                 .dr-sent {
                     cursor: pointer !important;
-                    border-radius: ${radius} !important;
-                    
-                    /* Real padding on all 4 sides. Negative margin prevents text shifting. */
-                    padding: ${pad}px !important;
-                    margin: 0 -${pad}px !important;
-                    
                     background-color: transparent !important;
                     box-shadow: none !important;
                     transition: background-color 0.08s ease, box-shadow 0.08s ease !important;
+                    
+                    /* Plush padding and radius is back! */
+                    border-radius: ${radius} !important;
+                    padding: ${pad}px !important;
+                    margin: 0 -${pad}px !important;
                     
                     box-decoration-break: clone !important;
                     -webkit-box-decoration-break: clone !important;
@@ -1424,6 +1449,27 @@ class EPUBHandler {
                 .dr-sent.dr-sentence-active {
                     background-color: ${color} !important;
                     box-shadow: ${activeOutline} !important;
+                }
+
+                /* ── Fragment Stitching (Prevents overlapping transparency) ── */
+                .dr-sent.dr-fragment-start {
+                    padding-right: 0 !important;
+                    margin-right: 0 !important;
+                    border-top-right-radius: 0 !important;
+                    border-bottom-right-radius: 0 !important;
+                }
+                .dr-sent.dr-fragment-middle {
+                    padding-left: 0 !important;
+                    padding-right: 0 !important;
+                    margin-left: 0 !important;
+                    margin-right: 0 !important;
+                    border-radius: 0 !important;
+                }
+                .dr-sent.dr-fragment-end {
+                    padding-left: 0 !important;
+                    margin-left: 0 !important;
+                    border-top-left-radius: 0 !important;
+                    border-bottom-left-radius: 0 !important;
                 }
             `;
         } catch(e) {}
@@ -4332,17 +4378,40 @@ _textLayerEl.addEventListener('click', e => {
 });
 
 /* ─── Delete Cache Range ─── */
-deleteRangeBtn.addEventListener('click', async () => {
-    if (!currentFileName || !pdfDoc) return;
-    const rangeStr = deleteRangeInput.value.trim();
-    if (!rangeStr) { deleteStatus.textContent = 'Enter a page range (e.g. 5-10)'; return; }
-    const match = rangeStr.match(/^(\d+)\s*[-–]\s*(\d+)$/);
-    if (!match) { deleteStatus.textContent = 'Invalid range format. Use e.g. 5-10'; return; }
+/* ─── Delete Cache Range ─── */
+document.getElementById('delete-range-btn').onclick = async () => {
+    // 1. Safety Checks
+    if (!currentFileName || (!pdfDoc && !(documentHandler instanceof EPUBHandler))) return;
+    
+    const rangeStr = document.getElementById('delete-range-input').value.trim();
+    if (!rangeStr) { 
+        deleteStatus.textContent = 'Enter a page range (e.g. 5-10 or 5)'; 
+        return; 
+    }
+    
+    // 2. Upgraded Regex: Matches "18-20" OR just "18"
+    const match = rangeStr.match(/^(\d+)(?:\s*[-–]\s*(\d+))?$/);
+    if (!match) { 
+        deleteStatus.textContent = 'Invalid range format. Use e.g. 5-10 or 5'; 
+        return; 
+    }
+    
+    // 3. Parse Pages
     const fromPage = Math.max(1, parseInt(match[1], 10));
-    const toPage = Math.min(pdfDoc.numPages, parseInt(match[2], 10));
-    if (fromPage > toPage) { deleteStatus.textContent = 'Invalid range: from > to'; return; }
+    const pageCount = pdfDoc ? pdfDoc.numPages : (documentHandler instanceof EPUBHandler ? documentHandler.pageCount : 9999);
+    
+    // If no second number is provided, just use the first number
+    const toPage = Math.min(pageCount, parseInt(match[2] || match[1], 10));
+    
+    if (fromPage > toPage) { 
+        deleteStatus.textContent = 'Invalid range: from > to'; 
+        return; 
+    }
+    
+    // 4. Execute Fetch
     deleteStatus.textContent = 'Deleting…';
     deleteRangeBtn.disabled = true;
+    
     try {
         const res = await fetch('/delete_cache_range', {
             method: 'POST',
@@ -4353,20 +4422,25 @@ deleteRangeBtn.addEventListener('click', async () => {
                 page_to: toPage
             })
         });
+        
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         deleteStatus.textContent = `Deleted ${data.deleted} cached audio file(s).`;
+        
+        // Refresh UI & Cache states
         updateCacheBadge();
         Object.keys(pageDurationCache).forEach(k => delete pageDurationCache[k]);
         Object.keys(chapterDurationCache).forEach(k => delete chapterDurationCache[k]);
         refreshTimeEstimates();
-    } catch (e) {
-        deleteStatus.textContent = `Error: ${e.message}`;
+        
+    } catch (err) {
+        console.error("Delete Cache Error:", err);
+        deleteStatus.textContent = `Error: ${err.message}`;
     } finally {
         deleteRangeBtn.disabled = false;
-        deleteRangeInput.value = '';
+        document.getElementById('delete-range-input').value = '';
     }
-});
+};
 
 /* ─── Upload Document to Server ─── */
 const serverUploadInput = document.getElementById('server-upload');
