@@ -488,6 +488,19 @@ class SettingsPayload(BaseModel):
     speed: float = 1.0
     topSkipLines: int = 0
     bottomSkipLines: int = 0
+    # ─── New fields ───
+    epubSidePadding: Optional[int] = 28
+    focusModeEnabled: Optional[bool] = False
+    theme: Optional[str] = "default-light"
+    voice: Optional[str] = "af_sarah"
+    autoReadNext: Optional[bool] = True
+    saveAudioEnabled: Optional[bool] = False
+    hlBaseColor: Optional[str] = "59,130,246"
+    hlOpacity: Optional[float] = 0.32
+    hlHoverOpacity: Optional[float] = 0.18
+    hlRadius: Optional[int] = 3
+    hlPadding: Optional[int] = 1
+    hlOutline: Optional[bool] = False
 
 class LastDocPayload(BaseModel):
     filename: str
@@ -623,7 +636,7 @@ async def serve_pdf(filename: str):
 
 @app.get("/settings")
 async def get_settings(book_name: str):
-    data = load_settings(book_name)
+    data = load_settings(book_name)  # returns dict with all stored keys
     log_request("/settings", "GET", {"book_name": book_name})
     return {
         "book_name": book_name,
@@ -633,16 +646,31 @@ async def get_settings(book_name: str):
         "speed": data.get("speed", 1.0),
         "topSkipLines": data.get("topSkipLines", 0),
         "bottomSkipLines": data.get("bottomSkipLines", 0),
+        # ─── New fields (with defaults) ───
+        "epubSidePadding": data.get("epubSidePadding", 28),
+        "focusModeEnabled": data.get("focusModeEnabled", False),
+        "theme": data.get("theme", "default-light"),
+        "voice": data.get("voice", "af_sarah"),
+        "autoReadNext": data.get("autoReadNext", True),
+        "saveAudioEnabled": data.get("saveAudioEnabled", False),
+        "hlBaseColor": data.get("hlBaseColor", "59,130,246"),
+        "hlOpacity": data.get("hlOpacity", 0.32),
+        "hlHoverOpacity": data.get("hlHoverOpacity", 0.18),
+        "hlRadius": data.get("hlRadius", 3),
+        "hlPadding": data.get("hlPadding", 1),
+        "hlOutline": data.get("hlOutline", False),
     }
 
 @app.post("/settings")
 async def set_settings(payload: SettingsPayload):
     if payload.page < 1:
         raise HTTPException(status_code=400, detail="Invalid page number")
-    save_settings(payload.book_name, payload.dict())
-    log_settings(payload.book_name, payload.page, payload.scale, payload.speed, payload.topSkipLines, payload.bottomSkipLines)
-    # Broadcast to any open session sockets for this book
-    await mgr.broadcast(f"session:{payload.book_name}", {"type": "settings", **payload.dict()})
+    data = payload.dict()  # includes all fields
+    save_settings(payload.book_name, data)
+    log_settings(payload.book_name, payload.page, payload.scale, payload.speed,
+                 payload.topSkipLines, payload.bottomSkipLines)
+    # Broadcast all fields to session sync
+    await mgr.broadcast(f"session:{payload.book_name}", {"type": "settings", **data})
     return {"status": "ok"}
 
 # ─── Last document endpoints ───

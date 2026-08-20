@@ -974,6 +974,8 @@ audio {
     width: 100% !important;
     max-width: 100% !important;
     overflow-x: hidden !important;
+    background: var(--bg);
+
 }
 
 #epub-viewer {
@@ -2130,5 +2132,22 @@ mark.reading-highlight {
 .pdf-viewer-area::-webkit-scrollbar-track,
 .pdf-viewer-area::-webkit-scrollbar-thumb {
     display: none !important;
+    background: transparent !important;
+}
+/* ─── HIDE EPUB IFRAME SCROLLBARS (OUTER CONTAINER) ─── */
+#epub-container,
+#epub-viewer,
+#epub-viewer iframe {
+    scrollbar-width: none !important;
+    -ms-overflow-style: none !important;
+    overflow: hidden !important;
+}
+
+#epub-container::-webkit-scrollbar,
+#epub-viewer::-webkit-scrollbar,
+#epub-viewer iframe::-webkit-scrollbar {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
     background: transparent !important;
 }
