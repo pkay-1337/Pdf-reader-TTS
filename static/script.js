@@ -1437,109 +1437,81 @@ class EPUBHandler {
     }
 
 	_injectHighlightStyle(targetDoc) {
-        try {
-            let doc = targetDoc;
-            if (!doc) {
-                const contents = this.rendition.getContents();
-                if (!contents || !contents.length) return;
-                doc = contents[0].document;
+    try {
+        let doc = targetDoc;
+        if (!doc) {
+            const contents = this.rendition.getContents();
+            if (!contents || !contents.length) return;
+            doc = contents[0].document;
+        }
+        if (!doc || !doc.head) return;
+
+        const id = 'epub-hl-style';
+        let s = doc.getElementById(id);
+        if (!s) {
+            s = doc.createElement('style');
+            s.id = id;
+            doc.head.appendChild(s);
+        }
+
+        const color = `rgba(${hlBaseColor}, ${hlOpacity})`;
+        const hoverColor = `rgba(${hlBaseColor}, ${hlHoverOpacity})`;
+        const radius = hlRadius + 'px';
+        const pad = hlPadding; // used for both horizontal and vertical padding
+
+        const outlineColor = hlOutline
+            ? `rgba(${hlBaseColor}, ${Math.min(1, hlOpacity * 2.5)})`
+            : null;
+
+        // Build the outline box-shadow (only if enabled)
+        const outlineShadow = outlineColor
+            ? `0 0 0 1px ${outlineColor} !important;`
+            : '';
+
+        s.textContent = `
+            .dr-sent {
+                cursor: pointer !important;
+                background-color: transparent !important;
+                box-shadow: none !important;
+                transition: background-color 0.08s ease, box-shadow 0.08s ease !important;
+                border-radius: ${radius} !important;
+                /* Uniform padding — extends background in all directions */
+                padding: ${pad}px ${pad}px !important;
+                margin: 0 !important;
+                box-decoration-break: clone !important;
+                -webkit-box-decoration-break: clone !important;
             }
-            if (!doc || !doc.head) return;
-            
-            const id = 'epub-hl-style';
-            let s = doc.getElementById(id);
-            if (!s) {
-                s = doc.createElement('style');
-                s.id = id;
-                doc.head.appendChild(s);
+
+            .dr-sent.dr-sentence-hover {
+                background-color: ${hoverColor} !important;
+                box-shadow: ${outlineShadow}
             }
-            
-            // Restore all the original plush styles
-            const color = `rgba(${hlBaseColor}, ${hlOpacity})`;
-            const hoverColor = `rgba(${hlBaseColor}, ${hlHoverOpacity})`;
-            const radius = hlRadius + 'px';
-            const pad = hlPadding;
 
-            const activeOutlineColor = hlOutline
-                ? `rgba(${hlBaseColor}, ${Math.min(1, hlOpacity * 2.5)})`
-                : null;
-            const hoverOutlineColor = `rgba(${hlBaseColor}, ${Math.min(1, hlOpacity)})`;
+            .dr-sent.dr-sentence-active {
+                background-color: ${color} !important;
+                box-shadow: ${outlineShadow}
+            }
 
-            // Build a box-shadow list for a given fill colour, choosing which sides get the
-            // horizontal "bleed" (padding-like extension past the text) and whether to include
-            // the outline ring. We use box-shadow instead of padding+negative-margin for the
-            // bleed because box-decoration-break:clone renders that combo inconsistently across
-            // wrapped lines in Chromium (first line gets full padding, later lines get less/none).
-            // A same-shaped, offset box-shadow clones correctly on every wrapped line instead.
-            const shadowList = (fill, { left, right, outlineColor }) => {
-                const parts = [];
-                if (left)  parts.push(`-${pad}px 0 0 ${fill}`);
-                if (right) parts.push(`${pad}px 0 0 ${fill}`);
-                if (outlineColor) parts.push(`0 0 0 1px ${outlineColor}`);
-                return parts.length ? parts.join(', ') : 'none';
-            };
-
-            s.textContent = `
-                /* ── Sentence hover & active highlight ── */
-                .dr-sent {
-                    cursor: pointer !important;
-                    background-color: transparent !important;
-                    box-shadow: none !important;
-                    transition: background-color 0.08s ease, box-shadow 0.08s ease !important;
-
-                    border-radius: ${radius} !important;
-                    /* Vertical breathing room only — horizontal bleed comes from box-shadow below,
-                       so every wrapped line gets an identical, correctly-cloned left/right inset. */
-                    padding: ${pad}px 0 !important;
-                    margin: 0 !important;
-
-                    box-decoration-break: clone !important;
-                    -webkit-box-decoration-break: clone !important;
-                }
-                .dr-sent.dr-sentence-hover {
-                    background-color: ${hoverColor} !important;
-                    box-shadow: ${shadowList(hoverColor, { left: true, right: true, outlineColor: hoverOutlineColor })} !important;
-                }
-                .dr-sent.dr-sentence-active {
-                    background-color: ${color} !important;
-                    box-shadow: ${shadowList(color, { left: true, right: true, outlineColor: activeOutlineColor })} !important;
-                }
-
-                /* ── Fragment Stitching (multiple DOM-split spans for one sentence) ──
-                   Suppress the bleed on whichever side touches the next/previous fragment so
-                   adjacent fragments connect cleanly instead of double-bleeding at the seam. */
-                .dr-sent.dr-fragment-start.dr-sentence-hover {
-                    box-shadow: ${shadowList(hoverColor, { left: true, right: false, outlineColor: hoverOutlineColor })} !important;
-                    border-top-right-radius: 0 !important;
-                    border-bottom-right-radius: 0 !important;
-                }
-                .dr-sent.dr-fragment-start.dr-sentence-active {
-                    box-shadow: ${shadowList(color, { left: true, right: false, outlineColor: activeOutlineColor })} !important;
-                    border-top-right-radius: 0 !important;
-                    border-bottom-right-radius: 0 !important;
-                }
-                .dr-sent.dr-fragment-middle.dr-sentence-hover {
-                    box-shadow: ${shadowList(hoverColor, { left: false, right: false, outlineColor: hoverOutlineColor })} !important;
-                    border-radius: 0 !important;
-                }
-                .dr-sent.dr-fragment-middle.dr-sentence-active {
-                    box-shadow: ${shadowList(color, { left: false, right: false, outlineColor: activeOutlineColor })} !important;
-                    border-radius: 0 !important;
-                }
-                .dr-sent.dr-fragment-end.dr-sentence-hover {
-                    box-shadow: ${shadowList(hoverColor, { left: false, right: true, outlineColor: hoverOutlineColor })} !important;
-                    border-top-left-radius: 0 !important;
-                    border-bottom-left-radius: 0 !important;
-                }
-                .dr-sent.dr-fragment-end.dr-sentence-active {
-                    box-shadow: ${shadowList(color, { left: false, right: true, outlineColor: activeOutlineColor })} !important;
-                    border-top-left-radius: 0 !important;
-                    border-bottom-left-radius: 0 !important;
-                }
-            `;
-        } catch(e) {}
+            /* Fragment stitching – remove inner border-radius to avoid gaps */
+            .dr-sent.dr-fragment-start.dr-sentence-hover,
+            .dr-sent.dr-fragment-start.dr-sentence-active {
+                border-top-right-radius: 0 !important;
+                border-bottom-right-radius: 0 !important;
+            }
+            .dr-sent.dr-fragment-middle.dr-sentence-hover,
+            .dr-sent.dr-fragment-middle.dr-sentence-active {
+                border-radius: 0 !important;
+            }
+            .dr-sent.dr-fragment-end.dr-sentence-hover,
+            .dr-sent.dr-fragment-end.dr-sentence-active {
+                border-top-left-radius: 0 !important;
+                border-bottom-left-radius: 0 !important;
+            }
+        `;
+    } catch(e) {
+        console.warn('Error injecting highlight style:', e);
     }
-
+}
 	_injectFocusModeStyle(targetDoc) {
         try {
             let doc = targetDoc;
@@ -1678,6 +1650,16 @@ async function loadPDF(file, startPage = 1) {
         const task = pdfjsLib.getDocument(fileUrl);
         pdfDoc = await task.promise;
         documentHandler = null; // PDF uses pdfDoc directly
+		// Index all pages in background for search
+(async function indexAllPages() {
+    try {
+        for (let p = 1; p <= pdfDoc.numPages; p++) {
+            const page = await pdfDoc.getPage(p);
+            const tc = await page.getTextContent();
+            searchAllPageTexts[p] = tc.items.map(i => i.str).join(' ');
+        }
+    } catch(e) { console.warn('Indexing error:', e); }
+})();
 
         // 🔥 Clear TOC immediately to prevent stale items during rendering
         tocList.innerHTML = '';
@@ -2465,85 +2447,119 @@ searchClearBtn.addEventListener('click', clearSearch);
 
 let currentSearchId = 0;
 
+
 async function performSearch() {
-    const searchId = ++currentSearchId; // CHANGED: Track the active search execution
+    const searchId = ++currentSearchId;
     const query = searchInput.value.trim();
-    
-    if (!query || !pdfDoc) { clearSearch(); return; }
-    
+
+    if (!query) { clearSearch(); return; }
+
+    const isPdf = !!pdfDoc;
+    const isEpub = documentHandler instanceof EPUBHandler;
+    if (!isPdf && !isEpub) { clearSearch(); return; }
+
     searchClearBtn.style.display = '';
     searchCount.textContent = '…';
     searchResultsPanel.classList.add('visible');
     searchResultsList.innerHTML = '<div style="padding:14px 16px;color:var(--text-tertiary);font-size:13px">Searching…</div>';
     searchMatches = [];
-    
-    const lowerQuery = query.toLowerCase();
-    showLoading('Searching document…');
-    
-    for (let p = 1; p <= pdfDoc.numPages; p++) {
-        // CHANGED: Abort the loop if a new search was triggered
-        if (searchId !== currentSearchId) return; 
-        
-        const text = await getPageText(p);
-        const lowerText = text.toLowerCase();
-        let pos = 0;
-        while (true) {
-            const idx = lowerText.indexOf(lowerQuery, pos);
-            if (idx === -1) break;
-            const context = text.slice(Math.max(0, idx - 40), idx + query.length + 60);
-            searchMatches.push({ page: p, index: idx, context, query });
-            pos = idx + 1;
+
+    try {
+        if (isPdf) {
+            // ── PDF search ──
+            const lowerQuery = query.toLowerCase();
+            showLoading('Searching PDF…');
+            // If we haven't indexed all pages yet, do it now (but it's already done on load)
+            // Still, ensure we have text for all pages
+            for (let p = 1; p <= pdfDoc.numPages; p++) {
+                if (searchId !== currentSearchId) return;
+                let text = searchAllPageTexts[p];
+                if (text === undefined) {
+                    // fallback: fetch on the fly
+                    const page = await pdfDoc.getPage(p);
+                    const tc = await page.getTextContent();
+                    text = tc.items.map(i => i.str).join(' ');
+                    searchAllPageTexts[p] = text;
+                }
+                const lowerText = text.toLowerCase();
+                let pos = 0;
+                while (true) {
+                    const idx = lowerText.indexOf(lowerQuery, pos);
+                    if (idx === -1) break;
+                    const context = text.slice(Math.max(0, idx - 40), idx + query.length + 60);
+                    searchMatches.push({ page: p, index: idx, context, query });
+                    pos = idx + 1;
+                }
+            }
+            hideLoading();
+        } else if (isEpub) {
+            // ── EPUB search ──
+            const results = await documentHandler.search(query);
+            if (results && results.length) {
+                searchMatches = results.map(r => ({
+                    page: r.page,
+                    context: r.context || `(match on page ${r.page})`,
+                    query: query,
+                    index: 0
+                }));
+            } else {
+                searchMatches = [];
+            }
         }
-    }
-    
-    // CHANGED: Final check before updating the DOM to prevent race conditions
-    if (searchId !== currentSearchId) return; 
-    
-    hideLoading();
-    
-    if (searchMatches.length === 0) {
-        searchCount.textContent = '0';
-        searchResultsList.innerHTML = '<div class="toc-empty">No results found for <strong>"' + escapeHtml(query) + '"</strong></div>';
+
+        if (searchId !== currentSearchId) return;
+
+        if (searchMatches.length === 0) {
+            searchCount.textContent = '0';
+            searchResultsList.innerHTML = `<div class="toc-empty">No results found for <strong>"${escapeHtml(query)}"</strong></div>`;
+            searchCurrentMatch = -1;
+            searchPrevBtn.disabled = true;
+            searchNextBtn.disabled = true;
+            return;
+        }
+
+        searchCount.textContent = searchMatches.length;
+        resultsHeaderText.textContent = `${searchMatches.length} result${searchMatches.length !== 1 ? 's' : ''}`;
+        searchResultsList.innerHTML = '';
+
+        searchMatches.forEach((m, i) => {
+            const item = document.createElement('div');
+            item.className = 'search-result-item';
+            item.dataset.index = i;
+            const badge = document.createElement('span');
+            badge.className = 'result-page-badge';
+            badge.textContent = 'p.' + m.page;
+            const text = document.createElement('span');
+            text.className = 'result-text';
+
+            const context = m.context || `Match on page ${m.page}`;
+            const hi = context.toLowerCase().indexOf(query.toLowerCase());
+            if (hi >= 0) {
+                text.innerHTML =
+                    escapeHtml(context.slice(0, hi)) +
+                    '<em>' + escapeHtml(context.slice(hi, hi + query.length)) + '</em>' +
+                    escapeHtml(context.slice(hi + query.length));
+            } else {
+                text.textContent = context;
+            }
+
+            item.appendChild(badge);
+            item.appendChild(text);
+            item.addEventListener('click', () => goToSearchMatch(i));
+            searchResultsList.appendChild(item);
+        });
+
         searchCurrentMatch = -1;
-        searchPrevBtn.disabled = true;
-        searchNextBtn.disabled = true;
-        return;
+        searchPrevBtn.disabled = false;
+        searchNextBtn.disabled = false;
+        nextSearchMatch();
+
+    } catch (e) {
+        console.error('Search error:', e);
+        hideLoading();
+        searchCount.textContent = 'Error';
+        searchResultsList.innerHTML = `<div class="toc-empty">Search failed: ${e.message}</div>`;
     }
-    
-    searchCount.textContent = searchMatches.length;
-    resultsHeaderText.textContent = `${searchMatches.length} result${searchMatches.length !== 1 ? 's' : ''}`;
-    searchResultsList.innerHTML = '';
-    
-    searchMatches.forEach((m, i) => {
-        const item = document.createElement('div');
-        item.className = 'search-result-item';
-        item.dataset.index = i;
-        const badge = document.createElement('span');
-        badge.className = 'result-page-badge';
-        badge.textContent = 'p.' + m.page;
-        const text = document.createElement('span');
-        text.className = 'result-text';
-        
-        const hi = m.context.toLowerCase().indexOf(m.query.toLowerCase());
-        if (hi >= 0) {
-            text.innerHTML =
-                escapeHtml(m.context.slice(0, hi)) +
-                '<em>' + escapeHtml(m.context.slice(hi, hi + m.query.length)) + '</em>' +
-                escapeHtml(m.context.slice(hi + m.query.length));
-        } else {
-            text.textContent = m.context;
-        }
-        
-        item.appendChild(badge);
-        item.appendChild(text);
-        item.addEventListener('click', () => goToSearchMatch(i));
-        searchResultsList.appendChild(item);
-    });
-    
-    searchCurrentMatch = -1;
-    searchPrevBtn.disabled = false;
-    searchNextBtn.disabled = false;
-    nextSearchMatch();
 }
 
 function goToSearchMatch(idx) {
@@ -2555,12 +2571,33 @@ function goToSearchMatch(idx) {
         el.classList.toggle('active', i === idx);
     });
     document.querySelectorAll('.search-result-item')[idx]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-    if (match.page !== pageNum) {
-        goToAbsolutePage(match.page, () => highlightSearchOnPage(match.query));
-    } else {
-        highlightSearchOnPage(match.query);
+
+    const targetPage = match.page;
+    if (targetPage && targetPage > 0) {
+        const isEpub = documentHandler instanceof EPUBHandler;
+        if (isEpub) {
+            epubGoToPage(targetPage);
+        } else if (pdfDoc) {
+            goToAbsolutePage(targetPage);
+        }
+    }
+
+    // Highlight search term on PDF (if it's a PDF and we have a query)
+    if (pdfDoc && match.query) {
+        // Wait for page render, then highlight
+        const highlight = () => {
+            // ensure we are on the right page
+            if (pageNum === targetPage) {
+                highlightSearchOnPage(match.query);
+            } else {
+                // if page changed, re-attempt after a short delay
+                setTimeout(highlight, 200);
+            }
+        };
+        setTimeout(highlight, 300);
     }
 }
+
 function nextSearchMatch() {
     goToSearchMatch(searchCurrentMatch + 1 < searchMatches.length ? searchCurrentMatch + 1 : 0);
 }

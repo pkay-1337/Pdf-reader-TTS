@@ -2114,3 +2114,21 @@ mark.reading-highlight {
     width: 0px !important;
     background: transparent !important;
 }
+/* ─── HIDE MAIN DOCUMENT SCROLLBAR ─── */
+.pdf-viewer-area {
+    scrollbar-width: none !important;          /* Firefox */
+    -ms-overflow-style: none !important;       /* IE / Edge */
+}
+
+.pdf-viewer-area::-webkit-scrollbar {
+    display: none !important;
+    width: 0 !important;
+    height: 0 !important;
+    background: transparent !important;
+}
+
+.pdf-viewer-area::-webkit-scrollbar-track,
+.pdf-viewer-area::-webkit-scrollbar-thumb {
+    display: none !important;
+    background: transparent !important;
+}
