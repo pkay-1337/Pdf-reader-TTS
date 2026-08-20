@@ -93,6 +93,7 @@ let hlHoverOpacity = 0.18;
 let hlRadius = 3;
 let hlOutline = false;
 let hlPadding = 1;
+let focusModeEnabled = false;
 let playbackSpeed = 1.0;
 const pageStats = {};
 let topbarVisible = true;
@@ -280,17 +281,19 @@ function addPdfToList(doc, listEl) {
     item.addEventListener('click', async () => {
         item.style.opacity = '0.5';
         item.style.pointerEvents = 'none';
+        // Always build the URL ourselves instead of trusting the server's raw (unencoded) `url`
+        // field, so we know for certain it's a valid, properly-encoded request.
+        const url = `/documents/${encodeURIComponent(doc.name)}`;
         try {
-            const url = doc.url || `/documents/${encodeURIComponent(doc.name)}`;
             const res = await fetch(url);
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
             const blob = await res.blob();
             const mimeType = isEpub ? 'application/epub+zip' : 'application/pdf';
             const file = new File([blob], doc.name, { type: mimeType });
             loadDocument(file, 1);
         } catch (err) {
-            console.error(`[SERVER-DOC] Failed to load ${doc.name}:`, err);
-            alert(`Could not load "${doc.name}" from server. Is the server running?`);
+            console.error(`[SERVER-DOC] Failed to load ${doc.name} (url=${url}):`, err);
+            alert(`Could not load "${doc.name}" from server.\nURL: ${url}\nError: ${err && err.message ? err.message : err}`);
             item.style.opacity = '';
             item.style.pointerEvents = '';
         }
@@ -391,6 +394,26 @@ document.getElementById('hl-outline-toggle').addEventListener('change', e => {
     applyHighlightSettings();
     saveHighlightSettings();
 });
+
+/* ─── Focus Mode ─── */
+const focusModeBtn = document.getElementById('focus-mode-btn');
+const focusModeToggle = document.getElementById('focus-mode-toggle');
+function setFocusMode(enabled) {
+    focusModeEnabled = !!enabled;
+    if (focusModeBtn) focusModeBtn.classList.toggle('active', focusModeEnabled);
+    if (focusModeToggle) focusModeToggle.checked = focusModeEnabled;
+    localStorage.setItem('docreader-focus-mode', focusModeEnabled ? '1' : '0');
+    if (documentHandler instanceof EPUBHandler) {
+        documentHandler.setFocusMode(focusModeEnabled);
+    }
+}
+if (focusModeBtn) focusModeBtn.addEventListener('click', () => setFocusMode(!focusModeEnabled));
+if (focusModeToggle) focusModeToggle.addEventListener('change', e => setFocusMode(e.target.checked));
+// Restore saved preference (UI only here — EPUBHandler isn't defined yet at this point in the
+// file, so don't touch documentHandler; it gets applied once a book actually loads instead)
+focusModeEnabled = localStorage.getItem('docreader-focus-mode') === '1';
+if (focusModeBtn) focusModeBtn.classList.toggle('active', focusModeEnabled);
+if (focusModeToggle) focusModeToggle.checked = focusModeEnabled;
 
 /* ─── Sidebar Tabs ─── */
 tabToc.addEventListener('click', () => {
@@ -670,7 +693,9 @@ async function loadSettings(bookName) {
 
 /* ─── Document dispatcher ─── */
 function isEpubFile(file) {
-    return file.type === 'application/epub+zip' || file.name.toLowerCase().endsWith('.epub');
+    const result = file.type === 'application/epub+zip' || file.name.toLowerCase().endsWith('.epub');
+    console.log(`[isEpubFile] name="${file.name}" type="${file.type}" -> ${result}`);
+    return result;
 }
 async function loadDocument(file, startPage = 1) {
     if (isEpubFile(file)) {
@@ -695,6 +720,7 @@ class EPUBHandler {
         this.chapterCharMap = {};
         this._destroyed = false;
         this._rendering = false; // guard against concurrent renders
+        this._focusMode = false;
     }
 
 	async load(file, startPage, containerEl, scale, theme) {
@@ -746,6 +772,10 @@ class EPUBHandler {
                 }));
             });
             
+            // 1b. Re-apply focus mode (dim everything but the active sentence) on every content render
+            this._injectFocusModeStyle(doc);
+            if (this._focusMode) doc.body.classList.add('dr-focus-mode');
+
             // 2. Hardware scroll lag fix
             let epubScrollTimeout;
             win.addEventListener('scroll', () => {
@@ -1286,6 +1316,15 @@ class EPUBHandler {
 
             this.currentPage = safePageNum;
             this._injectReadingStyle();
+            this._injectFocusModeStyle();
+            if (this._focusMode) {
+                try {
+                    const contents = this.rendition.getContents();
+                    if (contents && contents[0] && contents[0].document) {
+                        contents[0].document.body.classList.add('dr-focus-mode');
+                    }
+                } catch(e) {}
+            }
             this._lastHighlightNormIndex = 0; 
             
             const { text, sentenceCfiMap } = this._extractTextFromRendition();
@@ -1421,10 +1460,24 @@ class EPUBHandler {
             const radius = hlRadius + 'px';
             const pad = hlPadding;
 
-            const activeOutline = hlOutline 
-                ? `0 0 0 1px rgba(${hlBaseColor}, ${Math.min(1, hlOpacity * 2.5)})` 
-                : 'none';
-            const hoverOutline = `0 0 0 1px rgba(${hlBaseColor}, ${Math.min(1, hlOpacity)})`;
+            const activeOutlineColor = hlOutline
+                ? `rgba(${hlBaseColor}, ${Math.min(1, hlOpacity * 2.5)})`
+                : null;
+            const hoverOutlineColor = `rgba(${hlBaseColor}, ${Math.min(1, hlOpacity)})`;
+
+            // Build a box-shadow list for a given fill colour, choosing which sides get the
+            // horizontal "bleed" (padding-like extension past the text) and whether to include
+            // the outline ring. We use box-shadow instead of padding+negative-margin for the
+            // bleed because box-decoration-break:clone renders that combo inconsistently across
+            // wrapped lines in Chromium (first line gets full padding, later lines get less/none).
+            // A same-shaped, offset box-shadow clones correctly on every wrapped line instead.
+            const shadowList = (fill, { left, right, outlineColor }) => {
+                const parts = [];
+                if (left)  parts.push(`-${pad}px 0 0 ${fill}`);
+                if (right) parts.push(`${pad}px 0 0 ${fill}`);
+                if (outlineColor) parts.push(`0 0 0 1px ${outlineColor}`);
+                return parts.length ? parts.join(', ') : 'none';
+            };
 
             s.textContent = `
                 /* ── Sentence hover & active highlight ── */
@@ -1433,45 +1486,110 @@ class EPUBHandler {
                     background-color: transparent !important;
                     box-shadow: none !important;
                     transition: background-color 0.08s ease, box-shadow 0.08s ease !important;
-                    
-                    /* Plush padding and radius is back! */
+
                     border-radius: ${radius} !important;
-                    padding: ${pad}px !important;
-                    margin: 0 -${pad}px !important;
-                    
+                    /* Vertical breathing room only — horizontal bleed comes from box-shadow below,
+                       so every wrapped line gets an identical, correctly-cloned left/right inset. */
+                    padding: ${pad}px 0 !important;
+                    margin: 0 !important;
+
                     box-decoration-break: clone !important;
                     -webkit-box-decoration-break: clone !important;
                 }
                 .dr-sent.dr-sentence-hover {
                     background-color: ${hoverColor} !important;
-                    box-shadow: ${hoverOutline} !important;
+                    box-shadow: ${shadowList(hoverColor, { left: true, right: true, outlineColor: hoverOutlineColor })} !important;
                 }
                 .dr-sent.dr-sentence-active {
                     background-color: ${color} !important;
-                    box-shadow: ${activeOutline} !important;
+                    box-shadow: ${shadowList(color, { left: true, right: true, outlineColor: activeOutlineColor })} !important;
                 }
 
-                /* ── Fragment Stitching (Prevents overlapping transparency) ── */
-                .dr-sent.dr-fragment-start {
-                    padding-right: 0 !important;
-                    margin-right: 0 !important;
+                /* ── Fragment Stitching (multiple DOM-split spans for one sentence) ──
+                   Suppress the bleed on whichever side touches the next/previous fragment so
+                   adjacent fragments connect cleanly instead of double-bleeding at the seam. */
+                .dr-sent.dr-fragment-start.dr-sentence-hover {
+                    box-shadow: ${shadowList(hoverColor, { left: true, right: false, outlineColor: hoverOutlineColor })} !important;
                     border-top-right-radius: 0 !important;
                     border-bottom-right-radius: 0 !important;
                 }
-                .dr-sent.dr-fragment-middle {
-                    padding-left: 0 !important;
-                    padding-right: 0 !important;
-                    margin-left: 0 !important;
-                    margin-right: 0 !important;
+                .dr-sent.dr-fragment-start.dr-sentence-active {
+                    box-shadow: ${shadowList(color, { left: true, right: false, outlineColor: activeOutlineColor })} !important;
+                    border-top-right-radius: 0 !important;
+                    border-bottom-right-radius: 0 !important;
+                }
+                .dr-sent.dr-fragment-middle.dr-sentence-hover {
+                    box-shadow: ${shadowList(hoverColor, { left: false, right: false, outlineColor: hoverOutlineColor })} !important;
                     border-radius: 0 !important;
                 }
-                .dr-sent.dr-fragment-end {
-                    padding-left: 0 !important;
-                    margin-left: 0 !important;
+                .dr-sent.dr-fragment-middle.dr-sentence-active {
+                    box-shadow: ${shadowList(color, { left: false, right: false, outlineColor: activeOutlineColor })} !important;
+                    border-radius: 0 !important;
+                }
+                .dr-sent.dr-fragment-end.dr-sentence-hover {
+                    box-shadow: ${shadowList(hoverColor, { left: false, right: true, outlineColor: hoverOutlineColor })} !important;
+                    border-top-left-radius: 0 !important;
+                    border-bottom-left-radius: 0 !important;
+                }
+                .dr-sent.dr-fragment-end.dr-sentence-active {
+                    box-shadow: ${shadowList(color, { left: false, right: true, outlineColor: activeOutlineColor })} !important;
                     border-top-left-radius: 0 !important;
                     border-bottom-left-radius: 0 !important;
                 }
             `;
+        } catch(e) {}
+    }
+
+	_injectFocusModeStyle(targetDoc) {
+        try {
+            let doc = targetDoc;
+            if (!doc) {
+                const contents = this.rendition.getContents();
+                if (!contents || !contents.length) return;
+                doc = contents[0].document;
+            }
+            if (!doc || !doc.head) return;
+
+            const id = 'epub-focus-style';
+            let s = doc.getElementById(id);
+            if (!s) {
+                s = doc.createElement('style');
+                s.id = id;
+                doc.head.appendChild(s);
+            }
+
+            s.textContent = `
+                /* ── Focus mode: dim everything except the active reading sentence ── */
+                body.dr-focus-mode .dr-sent,
+                body.dr-focus-mode img,
+                body.dr-focus-mode svg,
+                body.dr-focus-mode figure {
+                    opacity: 0.2 !important;
+                    filter: saturate(0.5) blur(0.15px) !important;
+                    transition: opacity 0.4s ease, filter 0.4s ease !important;
+                }
+                body.dr-focus-mode .dr-sent.dr-sentence-active {
+                    opacity: 1 !important;
+                    filter: none !important;
+                    text-shadow: 0 0 22px rgba(${hlBaseColor}, 0.35) !important;
+                }
+                body.dr-focus-mode .dr-sent.dr-sentence-hover:not(.dr-sentence-active) {
+                    opacity: 0.55 !important;
+                    filter: none !important;
+                }
+            `;
+        } catch(e) {}
+    }
+
+	setFocusMode(enabled) {
+        this._focusMode = !!enabled;
+        try {
+            const contents = this.rendition && this.rendition.getContents();
+            if (contents && contents[0] && contents[0].document) {
+                const doc = contents[0].document;
+                this._injectFocusModeStyle(doc);
+                doc.body.classList.toggle('dr-focus-mode', this._focusMode);
+            }
         } catch(e) {}
     }
 
@@ -1614,7 +1732,7 @@ async function loadPDF(file, startPage = 1) {
 
     } catch (err) {
         console.error(err);
-        alert('Failed to load PDF.');
+        alert(`Failed to load PDF.\nFile: "${file.name}" (type="${file.type}")\nError: ${err && err.message ? err.message : err}`);
         resetUI();
     } finally {
         hideLoading();
@@ -1693,6 +1811,7 @@ async function loadEPUB(file, startPage = 1) {
         const viewerArea = document.getElementById('pdf-viewer-area');
         const currentTheme = localStorage.getItem('docreader-theme') || 'default-light';
         await documentHandler.load(file, pageNum, viewerArea, scale, currentTheme);
+        documentHandler.setFocusMode(focusModeEnabled);
 
         // Update page count
         const totalPages = documentHandler.pageCount;
@@ -2991,6 +3110,7 @@ document.addEventListener('keydown', e => {
     if (tag === 'input' || tag === 'select' || tag === 'textarea') return;
     if (e.key === 'Escape') { resetUI(); return; }
     if (e.key === 's' || e.key === 'S') { toggleSidebar(); return; }
+    if (e.key === 'f' || e.key === 'F') { setFocusMode(!focusModeEnabled); return; }
     if (!pdfDoc && !(documentHandler instanceof EPUBHandler)) return;
     if (e.key === 'ArrowLeft' || e.key.toLowerCase() === 'h') goToPage(-1);
     if (e.key === 'ArrowRight' || e.key.toLowerCase() === 'l') goToPage(1);

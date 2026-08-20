@@ -1,6 +1,7 @@
 pdfjsLib.GlobalWorkerOptions.workerSrc = '/static/pdfjs/pdf.worker.min.js';
 
 /* ─── State ─── */
+let rest = 500;
 let topSkipLines = 0;
 let bottomSkipLines = 0;
 let pdfDoc = null;          // kept for PDF-specific legacy references
@@ -86,7 +87,9 @@ const WS = {
 
 /* ─── Highlight customisation state ─── */
 let hlBaseColor = '59,130,246';
+let epubSidePadding = 28;
 let hlOpacity = 0.32;
+let hlHoverOpacity = 0.18;
 let hlRadius = 3;
 let hlOutline = false;
 let hlPadding = 1;
@@ -223,6 +226,22 @@ if (window.screen.orientation) {
     });
 }
 
+/*update padding*/
+const epubPaddingSlider = document.getElementById('epub-padding-slider');
+const epubPaddingVal = document.getElementById('epub-padding-val');
+
+if (epubPaddingSlider) {
+    epubPaddingSlider.addEventListener('input', e => {
+        epubSidePadding = parseInt(e.target.value, 10);
+        if (epubPaddingVal) epubPaddingVal.textContent = epubSidePadding + 'px';
+        
+        // Live update the iframe styling if an EPUB is currently active
+        if (documentHandler instanceof EPUBHandler) {
+            documentHandler._injectReadingStyle();
+        }
+    });
+}
+
 /* ─── Server Document Library (WebSocket-driven) ─── */
 function renderPdfList(docs) {
     const section = document.getElementById('server-pdf-section');
@@ -351,6 +370,19 @@ document.getElementById('hl-opacity-slider').addEventListener('input', e => {
 document.getElementById('hl-radius-slider').addEventListener('input', e => {
     hlRadius = parseInt(e.target.value, 10);
     document.getElementById('hl-radius-val').textContent = e.target.value + 'px';
+    applyHighlightSettings();
+    saveHighlightSettings();
+});
+document.getElementById('hl-padding-slider').addEventListener('input', e => {
+    hlPadding = parseInt(e.target.value, 10);
+    document.getElementById('hl-padding-val').textContent = e.target.value + 'px';
+    applyHighlightSettings();
+    saveHighlightSettings();
+});
+
+document.getElementById('hl-hover-opacity-slider').addEventListener('input', e => {
+    hlHoverOpacity = parseInt(e.target.value, 10) / 100;
+    document.getElementById('hl-hover-opacity-val').textContent = e.target.value + '%';
     applyHighlightSettings();
     saveHighlightSettings();
 });
@@ -491,7 +523,7 @@ dbReq.onerror = e => {
 };
 function saveHighlightSettings() {
     if (!db) return;
-    const payload = { hlBaseColor, hlOpacity, hlRadius, hlOutline, hlPadding };
+    const payload = { hlBaseColor, hlOpacity, hlHoverOpacity, hlRadius, hlOutline, hlPadding };
     db.transaction(['settings'], 'readwrite').objectStore('settings').put(payload, 'highlight');
 }
 function loadHighlightSettings() {
@@ -505,6 +537,13 @@ function loadHighlightSettings() {
         if (s.hlRadius !== undefined) hlRadius = s.hlRadius;
         if (s.hlOutline !== undefined) hlOutline = s.hlOutline;
         if (s.hlPadding !== undefined) hlPadding = s.hlPadding;
+        if (s.hlHoverOpacity !== undefined) hlHoverOpacity = s.hlHoverOpacity; // Add this line
+		document.getElementById('hl-padding-slider').value = hlPadding;
+        document.getElementById('hl-padding-val').textContent = hlPadding + 'px';
+        
+        const hoverPct = Math.round(hlHoverOpacity * 100);
+        document.getElementById('hl-hover-opacity-slider').value = hoverPct;
+        document.getElementById('hl-hover-opacity-val').textContent = hoverPct + '%';
         const opacityPct = Math.round(hlOpacity * 100);
         document.getElementById('hl-opacity-slider').value = opacityPct;
         document.getElementById('hl-opacity-val').textContent = opacityPct + '%';
@@ -658,22 +697,19 @@ class EPUBHandler {
         this._rendering = false; // guard against concurrent renders
     }
 
-    async load(file, startPage, containerEl, scale, theme) {
+	async load(file, startPage, containerEl, scale, theme) {
         this._destroyed = false;
         const arrayBuffer = await file.arrayBuffer();
         const EpubJS = window.ePub || window.epub || (window.ePub = ePub);
         this.book = EpubJS(arrayBuffer);
         await this.book.ready;
 
-        // Build chapter list from spine
         this.spineItems = [];
         this.book.spine.each(item => this.spineItems.push(item));
         this.pageCount = this.spineItems.length || 1;
-        console.log(`[EPUB] Spine has ${this.pageCount} chapters`);
 
         const viewerEl = document.getElementById('epub-viewer');
         viewerEl.innerHTML = '';
-
         const epubContainer = document.getElementById('epub-container');
         const width  = epubContainer.clientWidth  || window.innerWidth;
         const height = epubContainer.clientHeight || window.innerHeight;
@@ -681,32 +717,106 @@ class EPUBHandler {
         this.rendition = this.book.renderTo(viewerEl, {
             width:  width,
             height: height,
-            flow:   'scrolled-doc',   // full chapter, scrollable
+            flow:   'scrolled-doc',
             spread: 'none',
             minSpreadWidth: 9999,
         });
 
-		this.rendition.hooks.content.register((contents) => {
-            const iframeWin = contents.window;
-            const iframeDoc = contents.document;
+        // --- THE MAGIC HOOK: Runs on EVERY render/resize ---
+        this.rendition.hooks.content.register((contents) => {
+            const doc = contents.document;
+            const win = contents.window;
             
-            // Bridge keyboard events to parent
-            iframeWin.addEventListener('keydown', (e) => {
-                const event = new KeyboardEvent('keydown', { key: e.key });
-                window.dispatchEvent(event);
+            // 1. Bridge keyboard events (j, k, arrows) to parent window
+            win.addEventListener('keydown', (e) => {
+                // Prevent default inside iframe for navigation keys so the page doesn't scroll
+                const navKeys = ['j','k','J','K','ArrowDown','ArrowUp','ArrowLeft','ArrowRight','h','l','H','L',' '];
+                if (navKeys.includes(e.key)) e.preventDefault();
+                // Re-dispatch on the parent document so the main keydown handler picks it up.
+                // bubbles:true is required; cancelable:true lets preventDefault work.
+                document.dispatchEvent(new KeyboardEvent('keydown', {
+                    key: e.key,
+                    code: e.code,
+                    shiftKey: e.shiftKey,
+                    ctrlKey: e.ctrlKey,
+                    altKey: e.altKey,
+                    metaKey: e.metaKey,
+                    bubbles: true,
+                    cancelable: true,
+                }));
             });
             
-            // Fix scrolling lag
+            // 2. Hardware scroll lag fix
             let epubScrollTimeout;
-            iframeWin.addEventListener('scroll', () => {
-                if (!iframeDoc.body.classList.contains('is-scrolling')) iframeDoc.body.classList.add('is-scrolling');
+            win.addEventListener('scroll', () => {
+                if (!doc.body.classList.contains('is-scrolling')) doc.body.classList.add('is-scrolling');
                 clearTimeout(epubScrollTimeout);
-                epubScrollTimeout = setTimeout(() => iframeDoc.body.classList.remove('is-scrolling'), 150);
+                epubScrollTimeout = setTimeout(() => doc.body.classList.remove('is-scrolling'), 150);
             }, { passive: true });
-            
-            const s = iframeDoc.createElement('style');
-            s.textContent = `body { will-change: scroll-position; transform: translateZ(0); } body.is-scrolling * { pointer-events: none !important; }`;
-            iframeDoc.head.appendChild(s);
+
+            // 5. Hover: pinpoint which individual sentence the cursor is over.
+            //    We use caretRangeFromPoint (or caretPositionFromPoint in Firefox)
+            //    to get the exact text node + offset under the pointer, then walk
+            //    up to the nearest [data-dr-sentences] block and figure out which
+            //    specific sentence index that character belongs to. Only that one
+            //    sentence gets the hover class — not the whole paragraph block.
+			// 5. Hover: pinpoint which individual sentence the cursor is over.
+            let _epubHoverIdx = -1;
+            win.addEventListener('mousemove', (e) => {
+                const span = e.target.closest && e.target.closest('.dr-sent');
+                if (!span) { _clearEpubHover(); return; }
+
+                const bestSentIdx = Number(span.getAttribute('data-sent-idx'));
+                if (isNaN(bestSentIdx) || bestSentIdx === _epubHoverIdx) return;
+
+                _clearEpubHover();
+                _epubHoverIdx = bestSentIdx;
+
+                // Apply hover class and fragment stitching
+                const fragments = doc.querySelectorAll(`.dr-sent[data-sent-idx="${bestSentIdx}"]`);
+                fragments.forEach((el, i) => {
+                    el.classList.add('dr-sentence-hover');
+                    if (fragments.length > 1) {
+                        if (i === 0) el.classList.add('dr-fragment-start');
+                        else if (i === fragments.length - 1) el.classList.add('dr-fragment-end');
+                        else el.classList.add('dr-fragment-middle');
+                    }
+                });
+            });
+
+			function _clearEpubHover() {
+                if (_epubHoverIdx === -1) return;
+                doc.querySelectorAll('.dr-sent.dr-sentence-hover')
+                   .forEach(el => {
+                       el.classList.remove('dr-sentence-hover');
+                       // Only remove stitching if it isn't currently playing!
+                       if (!el.classList.contains('dr-sentence-active')) {
+                           el.classList.remove('dr-fragment-start', 'dr-fragment-middle', 'dr-fragment-end');
+                       }
+                   });
+                _epubHoverIdx = -1;
+            }
+
+            win.addEventListener('mouseleave', _clearEpubHover);
+
+            // 3. Group consecutive code blocks natively into one div
+            const codeBlocks = Array.from(doc.querySelectorAll('p.snippet, p.code, div.snippet, div.code, pre'));
+            let currentWrapper = null;
+            codeBlocks.forEach(el => {
+                const prev = el.previousElementSibling;
+                if (prev && prev === currentWrapper) {
+                    currentWrapper.appendChild(el);
+                } else {
+                    currentWrapper = doc.createElement('div');
+                    currentWrapper.className = 'docreader-code-wrapper';
+                    el.parentNode.insertBefore(currentWrapper, el);
+                    currentWrapper.appendChild(el);
+                }
+            });
+
+            // 4. Force-inject styles to survive resizes
+            this._injectReadingStyle(doc);
+            this._injectHighlightStyle(doc);
         });
 
         this._registerThemes();
@@ -717,28 +827,6 @@ class EPUBHandler {
         this._loadChapterStats();
     }
 
-	_injectReadingStyle() {
-        try {
-            const contents = this.rendition.getContents();
-            if (!contents || !contents.length) return;
-            const doc = contents[0].document;
-            if (!doc || !doc.head) return;
-            const id = 'epub-reader-style';
-            if (doc.getElementById(id)) return;
-            const s = doc.createElement('style');
-            s.id = id;
-            s.textContent = `
-                @font-face { font-family: 'Mononoki'; src: url('${window.location.origin}/static/fonts/mononoki-Regular.ttf') format('truetype'); }
-                * { font-family: 'Mononoki', monospace !important; }
-                body {  margin: 0 auto; padding: 20px 28px 60px; box-sizing: border-box; word-wrap: break-word; }
-                img, svg, figure { max-width: 100%; height: auto; }
-                h1,h2,h3,h4,h5,h6 { margin-top: 1.4em; margin-bottom: 0.5em; line-height: 1.3; }
-                p { margin: 0 0 0.9em; }
-                pre, code { white-space: pre-wrap; word-break: break-all; }
-            `;
-            doc.head.appendChild(s);
-        } catch(e) {}
-    }
 
     _registerThemes() {
         const resetStyles = { 'background': 'transparent !important', 'border-color': 'currentColor !important' };
@@ -792,6 +880,56 @@ class EPUBHandler {
                 'body': { 'background': '#1e1e2e', 'color': '#cdd6f4', 'line-height': '1.7', 'padding': '20px 32px' },
                 'div, blockquote, figure, aside, section': resetStyles,
                 'h1, h2, h3, h4, h5, h6': { 'color': '#cba6f7' }, 'strong, b': { 'color': '#f38ba8' }, 'em, i': { 'color': '#a6e3a1' }
+            },
+            'tokyo-night': {
+                'body': { 'background': '#1a1b26', 'color': '#a9b1d6', 'line-height': '1.7', 'padding': '20px 32px' },
+                'div, blockquote, figure, aside, section': resetStyles,
+                'h1, h2, h3, h4, h5, h6': { 'color': '#7aa2f7' }, 'strong, b': { 'color': '#f7768e' }, 'em, i': { 'color': '#9ece6a' }
+            },
+            'tokyo-night-light': {
+                'body': { 'background': '#d5d6db', 'color': '#343b58', 'line-height': '1.7', 'padding': '20px 32px' },
+                'div, blockquote, figure, aside, section': resetStyles,
+                'h1, h2, h3, h4, h5, h6': { 'color': '#3760bf' }, 'strong, b': { 'color': '#f52a65' }, 'em, i': { 'color': '#587539' }
+            },
+            'everforest-dark': {
+                'body': { 'background': '#2d353b', 'color': '#d3c6aa', 'line-height': '1.7', 'padding': '20px 32px' },
+                'div, blockquote, figure, aside, section': resetStyles,
+                'h1, h2, h3, h4, h5, h6': { 'color': '#a7c080' }, 'strong, b': { 'color': '#e67e80' }, 'em, i': { 'color': '#dbbc7f' }
+            },
+            'everforest-light': {
+                'body': { 'background': '#fdf6e3', 'color': '#5c6a72', 'line-height': '1.7', 'padding': '20px 32px' },
+                'div, blockquote, figure, aside, section': resetStyles,
+                'h1, h2, h3, h4, h5, h6': { 'color': '#8da101' }, 'strong, b': { 'color': '#f85552' }, 'em, i': { 'color': '#dfa000' }
+            },
+            'ayu-dark': {
+                'body': { 'background': '#0b0e14', 'color': '#b3b1ad', 'line-height': '1.7', 'padding': '20px 32px' },
+                'div, blockquote, figure, aside, section': resetStyles,
+                'h1, h2, h3, h4, h5, h6': { 'color': '#39bae6' }, 'strong, b': { 'color': '#ff8f40' }, 'em, i': { 'color': '#aad94c' }
+            },
+            'ayu-light': {
+                'body': { 'background': '#fafafa', 'color': '#575f66', 'line-height': '1.7', 'padding': '20px 32px' },
+                'div, blockquote, figure, aside, section': resetStyles,
+                'h1, h2, h3, h4, h5, h6': { 'color': '#399ee6' }, 'strong, b': { 'color': '#f2ae49' }, 'em, i': { 'color': '#86b300' }
+            },
+            'rosepine': {
+                'body': { 'background': '#191724', 'color': '#e0def4', 'line-height': '1.7', 'padding': '20px 32px' },
+                'div, blockquote, figure, aside, section': resetStyles,
+                'h1, h2, h3, h4, h5, h6': { 'color': '#c4a7e7' }, 'strong, b': { 'color': '#eb6f92' }, 'em, i': { 'color': '#31748f' }
+            },
+            'rosepine-dawn': {
+                'body': { 'background': '#faf4ed', 'color': '#575279', 'line-height': '1.7', 'padding': '20px 32px' },
+                'div, blockquote, figure, aside, section': resetStyles,
+                'h1, h2, h3, h4, h5, h6': { 'color': '#907aa9' }, 'strong, b': { 'color': '#b4637a' }, 'em, i': { 'color': '#286983' }
+            },
+            'paper': {
+                'body': { 'background': '#f2ede4', 'color': '#3a3226', 'line-height': '1.8', 'padding': '20px 32px' },
+                'div, blockquote, figure, aside, section': resetStyles,
+                'h1, h2, h3, h4, h5, h6': { 'color': '#5a3e28' }, 'strong, b': { 'color': '#7c4a1e' }, 'em, i': { 'color': '#8b6f47' }
+            },
+            'midnight': {
+                'body': { 'background': '#000000', 'color': '#cccccc', 'line-height': '1.7', 'padding': '20px 32px' },
+                'div, blockquote, figure, aside, section': resetStyles,
+                'h1, h2, h3, h4, h5, h6': { 'color': '#ffffff' }, 'strong, b': { 'color': '#aaaaaa' }, 'em, i': { 'color': '#888888' }
             }
         };
         Object.entries(themeMap).forEach(([name, css]) => {
@@ -809,129 +947,138 @@ class EPUBHandler {
         try { this.rendition.themes.fontSize(pct + '%'); } catch (e) {}
     }
 
-    async renderPage(pageNum) {
-        if (this._destroyed) return;
-        if (this._rendering) return;   // block concurrent calls
-        this._rendering = true;
-        try {
-            this.currentPage = Math.max(1, Math.min(pageNum, this.pageCount));
-            const item = this.spineItems[this.currentPage - 1];
-            if (!item) return;
-
-            await new Promise(async (resolve) => {
-                let done = false;
-                const finish = () => { if (!done) { done = true; resolve(); } };
-                // timeout safety net
-                const timer = setTimeout(finish, 4000);
-                try {
-                    this.rendition.once('rendered', () => { clearTimeout(timer); finish(); });
-                    await this.rendition.display(item.href);
-                } catch(e) {
-                    clearTimeout(timer);
-                    finish();
-                }
-            });
-
-            // Scroll iframe back to top for this new chapter
-            try {
-                const contents = this.rendition.getContents();
-                if (contents && contents[0] && contents[0].window) {
-                    contents[0].window.scrollTo(0, 0);
-                }
-            } catch(e) {}
-
-            // Inject reading style + extract text
-            this._injectReadingStyle();
-            const { text, sentenceCfiMap } = this._extractTextFromRendition();
-            this.currentText = text;
-            this.currentSentences = splitIntoTTSChunks(text, 250);
-            this.sentenceCfiMap = sentenceCfiMap;
-            return { text, sentences: this.currentSentences };
-        } finally {
-            this._rendering = false;
-        }
-    }
 
 
 	_extractTextFromRendition() {
+    try {
+        const contents = this.rendition.getContents();
+        if (!contents || !contents.length) return { text: '', sentenceCfiMap: {} };
+        const doc = contents[0].document;
+        if (!doc || !doc.body) return { text: '', sentenceCfiMap: {} };
+
+        // CLEANUP: Remove old spans before walking the DOM to ensure clean nodeRanges
         try {
-            const contents = this.rendition.getContents();
-            if (!contents || !contents.length) return { text: '', sentenceCfiMap: {} };
-            const doc = contents[0].document;
-            if (!doc || !doc.body) return { text: '', sentenceCfiMap: {} };
+            doc.querySelectorAll('.dr-sent').forEach(el => {
+                const parent = el.parentNode;
+                while (el.firstChild) parent.insertBefore(el.firstChild, el);
+                parent.removeChild(el);
+            });
+            doc.body.normalize(); 
+        } catch(e) {}
 
-            const BLOCK_TAGS = new Set(['p','div','h1','h2','h3','h4','h5','h6',
-                'li','tr','blockquote','section','article','header','footer',
-                'figure','figcaption','pre','br']);
-            const INLINE_TAGS = new Set(['em', 'i', 'b', 'strong', 'a', 'span', 'sub', 'sup', 'code', 'mark']);
-
-            const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, {
-                acceptNode: (node) => {
-                    const p = node.parentElement;
-                    if (!p) return NodeFilter.FILTER_REJECT;
-                    const tag = (p.tagName || '').toLowerCase();
+        const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_ALL, {
+            acceptNode: (n) => {
+                if (n.nodeType === Node.TEXT_NODE) return NodeFilter.FILTER_ACCEPT;
+                if (n.nodeType === Node.ELEMENT_NODE) {
+                    const tag = n.tagName.toLowerCase();
                     if (['script','style','nav','aside'].includes(tag)) return NodeFilter.FILTER_REJECT;
-                    const cs = doc.defaultView ? doc.defaultView.getComputedStyle(p) : null;
-                    if (cs && (cs.display === 'none' || cs.visibility === 'hidden')) return NodeFilter.FILTER_REJECT;
-                    return NodeFilter.FILTER_ACCEPT;
+                    if (tag === 'br') return NodeFilter.FILTER_ACCEPT;
                 }
-            });
-
-            let fullText = '';
-            const nodeRanges = [];
-            let lastParentBlock = null;
-            let node;
-
-            while ((node = walker.nextNode())) {
-                const t = node.textContent.replace(/[\r\n\t]+/g, ' '); 
-                if (!t.trim() && t !== ' ') continue;
-
-                const parent = node.parentElement;
-                const tag = parent ? (parent.tagName || '').toLowerCase() : '';
-                const isBlock = BLOCK_TAGS.has(tag);
-                const isInline = INLINE_TAGS.has(tag);
-                
-                const nearestBlock = parent ? parent.closest('p,div,h1,h2,h3,h4,h5,h6,li,blockquote,section,article,pre') : null;
-                if (nearestBlock && nearestBlock !== lastParentBlock) {
-                    if (fullText.length > 0 && !fullText.endsWith('\n')) fullText += '\n';
-                    lastParentBlock = nearestBlock;
-                }
-                
-                nodeRanges.push({ start: fullText.length, end: fullText.length + t.length, node });
-                fullText += t;
-                
-                if (isBlock) {
-                    if (!fullText.endsWith('\n')) fullText += '\n';
-                } else if (!isInline && !fullText.endsWith(' ')) {
-                    fullText += ' ';
-                }
+                return NodeFilter.FILTER_SKIP;
             }
-            
-            const structuredText = fullText.replace(/\n{3,}/g, '\n\n').replace(/[ \t]+\n/g, '\n').trim();
-            const sentencesArr = splitIntoTTSChunks(structuredText, 250);
-            
-            const sentenceCfiMap = {};
-            let cursor = 0;
-            sentencesArr.forEach((sent, si) => {
-                const idx = fullText.indexOf(sent, cursor);
-                if (idx === -1) return;
-                const nr = nodeRanges.find(r => idx >= r.start && idx < r.end);
-                if (nr) {
-                    try {
-                        const range = doc.createRange();
-                        range.selectNodeContents(nr.node);
-                        const cfi = this.book.cfiFromRange ? this.book.cfiFromRange(range) : null;
-                        if (cfi) sentenceCfiMap[si] = cfi;
-                    } catch(e) {}
-                }
-                cursor = idx + sent.length;
-            });
+        });
 
-            return { text: structuredText, sentenceCfiMap };
-        } catch(e) {
-            return { text: '', sentenceCfiMap: {} };
+        let fullText = '';
+        const nodeRanges = [];
+        let lastParentBlock = null;
+        let node;
+
+        while ((node = walker.nextNode())) {
+            if (node.nodeType === Node.ELEMENT_NODE) { 
+                if (!fullText.endsWith('\n')) fullText += '\n';
+                continue;
+            }
+
+            const parent = node.parentElement;
+            if (parent) {
+                const cs = doc.defaultView ? doc.defaultView.getComputedStyle(parent) : null;
+                if (cs && (cs.display === 'none' || cs.visibility === 'hidden')) continue;
+            }
+
+            let t = node.textContent.replace(/\s+/g, ' ');
+            if (t === '') continue;
+
+            const nearestBlock = parent ? parent.closest('p,div,h1,h2,h3,h4,h5,h6,li,blockquote,section,article,pre') : null;
+            if (nearestBlock && nearestBlock !== lastParentBlock) {
+                if (fullText.length > 0 && !fullText.endsWith('\n')) {
+                    fullText = fullText.trimEnd() + '\n';
+                }
+                lastParentBlock = nearestBlock;
+            }
+
+            if (t === ' ' && (fullText.endsWith(' ') || fullText.endsWith('\n'))) continue;
+
+            nodeRanges.push({ start: fullText.length, end: fullText.length + t.length, node });
+            fullText += t;
         }
+
+        const structuredText = fullText.replace(/\n{3,}/g, '\n\n').replace(/[ \t]+\n/g, '\n').trim();
+        const sentencesArr = splitIntoTTSChunks(structuredText, 250);
+
+        const sentenceCfiMap = {};
+        const wrapOperations = [];
+        let cursor = 0;
+
+        sentencesArr.forEach((sent, si) => {
+            const idx = fullText.indexOf(sent, cursor);
+            if (idx === -1) return;
+            const sentEnd = idx + sent.length;
+            cursor = sentEnd;
+
+            // 1. Generate CFI
+            const nr = nodeRanges.find(r => idx >= r.start && idx < r.end);
+            if (nr) {
+                try {
+                    const range = doc.createRange();
+                    range.selectNodeContents(nr.node);
+                    const cfi = this.book.cfiFromRange ? this.book.cfiFromRange(range) : null;
+                    if (cfi) sentenceCfiMap[si] = cfi;
+                } catch(e) {}
+            }
+
+            // 2. Queue exact character mapping operations
+            const overlaps = nodeRanges.filter(r => r.end > idx && r.start < sentEnd);
+            overlaps.forEach(r => {
+                const overlapStart = Math.max(r.start, idx);
+                const overlapEnd = Math.min(r.end, sentEnd);
+                if (overlapStart < overlapEnd) {
+                    wrapOperations.push({
+                        node: r.node,
+                        startOffset: overlapStart - r.start,
+                        endOffset: overlapEnd - r.start,
+                        si: si
+                    });
+                }
+            });
+        });
+
+        // 3. Apply spans backwards per node so text node indices remain perfectly valid
+        const opsByNode = new Map();
+        wrapOperations.forEach(op => {
+            if (!opsByNode.has(op.node)) opsByNode.set(op.node, []);
+            opsByNode.get(op.node).push(op);
+        });
+
+        opsByNode.forEach((ops, node) => {
+            ops.sort((a, b) => b.startOffset - a.startOffset);
+            ops.forEach(op => {
+                try {
+                    const range = doc.createRange();
+                    range.setStart(node, op.startOffset);
+                    range.setEnd(node, op.endOffset);
+                    const span = doc.createElement('span');
+                    span.className = 'dr-sent';
+                    span.setAttribute('data-sent-idx', op.si);
+                    range.surroundContents(span);
+                } catch(e) {}
+            });
+        });
+
+        return { text: structuredText, sentenceCfiMap };
+    } catch(e) {
+        return { text: '', sentenceCfiMap: {} };
     }
+}
 
     getTOC() {
         if (!this.book || !this.book.navigation) return [];
@@ -981,114 +1128,285 @@ class EPUBHandler {
         return 1;
     }
 
-    highlightSentence(idx) {
+	highlightSentence(idx) {
         if (!this.rendition) return;
-        this._clearHighlights();
-        const cfi = this.sentenceCfiMap[idx];
-        if (cfi) {
-            try {
-                this.rendition.annotations.highlight(cfi, {}, () => {}, 'epub-reading-hl');
-                this._injectHighlightStyle();
-                return;
-            } catch(e) {}
-        }
-        this._highlightByText(idx);
+        
+        // 1. Move the active highlight class to the current sentence spans
+        this._syncActiveSentenceClass(idx);
+        
+        // 2. Scroll into view — always, with a reliable cross-iframe approach
+        this._scrollEpubSentenceIntoView(idx);
     }
 
-    _clearHighlights() {
-        try { this.rendition.annotations.remove('epub-reading-hl', 'highlight'); } catch(e) {}
+	_scrollEpubSentenceIntoView(idx, attempt = 0) {
+        try {
+            const contents = this.rendition.getContents();
+            if (!contents || !contents[0] || !contents[0].document) return;
+            const doc = contents[0].document;
+            const win = contents[0].window;
+            const activeSpans = doc.querySelectorAll(`.dr-sent[data-sent-idx="${idx}"]`);
+            if (!activeSpans.length) return;
+
+            const firstSpan = activeSpans[0];
+            const rect = firstSpan.getBoundingClientRect(); // relative to iframe viewport
+
+            if (rect.width < 1 && attempt < 10) {
+                setTimeout(() => this._scrollEpubSentenceIntoView(idx, attempt + 1), 80);
+                return;
+            }
+
+            // FIX: Use the container/viewport height instead of win.innerHeight (which equals total document height in scrolled-doc mode)
+            const epubContainer = document.getElementById('epub-container');
+            const viewportHeight = (epubContainer ? epubContainer.clientHeight : 0) || win.innerHeight || 600;
+
+            const inBand = rect.top > viewportHeight * 0.2 && rect.bottom < viewportHeight * 0.8;
+            if (!inBand) {
+                firstSpan.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            }
+        } catch(e) {
+            console.log(e);
+        }
+    }
+
+	_syncActiveSentenceClass(idx) {
+        try {
+            const contents = this.rendition.getContents();
+            if (!contents || !contents[0] || !contents[0].document) return;
+            const doc = contents[0].document;
+            
+            // Remove active class from all sentence spans
+            doc.querySelectorAll('.dr-sent.dr-sentence-active')
+               .forEach(el => {
+                   el.classList.remove('dr-sentence-active');
+                   // Only remove stitching if the mouse isn't currently hovering over it!
+                   if (!el.classList.contains('dr-sentence-hover')) {
+                       el.classList.remove('dr-fragment-start', 'dr-fragment-middle', 'dr-fragment-end');
+                   }
+               });
+               
+            // Find all span fragments that belong to this sentence index and mark them active
+            const fragments = doc.querySelectorAll(`.dr-sent[data-sent-idx="${idx}"]`);
+            fragments.forEach((el, i) => {
+                el.classList.add('dr-sentence-active');
+                if (fragments.length > 1) {
+                    if (i === 0) el.classList.add('dr-fragment-start');
+                    else if (i === fragments.length - 1) el.classList.add('dr-fragment-end');
+                    else el.classList.add('dr-fragment-middle');
+                }
+            });
+        } catch(e) {}
+    }
+
+	_clearHighlights() {
         try {
             const contents = this.rendition.getContents();
             if (contents && contents[0] && contents[0].document) {
                 const doc = contents[0].document;
+                
+                // Clear active spans
+                doc.querySelectorAll('.dr-sent.dr-sentence-active')
+                   .forEach(el => {
+                       el.classList.remove('dr-sentence-active');
+                       if (!el.classList.contains('dr-sentence-hover')) {
+                           el.classList.remove('dr-fragment-start', 'dr-fragment-middle', 'dr-fragment-end');
+                       }
+                   });
+                   
+                // Failsafe: clean up any legacy marks just in case
+                try { this.rendition.annotations.remove('epub-reading-hl', 'highlight'); } catch(e) {}
                 doc.querySelectorAll('mark.epub-reading-hl').forEach(m => {
                     if (m.parentNode) m.parentNode.replaceChild(doc.createTextNode(m.textContent), m);
                 });
-                try { doc.body.normalize(); } catch(e) {}
             }
         } catch(e) {}
     }
 
 
-	_highlightByText(idx) {
-        const sent = (this.currentSentences[idx] || '').trim();
-        if (!sent) return;
+	async renderPage(pageNum, targetHref = null) {
+        if (this._destroyed) return;
+        
+        try {
+            const safePageNum = Math.max(1, Math.min(pageNum, this.pageCount));
+            const item = this.spineItems[safePageNum - 1];
+            if (!item) return null;
+
+            const hrefToRender = targetHref || item.href;
+            const fragment = hrefToRender.includes('#') ? hrefToRender.split('#')[1] : null;
+
+            try {
+                // Try rendering the requested href first
+                await this.rendition.display(hrefToRender);
+		    await new Promise(r => {
+    const check = () => {
         try {
             const contents = this.rendition.getContents();
-            if (!contents || !contents.length) return;
-            const doc = contents[0].document;
-            if (!doc) return;
-
-            const needleNorm = sent.toLowerCase().replace(/[^a-z0-9]/g, '');
-            if (!needleNorm) return;
-
-            const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, {
-                acceptNode: n => {
-                    const tag = (n.parentElement && n.parentElement.tagName || '').toLowerCase();
-                    return ['script','style','nav'].includes(tag) ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT;
-                }
-            });
-
-            let node;
-            const textNodes = [];
-            let combinedText = '';
-
-            while ((node = walker.nextNode())) {
-                textNodes.push({ node, start: combinedText.length, text: node.textContent });
-                combinedText += node.textContent;
-            }
-
-            const domNorm = combinedText.toLowerCase().replace(/[^a-z0-9]/g, '');
-            const matchStartNorm = domNorm.indexOf(needleNorm.slice(0, 40)); 
-            if (matchStartNorm === -1) return;
-            const matchEndNorm = matchStartNorm + needleNorm.length;
-
-            let rawStart = -1, rawEnd = -1, alphaCount = 0;
-            const combinedLower = combinedText.toLowerCase();
-
-            for (let i = 0; i < combinedLower.length; i++) {
-                if (/[a-z0-9]/.test(combinedLower[i])) {
-                    if (alphaCount === matchStartNorm) rawStart = i;
-                    alphaCount++;
-                    if (alphaCount === matchEndNorm) { rawEnd = i + 1; break; }
-                }
-            }
-
-            if (rawStart === -1 || rawEnd === -1) return;
-
-            let firstMark = null;
-            textNodes.forEach(tn => {
-                const nodeStart = tn.start;
-                const nodeEnd = nodeStart + tn.text.length;
-                const overlapStart = Math.max(nodeStart, rawStart);
-                const overlapEnd = Math.min(nodeEnd, rawEnd);
-
-                if (overlapStart < overlapEnd) {
-                    try {
-                        const range = doc.createRange();
-                        range.setStart(tn.node, overlapStart - nodeStart);
-                        range.setEnd(tn.node, overlapEnd - nodeStart);
-
-                        const mark = doc.createElement('mark');
-                        mark.className = 'epub-reading-hl';
-                        range.surroundContents(mark);
-                        if (!firstMark) firstMark = mark;
-                    } catch(e) {}
-                }
-            });
-
-            if (firstMark) firstMark.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            const doc = contents && contents[0] && contents[0].document;
+            if (doc && doc.readyState === 'complete') return r();
         } catch(e) {}
+        setTimeout(check, 20);
+    };
+    setTimeout(check, 20);
+});
+            } catch(e) {
+                console.warn('Custom href display failed, falling back to canonical spine href:', e);
+                // Fallback to the guaranteed safe spine item href if the TOC path format mismatches
+                await this.rendition.display(item.href);
+		    await new Promise(r => {
+    const check = () => {
+        try {
+            const contents = this.rendition.getContents();
+            const doc = contents && contents[0] && contents[0].document;
+            if (doc && doc.readyState === 'complete') return r();
+        } catch(e) {}
+        setTimeout(check, 20);
+    };
+    setTimeout(check, 20);
+});
+            }
+
+            if (fragment) {
+                try {
+                    const contents = this.rendition.getContents();
+                    if (contents && contents[0] && contents[0].document) {
+                        const doc = contents[0].document;
+                        const el = doc.getElementById(fragment) || doc.querySelector(`[name="${fragment}"]`);
+                        if (el) {
+                            el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                        }
+                    }
+                } catch(e) {}
+            } else {
+                try {
+                    const contents = this.rendition.getContents();
+                    if (contents && contents[0] && contents[0].window) {
+                        contents[0].window.scrollTo(0, 0);
+                    }
+                } catch(e) {}
+            }
+
+            this.currentPage = safePageNum;
+            this._injectReadingStyle();
+            this._lastHighlightNormIndex = 0; 
+            
+            const { text, sentenceCfiMap } = this._extractTextFromRendition();
+            this.currentText = text;
+            this.currentSentences = splitIntoTTSChunks(text, 250);
+            this.sentenceCfiMap = sentenceCfiMap;
+            
+            return { text, sentences: this.currentSentences };
+        } catch (err) {
+            console.error('EPUB render error:', err);
+            return null;
+        }
     }
 
 
 
-	_injectHighlightStyle() {
+	_injectReadingStyle(targetDoc) {
         try {
-            const contents = this.rendition.getContents();
-            if (!contents || !contents.length) return;
-            const doc = contents[0].document;
+            let doc = targetDoc;
+            if (!doc) {
+                const contents = this.rendition.getContents();
+                if (!contents || !contents.length) return;
+                doc = contents[0].document;
+            }
             if (!doc || !doc.head) return;
+            
+            const id = 'epub-reader-style';
+            let s = doc.getElementById(id);
+            if (!s) {
+                s = doc.createElement('style');
+                s.id = id;
+                doc.head.appendChild(s);
+            }
+            s.textContent = `
+                @font-face { font-family: 'Mononoki'; src: url('${window.location.origin}/static/fonts/mononoki-Regular.ttf') format('truetype'); }
+                
+                * { 
+                    font-family: 'Mononoki', monospace !important; 
+                    box-sizing: border-box !important; 
+                    max-width: 100% !important;
+                }
+                
+                /* Chromium & global scrollbar hiding inside the EPUB iframe */
+                ::-webkit-scrollbar {
+                    display: none !important;
+                    width: 0px !important;
+                    height: 0px !important;
+                    background: transparent !important;
+                }
+                
+                html, body {
+                    overflow-x: hidden !important;
+                    width: 100% !important;
+                    max-width: 100% !important;
+                    margin: 0 !important;
+                    scrollbar-width: none !important;
+                    -ms-overflow-style: none !important;
+                }
+                
+                body { 
+                    margin: 0 auto !important; 
+                    padding: 20px ${epubSidePadding}px 60px !important; 
+                    word-wrap: break-word !important; 
+                    overflow-wrap: break-word !important; 
+                    will-change: scroll-position; 
+                    transform: translateZ(0); 
+                }
+                body.is-scrolling * { pointer-events: none !important; }
+                
+                img, svg, figure, video, audio, table { 
+                    max-width: 100% !important; 
+                    height: auto !important; 
+                }
+                
+                pre, code, table {
+                    overflow-x: auto !important;
+                    max-width: 100% !important;
+                }
+
+                h1,h2,h3,h4,h5,h6 { margin-top: 1.4em; margin-bottom: 0.5em; line-height: 1.3; }
+                p { margin: 0 0 0.9em; }
+                
+                a, a:visited, a:hover, a:active {
+                    color: inherit !important;
+                    text-decoration: underline !important;
+                    text-underline-offset: 2px !important;
+                    opacity: 0.75;
+                }
+                a:hover { opacity: 1; }
+                
+                .docreader-code-wrapper {
+                    background: rgba(120, 120, 120, 0.12) !important;
+                    border: 1px solid rgba(120, 120, 120, 0.25) !important;
+                    border-radius: 6px !important;
+                    padding: 14px !important;
+                    margin: 12px 0 !important;
+                    overflow-x: auto !important;
+                    width: 100% !important;
+                    max-width: 100% !important;
+                }
+                .docreader-code-wrapper p, .docreader-code-wrapper pre, .docreader-code-wrapper div {
+                    margin: 0 !important;
+                    padding: 0 !important;
+                    background: transparent !important;
+                    border: none !important;
+                    line-height: 1.5 !important;
+                }
+            `;
+        } catch(e) {}
+    }
+
+	_injectHighlightStyle(targetDoc) {
+        try {
+            let doc = targetDoc;
+            if (!doc) {
+                const contents = this.rendition.getContents();
+                if (!contents || !contents.length) return;
+                doc = contents[0].document;
+            }
+            if (!doc || !doc.head) return;
+            
             const id = 'epub-hl-style';
             let s = doc.getElementById(id);
             if (!s) {
@@ -1097,22 +1415,62 @@ class EPUBHandler {
                 doc.head.appendChild(s);
             }
             
+            // Restore all the original plush styles
             const color = `rgba(${hlBaseColor}, ${hlOpacity})`;
-            const outline = hlOutline ? `0 0 0 1px rgba(${hlBaseColor},${Math.min(1, hlOpacity * 2.5)})` : 'none';
+            const hoverColor = `rgba(${hlBaseColor}, ${hlHoverOpacity})`;
             const radius = hlRadius + 'px';
-            const pad = hlPadding + 'px';
-            
+            const pad = hlPadding;
+
+            const activeOutline = hlOutline 
+                ? `0 0 0 1px rgba(${hlBaseColor}, ${Math.min(1, hlOpacity * 2.5)})` 
+                : 'none';
+            const hoverOutline = `0 0 0 1px rgba(${hlBaseColor}, ${Math.min(1, hlOpacity)})`;
+
             s.textContent = `
-                .epub-reading-hl, mark.epub-reading-hl {
-                    background: ${color} !important;
+                /* ── Sentence hover & active highlight ── */
+                .dr-sent {
+                    cursor: pointer !important;
+                    background-color: transparent !important;
+                    box-shadow: none !important;
+                    transition: background-color 0.08s ease, box-shadow 0.08s ease !important;
+                    
+                    /* Plush padding and radius is back! */
                     border-radius: ${radius} !important;
-                    color: inherit !important;
-                    padding: 0 ${pad} !important;
-                    box-shadow: ${outline} !important;
+                    padding: ${pad}px !important;
+                    margin: 0 -${pad}px !important;
+                    
                     box-decoration-break: clone !important;
                     -webkit-box-decoration-break: clone !important;
                 }
-                .epubjs-hl { fill: ${color} !important; fill-opacity: 1 !important; }
+                .dr-sent.dr-sentence-hover {
+                    background-color: ${hoverColor} !important;
+                    box-shadow: ${hoverOutline} !important;
+                }
+                .dr-sent.dr-sentence-active {
+                    background-color: ${color} !important;
+                    box-shadow: ${activeOutline} !important;
+                }
+
+                /* ── Fragment Stitching (Prevents overlapping transparency) ── */
+                .dr-sent.dr-fragment-start {
+                    padding-right: 0 !important;
+                    margin-right: 0 !important;
+                    border-top-right-radius: 0 !important;
+                    border-bottom-right-radius: 0 !important;
+                }
+                .dr-sent.dr-fragment-middle {
+                    padding-left: 0 !important;
+                    padding-right: 0 !important;
+                    margin-left: 0 !important;
+                    margin-right: 0 !important;
+                    border-radius: 0 !important;
+                }
+                .dr-sent.dr-fragment-end {
+                    padding-left: 0 !important;
+                    margin-left: 0 !important;
+                    border-top-left-radius: 0 !important;
+                    border-bottom-left-radius: 0 !important;
+                }
             `;
         } catch(e) {}
     }
@@ -1128,15 +1486,23 @@ class EPUBHandler {
         }
     }
 
-    async _loadChapterStats() {
+	async _loadChapterStats() {
         if (!this.book || !this.book.spine) return;
         const items = this.spineItems;
         for (let i = 0; i < items.length; i++) {
             try {
                 const content = await this.book.load(items[i].href);
-                const parser = new DOMParser();
-                const doc = parser.parseFromString(content, 'application/xhtml+xml');
-                this.chapterCharMap[i] = doc.body ? doc.body.textContent.length : 0;
+                let len = 0;
+                if (typeof content === 'string') {
+                    const parser = new DOMParser();
+                    const doc = parser.parseFromString(content, 'application/xhtml+xml');
+                    len = doc.body ? doc.body.textContent.length : 0;
+                } else if (content && content.body) {
+                    len = content.body.textContent.length;
+                } else if (content && content.textContent) {
+                    len = content.textContent.length;
+                }
+                this.chapterCharMap[i] = len;
             } catch(e) { this.chapterCharMap[i] = 0; }
             if (i < items.length - 1)
                 await new Promise(r => typeof requestIdleCallback !== 'undefined' ? requestIdleCallback(r) : setTimeout(r, 10));
@@ -1359,9 +1725,23 @@ async function loadEPUB(file, startPage = 1) {
 
         if (isMobileSidebar()) closeMobileSidebar();
 
-        // Set up epub rendition click-to-read handler
-        documentHandler.rendition.on('click', () => {
-            // clicks inside iframe
+		// Set up epub rendition click-to-read handler
+		documentHandler.rendition.on('click', (e) => {
+            if (!sentences || !sentences.length) return;
+            const clickedNode = e.target;
+            if (!clickedNode) return;
+
+            // Don't hijack real link clicks
+            if (clickedNode.closest && clickedNode.closest('a[href]')) return;
+
+            // STRICT CHECK: Only proceed if the user clicked directly on an active sentence span
+            const span = clickedNode.closest && clickedNode.closest('.dr-sent');
+            if (!span) return; // Ignores empty space completely!
+
+            const targetIdx = Number(span.getAttribute('data-sent-idx'));
+            if (!isNaN(targetIdx) && targetIdx < sentences.length) {
+                startReadingPage(targetIdx);
+            }
         });
 
         // ResizeObserver: keep epub rendition sized to its container
@@ -1369,19 +1749,31 @@ async function loadEPUB(file, startPage = 1) {
             window._epubResizeObserver.disconnect();
         }
         const epubContainerEl = document.getElementById('epub-container');
-        if (epubContainerEl && typeof ResizeObserver !== 'undefined') {
+if (epubContainerEl && typeof ResizeObserver !== 'undefined') {
             window._epubResizeObserver = new ResizeObserver((entries) => {
                 if (!documentHandler || !(documentHandler instanceof EPUBHandler)) return;
                 const entry = entries[0];
                 if (!entry) return;
                 const { width, height } = entry.contentRect;
                 if (width > 0 && height > 0) {
-                    try { documentHandler.rendition.resize(width, height); } catch(e) {}
+                    try {
+                        documentHandler.rendition.resize(width, height);
+                        setTimeout(() => {
+                            try {
+                                documentHandler._injectReadingStyle();
+                                const { text, sentenceCfiMap } = documentHandler._extractTextFromRendition();
+                                documentHandler.currentText = text;
+                                documentHandler.currentSentences = splitIntoTTSChunks(text, 250);
+                                documentHandler.sentenceCfiMap = sentenceCfiMap;
+                                sentences = documentHandler.currentSentences;
+                                if (isPlaying) highlightActiveSentence(currentIndex, sentences);
+                            } catch(e) {}
+                        }, 150);
+                    } catch(e) {}
                 }
             });
             window._epubResizeObserver.observe(epubContainerEl);
         }
-
     } catch (err) {
         console.error('[EPUB] Load error:', err);
         alert('Failed to load EPUB: ' + err.message);
@@ -1450,13 +1842,20 @@ function loadEpubOutline() {
             labelSpan.className = 'toc-item-label';
             labelSpan.textContent = item.title || '(untitled)';
             el.appendChild(labelSpan);
-
-            el.addEventListener('click', async () => {
-                if (!item.page) return;
+			el.addEventListener('click', async (e) => {
+                e.stopPropagation(); // <-- Prevents event bubbling chaos
                 stopPipeline();
-                await epubGoToPage(item.page);
+                
+                const targetPage = parseInt(item.page, 10) || 1;
+
+                if (item.href && item.href.includes('#')) {
+                    await epubGoToHref(item.href, targetPage);
+                } else if (item.page) {
+                    await epubGoToPage(item.page);
+                }
                 if (isMobileSidebar()) closeMobileSidebar();
             });
+
 
             wrapper.appendChild(el);
             if (childrenDiv) {
@@ -1480,14 +1879,34 @@ function hardResetReadingState() {
 
 async function epubGoToPage(target) {
     if (!documentHandler || !(documentHandler instanceof EPUBHandler)) return;
+    
+    const targetPage = Math.max(1, Math.min(target, documentHandler.pageCount));
+    
+    if (targetPage === pageNum) {
+        // If already on this chapter, just scroll to top instantly
+        try {
+            const contents = documentHandler.rendition.getContents();
+            if (contents && contents[0] && contents[0].window) {
+                contents[0].window.scrollTo({ top: 0, behavior: 'smooth' });
+            }
+        } catch(e) {}
+        if (isMobileSidebar()) closeMobileSidebar();
+        return;
+    }
+
     hardResetReadingState();
-    pageNum = Math.max(1, Math.min(target, documentHandler.pageCount));
-    const result = await documentHandler.renderPage(pageNum);
+    
+    // Attempt to render the page first
+    const result = await documentHandler.renderPage(targetPage);
+    
+    // Only update the global state if the render was successful!
     if (result) {
+        pageNum = targetPage;
         currentPageText = result.text;
         sentences = result.sentences;
         updatePageStats(pageNum, sentences);
     }
+    
     document.getElementById('page-num').textContent = pageNum;
     prevPageBtn.disabled = pageNum <= 1;
     nextPageBtn.disabled = pageNum >= documentHandler.pageCount;
@@ -1498,6 +1917,51 @@ async function epubGoToPage(target) {
     await refreshTimeEstimates();
 }
 
+/* Navigate EPUB to a full href including fragment (#anchor) — used by sub-TOC items */
+async function epubGoToHref(href, targetPageNumber) {
+    if (!documentHandler || !(documentHandler instanceof EPUBHandler)) return;
+    
+    const cleanHref = href.split('#')[0];
+    
+    // Robust spine index lookup using exact match OR filename/basename matching
+    let spineIdx = -1;
+    if (targetPageNumber && targetPageNumber > 0 && targetPageNumber <= documentHandler.spineItems.length) {
+        spineIdx = targetPageNumber - 1;
+    } else {
+        spineIdx = documentHandler.spineItems.findIndex(item =>
+            item.href === href || 
+            item.href === cleanHref ||
+            (item.href || '').endsWith(cleanHref) || 
+            cleanHref.endsWith(item.href || '') ||
+            item.href.split('/').pop() === cleanHref.split('/').pop() // Matches filename regardless of folder prefix
+        );
+    }
+
+    const targetPage = spineIdx >= 0 ? spineIdx + 1 : pageNum;
+
+    stopPipeline();
+    hardResetReadingState();
+    
+    // Attempt to render the page & scroll to fragment
+    const result = await documentHandler.renderPage(targetPage, href);
+    
+    // Only update global state if render succeeded
+    if (result) {
+        pageNum = targetPage;
+        currentPageText = result.text;
+        sentences = result.sentences;
+        updatePageStats(pageNum, sentences);
+    }
+
+    document.getElementById('page-num').textContent = pageNum;
+    prevPageBtn.disabled = pageNum <= 1;
+    nextPageBtn.disabled = pageNum >= documentHandler.pageCount;
+    updateMobilePageInfo();
+    await updateActiveTocItem();
+    updateChapterBoundaries();
+    saveSettingsThrottled(pageNum, scale, currentIndex);
+    await refreshTimeEstimates();
+}
 function goToPage(delta, isAutoTurn = false) {
     const total = getPageCount();
     if (!total) return;
@@ -2071,6 +2535,7 @@ async function renderPage(num) {
         textLayerDiv.innerHTML = '';
         textLayerDiv.style.height = cssH + 'px';
         textLayerDiv.style.width = cssW + 'px';
+        textLayerDiv.style.cursor = 'pointer';
         textLayerDiv.style.setProperty('--scale-factor', viewport.scale);
 
         const textContent = await page.getTextContent();
@@ -2175,6 +2640,10 @@ async function renderPage(num) {
 
         await renderAnnotations(page, viewport, cssW, cssH);
 
+        // Rebuild sentence→span offset map for hover highlighting (must run after text layer renders)
+        _rebuildPdfSentenceOffsets();
+        _clearHoverCanvas();
+
         document.getElementById('page-num').textContent = num;
         prevPageBtn.disabled = num <= 1;
         nextPageBtn.disabled = num >= pdfDoc.numPages;
@@ -2204,16 +2673,7 @@ async function renderPage(num) {
 
         if (isPlaying && currentIndex < sentences.length) {
             highlightActiveSentence(currentIndex, sentences);
-            setTimeout(() => {
-                const highlight = document.querySelector('mark.reading-highlight');
-                if (highlight) {
-                    const rect = highlight.getBoundingClientRect();
-                    const va = viewerArea.getBoundingClientRect();
-                    if (rect.top < va.top || rect.bottom > va.bottom) {
-                        viewerArea.scrollBy({ top: rect.top - va.top - va.height / 3, behavior: 'smooth' });
-                    }
-                }
-            }, 100);
+            // Canvas is redrawn by highlightActiveSentence; scroll handled inside it
         } else {
             viewerArea.scrollTo({ top: 0, behavior: 'smooth' });
         }
@@ -2246,6 +2706,172 @@ async function renderPage(num) {
         console.error('Render error:', err);
         pageIsRendering = false;
     }
+}
+
+/* ─── PDF DOM Span Injection & Canvas Drawing ─── */
+function injectPdfSentenceSpans() {
+    const textLayer = document.getElementById('text-layer');
+    if (!textLayer || !sentences || !sentences.length) return;
+    const allSpans = Array.from(textLayer.querySelectorAll('span'));
+
+    // Reset to baseline original text
+    allSpans.forEach(span => {
+        if (span.dataset.originalText === undefined) {
+            span.dataset.originalText = span.textContent;
+        }
+        span.textContent = span.dataset.originalText;
+    });
+
+    const normalize = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    let fullNorm = '';
+    const nodeRanges = [];
+
+    allSpans.forEach(span => {
+        const raw = span.dataset.originalText;
+        const n = normalize(raw);
+        if (n) {
+            nodeRanges.push({ span, start: fullNorm.length, end: fullNorm.length + n.length, raw });
+            fullNorm += n;
+        }
+    });
+
+    const wrapOperations = [];
+    let cursor = 0;
+
+    sentences.forEach((sent, si) => {
+        const tn = normalize(sent);
+        if (!tn) return;
+        let idx = fullNorm.indexOf(tn, cursor);
+        if (idx === -1) idx = fullNorm.indexOf(tn, 0);
+        if (idx === -1) return;
+
+        const sentEnd = idx + tn.length;
+        cursor = sentEnd;
+
+        const overlaps = nodeRanges.filter(r => r.end > idx && r.start < sentEnd);
+        overlaps.forEach(r => {
+            const overlapStart = Math.max(r.start, idx);
+            const overlapEnd = Math.min(r.end, sentEnd);
+            if (overlapStart < overlapEnd) {
+                let rawStart = -1, rawEnd = -1, alpha = r.start;
+                for (let i = 0; i < r.raw.length; i++) {
+                    if (/[a-z0-9]/i.test(r.raw[i])) {
+                        if (rawStart === -1 && alpha === overlapStart) rawStart = i;
+                        alpha++;
+                        if (alpha === overlapEnd) { rawEnd = i + 1; break; }
+                    }
+                }
+                if (rawStart !== -1) {
+                    if (rawEnd === -1) rawEnd = r.raw.length;
+                    while (rawEnd < r.raw.length && /[.,!?;:'"’”\]\)]/.test(r.raw[rawEnd])) {
+                        rawEnd++;
+                    }
+                    wrapOperations.push({ span: r.span, rawStart, rawEnd, si });
+                }
+            }
+        });
+    });
+
+    const opsBySpan = new Map();
+    wrapOperations.forEach(op => {
+        if (!opsBySpan.has(op.span)) opsBySpan.set(op.span, []);
+        opsBySpan.get(op.span).push(op);
+    });
+
+    opsBySpan.forEach((ops, span) => {
+        ops.sort((a, b) => b.rawStart - a.rawStart); // Process right-to-left
+        let raw = span.dataset.originalText;
+        let newHTML = '';
+        let lastIdx = raw.length;
+
+        ops.forEach(op => {
+            if (op.rawEnd > lastIdx) op.rawEnd = lastIdx;
+            if (op.rawStart >= op.rawEnd) return;
+            const after = escapeHtml(raw.slice(op.rawEnd, lastIdx));
+            const highlight = escapeHtml(raw.slice(op.rawStart, op.rawEnd));
+            newHTML = `<span class="pdf-sent" data-sent-idx="${op.si}">${highlight}</span>${after}${newHTML}`;
+            lastIdx = op.rawStart;
+        });
+        const before = escapeHtml(raw.slice(0, lastIdx));
+        span.innerHTML = before + newHTML;
+    });
+}
+
+function drawBoxesOnCanvas(elements, canvas, container, isActive) {
+    const dpr = window.devicePixelRatio || 1;
+    const cRect = container.getBoundingClientRect();
+    const rows = new Map();
+    
+    elements.forEach(el => {
+        const r = el.getBoundingClientRect();
+        if (r.width < 1 || r.height < 1) return;
+        const left = r.left - cRect.left;
+        const top = r.top - cRect.top;
+        const right = r.right - cRect.left;
+        const bottom = r.bottom - cRect.top;
+        
+        // 8px tolerance groups slightly misaligned baselines perfectly
+        let matchedRow = null;
+        for (const [rTop] of rows.keys()) {
+            if (Math.abs(rTop - top) < 8) { matchedRow = rTop; break; }
+        }
+        const rowKey = matchedRow !== null ? matchedRow : top;
+        
+        if (!rows.has(rowKey)) {
+            rows.set(rowKey, { left, right, top, bottom });
+        } else {
+            const row = rows.get(rowKey);
+            row.left = Math.min(row.left, left);
+            row.right = Math.max(row.right, right);
+            row.top = Math.min(row.top, top);
+            row.bottom = Math.max(row.bottom, bottom);
+        }
+    });
+    
+    if (rows.size === 0) return;
+    
+    canvas.width = Math.round(cRect.width * dpr);
+    canvas.height = Math.round(cRect.height * dpr);
+    canvas.style.width = cRect.width + 'px';
+    canvas.style.height = cRect.height + 'px';
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    ctx.scale(dpr, dpr);
+    
+    const pad = hlPadding;
+    const r = hlRadius;
+    
+    if (isActive) {
+        ctx.fillStyle = `rgba(${hlBaseColor},${hlOpacity})`;
+        if (hlOutline) { ctx.strokeStyle = `rgba(${hlBaseColor},${Math.min(1, hlOpacity * 2.5)})`; ctx.lineWidth = 1; }
+		} else {
+        ctx.fillStyle = `rgba(${hlBaseColor}, ${hlHoverOpacity})`;
+        ctx.strokeStyle = `rgba(${hlBaseColor}, ${Math.min(1, hlOpacity)})`;
+        ctx.lineWidth = 1;
+    }
+    
+    rows.forEach((row) => {
+        const x = row.left - pad;
+        const y = row.top;
+        const w = (row.right - row.left) + pad * 2;
+        const h = (row.bottom - row.top) + 1;
+        const cr = Math.min(r, w / 2, h / 2);
+        ctx.beginPath();
+        ctx.moveTo(x + cr, y);
+        ctx.lineTo(x + w - cr, y);
+        ctx.quadraticCurveTo(x + w, y, x + w, y + cr);
+        ctx.lineTo(x + w, y + h - cr);
+        ctx.quadraticCurveTo(x + w, y + h, x + w - cr, y + h);
+        ctx.lineTo(x + cr, y + h);
+        ctx.quadraticCurveTo(x, y + h, x, y + h - cr);
+        ctx.lineTo(x, y + cr);
+        ctx.quadraticCurveTo(x, y, x + cr, y);
+        ctx.closePath();
+        ctx.fill();
+        if (isActive && hlOutline) ctx.stroke();
+        if (!isActive) ctx.stroke();
+    });
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
 }
 
 function updateChapterBoundaries() {
@@ -2361,7 +2987,7 @@ mobilePrevBtn.addEventListener('click', () => goToPage(-1));
 mobileNextBtn.addEventListener('click', () => goToPage(1));
 
 document.addEventListener('keydown', e => {
-    const tag = e.target.tagName.toLowerCase();
+    const tag = (e.target && e.target.tagName) ? e.target.tagName.toLowerCase() : '';
     if (tag === 'input' || tag === 'select' || tag === 'textarea') return;
     if (e.key === 'Escape') { resetUI(); return; }
     if (e.key === 's' || e.key === 'S') { toggleSidebar(); return; }
@@ -2383,10 +3009,17 @@ document.addEventListener('keydown', e => {
             newIndex = Math.max(currentIndex - 1, 0);
         }
         if (newIndex !== currentIndex || !isPlaying) {
+            // The smart queue redirect is now handled natively inside startReadingPage()
             currentIndex = newIndex;
-            highlightActiveSentence(currentIndex, sentences);
             updateTtsStatus();
             startReadingPage(currentIndex);
+            // Re-highlight after startReadingPage (which calls stopPipeline → clearHighlightCanvas)
+            // so the scroll target is drawn on a clean canvas.
+            requestAnimationFrame(() => {
+                if (sentences && sentences.length && currentIndex < sentences.length) {
+                    highlightActiveSentence(currentIndex, sentences);
+                }
+            });
             saveSettingsThrottled(pageNum, scale, currentIndex);
         }
     }
@@ -2457,9 +3090,27 @@ function resetUI() {
 
 /* ─── TTS ─── */
 function splitIntoTTSChunks(text, maxLength = 120) {
-    let chunks = text.split('\n').flatMap(c => c.split(/(?<=[.!?])\s+/)).map(s => s.trim()).filter(s => s.length > 0);
+    const titleAbbrevs = /^(Mr|Mrs|Ms|Dr|Prof|Rev|Hon|Capt|Lt|Col|Maj|Gen)$/i;
+    const rawChunks = text.split('\n').flatMap(c => c.split(/(?<=[.!?])\s+/)).map(s => s.trim()).filter(s => s.length > 0);
+
+    // Re-join chunks where the split happened after a title abbreviation
+    // e.g. "My dear Mr." + "Bennet, ..." → "My dear Mr. Bennet, ..."
+    const joined = [];
+    let carry = '';
+    for (const chunk of rawChunks) {
+        const combined = carry ? carry + ' ' + chunk : chunk;
+        const lastWord = chunk.trimEnd().split(/\s+/).pop().replace(/\.$/, '');
+        if (titleAbbrevs.test(lastWord)) {
+            carry = combined;
+        } else {
+            joined.push(combined);
+            carry = '';
+        }
+    }
+    if (carry) joined.push(carry);
+
     let final = [];
-    chunks.forEach(chunk => {
+    joined.forEach(chunk => {
         if (chunk.length <= maxLength) { final.push(chunk); return; }
         let subs = chunk.split(/(?<=[,;:\-—])\s+/);
         let cur = '';
@@ -2506,6 +3157,7 @@ async function processTtsQueue() {
     } catch (e) {
         console.error(`TTS fetch error for ${idx}:`, e);
         if (audioCache[idx] === 'fetching') audioCache[idx] = null;
+        // If 'stale', leave it — _onTtsDone handles cleanup
         _onTtsDone(idx);
     }
 }
@@ -2513,16 +3165,14 @@ async function processTtsQueue() {
 function _onTtsDone(idx) {
     _ttsBusy = false;
     _ttsPendingIdx = null;
-    inFlight--;
+    inFlight = Math.max(0, inFlight - 1);
     console.log(`[TTS] Done with idx=${idx}, inFlight=${inFlight}`);
-    
+
     if (isPlaying) {
         if (!hasStartedPlaying) {
             const required = Math.min(REQUIRED_START_BUFFER, sentences.length - currentIndex);
             let cnt = 0;
             for (let i = currentIndex; i < currentIndex + required; i++) {
-                // CHANGED: Count the item as long as it's not undefined (unrequested) and not 'fetching'. 
-                // This allows 'null' (errors) to satisfy the buffer requirement.
                 if (audioCache[i] !== undefined && audioCache[i] !== 'fetching') cnt++;
             }
             ttsStatusText.textContent = `Generating… ${cnt}/${required}`;
@@ -2543,12 +3193,12 @@ function enqueueTts(idx) {
     if (audioCache[idx] === 'fetching') return;
     if (_ttsQueue.includes(idx)) return;
     
-    // CHANGED: Officially claim the 'fetching' state and increment inFlight here, 
-    // where we actually push to the queue.
     audioCache[idx] = 'fetching';
     inFlight++;
     
     _ttsQueue.push(idx);
+    // Always serve lowest index first so jumping backwards gets the right line ASAP
+    _ttsQueue.sort((a, b) => a - b);
     console.log(`[TTS] Enqueued idx=${idx}, queue length=${_ttsQueue.length}`);
     processTtsQueue();
 }
@@ -2556,12 +3206,11 @@ function enqueueTts(idx) {
 function preloadQueue() {
     if (!isPlaying) return;
     const limit = Math.min(currentIndex + BUFFER_DEPTH, sentences.length);
-    console.log(`[TTS] preloadQueue: from ${currentIndex} to ${limit-1}`);
-    
+    console.log(`[TTS] preloadQueue: from=${currentIndex} to=${limit - 1}`);
     for (let i = currentIndex; i < limit; i++) {
+        // Only request truly missing slots. 'fetching'/'stale' are already
+        // being handled by the server; blob URLs and null are done.
         if (audioCache[i] === undefined) {
-            // CHANGED: Hand it off directly to the enqueuer without 
-            // prematurely marking it as 'fetching' or incrementing inFlight.
             enqueueTts(i);
         }
     }
@@ -2595,7 +3244,7 @@ function normalizeTTSText(raw) {
         (_, a, b, c, d) => `${a} dot ${b} dot ${c} dot ${d}`);
     t = t.replace(/\bv?(\d+)(?:\.(\d+)){1,3}\b/g, m =>
         m.replace(/\./g, ' dot '));
-    t = t.replace(/(?<!\s)\.(?!\s*([A-Z]|$))/g, ' dot ');
+t = t.replace(/(?<!\s)\.(?!\s*([A-Z]|$|["""''\)\]]))/g, ' dot ');
     t = t.replace(/(\w)\.(\w)/g, '$1 dot $2');
     t = t.replace(/\.{2,}|…/g, ', ');
     t = t.replace(/[—–]/g, ', ');
@@ -2652,11 +3301,15 @@ function _ensureTtsSocket() {
                     let offset = 0;
                     parts.forEach(b => { merged.set(new Uint8Array(b), offset); offset += b.byteLength; });
                     const blob = new Blob([merged], { type: 'audio/wav' });
-                    if (audioCache[idx] === 'fetching') audioCache[idx] = URL.createObjectURL(blob);
+                    if (audioCache[idx] === 'fetching') {
+                        audioCache[idx] = URL.createObjectURL(blob);
+                    }
                     _onTtsDone(idx);
                 }
             } else if (msg.type === 'error') {
-                if (idx !== null && audioCache[idx] === 'fetching') audioCache[idx] = null;
+                if (idx !== null && audioCache[idx] === 'fetching') {
+                    audioCache[idx] = null;
+                }
                 _onTtsDone(idx);
             }
         }
@@ -2698,6 +3351,7 @@ async function fetchSentenceAudio(idx) {
     } catch (e) {
         console.error(`[TTS] WS fetch FAILED for sentence ${idx}:`, e);
         if (audioCache[idx] === 'fetching') audioCache[idx] = null;
+        // If 'stale', leave it — _onTtsDone handles cleanup
         _onTtsDone(idx);
     }
 }
@@ -2750,7 +3404,9 @@ function playNextChunk() {
             currentIndex++;
             saveSettingsThrottled(pageNum, scale, currentIndex);
             preloadQueue();
-            playNextChunk();
+			setTimeout(() => {
+                playNextChunk();
+            }, rest);
         };
     } else if (url === null) {
         // If Kokoro returned an error for this sentence, it was marked null. Skip it.
@@ -2782,15 +3438,11 @@ function stopPipeline() {
     ttsStatus.classList.remove('active');
     syncMobilePlayBtn();
     clearHighlightCanvas();
+    
     if (documentHandler instanceof EPUBHandler) {
         documentHandler.clearHighlights();
-    } else {
-        document.querySelectorAll('.textLayer span').forEach(span => {
-            if (span.dataset.originalText !== undefined) {
-                span.textContent = span.dataset.originalText;
-            }
-        });
     }
+    
     saveSettingsThrottled(pageNum, scale, currentIndex);
     refreshTimeEstimates();
 }
@@ -2961,10 +3613,60 @@ if (saveAudioToggle) {
 
 // Initialize preferences immediately
 loadGlobalPrefs();
+/* ─── EPUB text extraction helper (used by batch download) ─── */
+async function extractEpubPageSentences(book, spineItem) {
+    const content = await book.load(spineItem.href);
+    let doc;
+    if (typeof content === 'string') {
+        const parser = new DOMParser();
+        doc = parser.parseFromString(content, 'application/xhtml+xml');
+    } else if (content && typeof content === 'object') {
+        doc = content;
+    }
+    if (!doc || !doc.body) return [];
+
+    const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_ALL, {
+        acceptNode: (n) => {
+            if (n.nodeType === Node.TEXT_NODE) return NodeFilter.FILTER_ACCEPT;
+            if (n.nodeType === Node.ELEMENT_NODE) {
+                const tag = n.tagName.toLowerCase();
+                if (['script','style','nav','aside'].includes(tag)) return NodeFilter.FILTER_REJECT;
+                if (tag === 'br') return NodeFilter.FILTER_ACCEPT;
+            }
+            return NodeFilter.FILTER_SKIP;
+        }
+    });
+
+    let fullText = '';
+    let lastParentBlock = null;
+    let node;
+    while ((node = walker.nextNode())) {
+        if (node.nodeType === Node.ELEMENT_NODE) {
+            if (!fullText.endsWith('\n')) fullText += '\n';
+            continue;
+        }
+        const parent = node.parentElement;
+        let t = node.textContent.replace(/\s+/g, ' ');
+        if (t === '') continue;
+        const nearestBlock = parent ? parent.closest('p,div,h1,h2,h3,h4,h5,h6,li,blockquote,section,article,pre') : null;
+        if (nearestBlock && nearestBlock !== lastParentBlock) {
+            if (fullText.length > 0 && !fullText.endsWith('\n')) fullText = fullText.trimEnd() + '\n';
+            lastParentBlock = nearestBlock;
+        }
+        if (t === ' ' && (fullText.endsWith(' ') || fullText.endsWith('\n'))) continue;
+        fullText += t;
+    }
+
+    const structuredText = fullText.replace(/\n{3,}/g, '\n\n').replace(/[ \t]+\n/g, '\n').trim();
+    return splitIntoTTSChunks(structuredText, 250);
+}
 
 /* ─── Batch download ─── */
 downloadRangeBtn.addEventListener('click', async () => {
-    if (!pdfDoc || !currentFileName || isDownloadingRange) return;
+    const isPdf = !!pdfDoc;
+    const isEpub = documentHandler instanceof EPUBHandler;
+    if (!currentFileName || isDownloadingRange || (!isPdf && !isEpub)) return;
+    
     const rangeStr = pageRangeInput.value.trim();
     if (!rangeStr) { pageRangeInput.focus(); return; }
     const match = rangeStr.match(/^(\d+)\s*[-–]\s*(\d+)$/);
@@ -2973,16 +3675,20 @@ downloadRangeBtn.addEventListener('click', async () => {
         setTimeout(() => pageRangeInput.style.borderColor = '', 1500);
         return;
     }
+    
+    const totalDocs = isPdf ? pdfDoc.numPages : documentHandler.pageCount;
     const fromPage = Math.max(1, parseInt(match[1], 10));
-    const toPage = Math.min(pdfDoc.numPages, parseInt(match[2], 10));
+    const toPage = Math.min(totalDocs, parseInt(match[2], 10));
     if (fromPage > toPage) return;
+    
     const voice = document.getElementById('voice-selector').value;
     const totalPages = toPage - fromPage + 1;
     isDownloadingRange = true;
     downloadRangeBtn.disabled = true;
     dlProgress.classList.add('active');
-    dlStatusText.textContent = 'Scanning pages…';
+    dlStatusText.textContent = 'Scanning...';
     dlProgressFill.style.width = '0%';
+    
     let cachedByPage = {};
     try {
         const statusRes = await fetch(
@@ -2992,16 +3698,27 @@ downloadRangeBtn.addEventListener('click', async () => {
             const statusData = await statusRes.json();
             cachedByPage = statusData.pages || {};
         }
-    } catch (e) { console.warn('[DL] cache_status_bulk failed', e); }
+    } catch (e) {}
+    
     let allSentences = {};
     let extractedPages = 0;
+    
     for (let p = fromPage; p <= toPage; p++) {
-        dlStatusText.textContent = `Extracting page ${p} / ${toPage}…`;
+        dlStatusText.textContent = `Extracting ${isEpub ? 'chapter' : 'page'} ${p} / ${toPage}…`;
         dlProgressFill.style.width = Math.round((extractedPages / totalPages) * 40) + '%';
+
         try {
-            const page = await pdfDoc.getPage(p);
-            const textContent = await page.getTextContent();
-            const pageSentences = extractSentencesFromTextContent(textContent, page, topSkipLines, bottomSkipLines);
+            let pageSentences = [];
+            if (isPdf) {
+                const page = await pdfDoc.getPage(p);
+                const textContent = await page.getTextContent();
+                pageSentences = extractSentencesFromTextContent(textContent, page, topSkipLines, bottomSkipLines);
+
+                // Use the same renderPage path as live reading so sentence indices match exactly
+		} else {
+                const item = documentHandler.spineItems[p - 1];
+                pageSentences = await extractEpubPageSentences(documentHandler.book, item);
+            }
             const alreadyCached = new Set((cachedByPage[String(p)] || []));
             for (let si = 0; si < pageSentences.length; si++) {
                 if (alreadyCached.has(si)) continue;
@@ -3011,13 +3728,14 @@ downloadRangeBtn.addEventListener('click', async () => {
                 );
                 allSentences[`${p}_${si}`] = text;
             }
-        } catch (e) { console.warn(`[DL] Page ${p} extract failed:`, e); }
+        } catch (e) { console.warn(`[DL] Extract failed:`, e); }
         extractedPages++;
     }
+    
     const newSentenceCount = Object.keys(allSentences).length;
     if (newSentenceCount === 0) {
         dlProgressFill.style.width = '100%';
-        dlStatusText.textContent = `All ${totalPages} page(s) already cached ✓`;
+        dlStatusText.textContent = `All cached ✓`;
         setTimeout(() => {
             dlProgress.classList.remove('active');
             dlProgressFill.style.width = '0%';
@@ -3027,8 +3745,10 @@ downloadRangeBtn.addEventListener('click', async () => {
         }, 2000);
         return;
     }
-    dlStatusText.textContent = `Queuing ${newSentenceCount} sentences on server…`;
+    
+    dlStatusText.textContent = `Queuing ${newSentenceCount} chunks…`;
     dlProgressFill.style.width = '45%';
+    
     try {
         const res = await fetch('/preload', {
             method: 'POST',
@@ -3044,34 +3764,29 @@ downloadRangeBtn.addEventListener('click', async () => {
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         const jobId = data.job_id;
+        
         if (jobId) {
             dlProgressFill.style.width = '70%';
-            dlStatusText.textContent = `${newSentenceCount} sentences queued on server (job ${jobId})`;
             WS.open(`preload:${jobId}`, `/ws/preload/${jobId}`, msg => {
                 if (!msg) return;
                 const done = msg.done || 0;
                 const total = msg.total || newSentenceCount;
                 const pct = Math.min(99, Math.round(70 + (done / Math.max(1, total)) * 29));
                 dlProgressFill.style.width = pct + '%';
-                dlStatusText.textContent = `Server generating… ${done} / ${total} sentences`;
+                dlStatusText.textContent = `Server generating… ${done} / ${total}`;
                 if (msg.status === 'done') {
                     WS.close(`preload:${jobId}`);
                     finishDownload(totalPages);
                 }
             });
-            setTimeout(() => {
-                WS.close(`preload:${jobId}`);
-                finishDownload(totalPages);
-            }, 600000);
+            setTimeout(() => { WS.close(`preload:${jobId}`); finishDownload(totalPages); }, 600000);
         } else {
             finishDownload(totalPages);
         }
     } catch (e) {
-        console.warn('[DL] preload send failed:', e);
         dlStatusText.textContent = `Error: ${e.message}`;
         setTimeout(() => {
             dlProgress.classList.remove('active');
-            dlProgressFill.style.width = '0%';
             isDownloadingRange = false;
             downloadRangeBtn.disabled = false;
         }, 3000);
@@ -3177,50 +3892,281 @@ function clearHighlightCanvas() {
     const ctx = hlCanvas.getContext('2d');
     ctx.clearRect(0, 0, hlCanvas.width, hlCanvas.height);
 }
+
 function highlightActiveSentence(sentenceIndex, allSentences) {
     if (documentHandler instanceof EPUBHandler) {
         documentHandler.highlightSentence(sentenceIndex);
         return;
     }
+    
     clearHighlightCanvas();
-    const allSpans = Array.from(document.querySelectorAll('.textLayer span'));
-    allSpans.forEach(span => {
-        if (span.dataset.originalText === undefined) {
-            span.dataset.originalText = span.textContent;
-        }
-        span.textContent = span.dataset.originalText;
-    });
     if (sentenceIndex < 0 || sentenceIndex >= allSentences.length) return;
-    const normalize = s => s.toLowerCase().replace(/[^a-z0-9]/g, '');
-    let fullNorm = '';
-    const spanMaps = [];
-    allSpans.forEach(span => {
-        const raw = span.dataset.originalText;
-        const norm = normalize(raw);
-        spanMaps.push({ element: span, rawText: raw, normStart: fullNorm.length, normEnd: fullNorm.length + norm.length });
-        fullNorm += norm;
-    });
-    let cursor = 0, matchIndex = -1, targetNorm = '';
-    for (let i = 0; i <= sentenceIndex; i++) {
-        targetNorm = normalize(allSentences[i]);
-        if (!targetNorm) continue;
-        const found = fullNorm.indexOf(targetNorm, cursor);
-        if (found !== -1) {
-            matchIndex = found;
-            cursor = found + targetNorm.length;
-        } else {
-            const fallback = fullNorm.indexOf(targetNorm, 0);
-            if (fallback !== -1) { matchIndex = fallback; cursor = fallback + targetNorm.length; }
-        }
+
+    const hlCanvas = document.getElementById('highlight-canvas');
+    const container = document.getElementById('pdf-container');
+    if (!hlCanvas || !container) return;
+
+    // If the offset map is stale (e.g. after zoom, click, or j/k navigation),
+    // rebuild it immediately so the scroll target is always accurate.
+    if (_pdfSentenceOffsets.size === 0 && sentences && sentences.length) {
+        _rebuildPdfSentenceOffsets();
     }
-    if (matchIndex === -1) return;
-    const matchEnd = matchIndex + targetNorm.length;
-    const matchedSpans = [];
-    let firstEl = null;
-    spanMaps.forEach(map => {
-        const os = Math.max(map.normStart, matchIndex);
-        const oe = Math.min(map.normEnd, matchEnd);
+
+    const normalize = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const allSpans = Array.from(document.querySelectorAll('.textLayer span'));
+    const targetNorm = normalize(sentences[sentenceIndex]);
+    if (!targetNorm) return;
+
+    const entry = _pdfSentenceOffsets.get(sentenceIndex);
+    if (!entry) return;
+
+    // 1. Gather all spans and their normalized text offsets
+    let fullNorm = '';
+    const spanNormOffsets = [];
+    allSpans.forEach(span => {
+        const raw = span.dataset.originalText !== undefined ? span.dataset.originalText : span.textContent;
+        spanNormOffsets.push({ span, rawText: raw, normStart: fullNorm.length, normEnd: fullNorm.length + normalize(raw).length });
+        fullNorm += normalize(raw);
+    });
+
+    const dpr = window.devicePixelRatio || 1;
+    const cRect = container.getBoundingClientRect();
+    const rows = new Map();
+    let firstSpan = null;
+
+    // 2. Use the exact same native Range math from the hover logic
+    spanNormOffsets.forEach(map => {
+        const os = Math.max(map.normStart, entry.start);
+        const oe = Math.min(map.normEnd, entry.end);
         if (os >= oe) return;
+
+        if (!firstSpan) firstSpan = map.span;
+
+        let alpha = map.normStart, rs = 0, re = map.rawText.length;
+        let rsFound = false;
+        for (let i = 0; i < map.rawText.length; i++) {
+            const ch = map.rawText[i];
+            if (/[a-z0-9]/i.test(ch)) {
+                if (!rsFound && alpha === os) { rs = i; rsFound = true; }
+                alpha++;
+                if (alpha === oe) { re = i + 1; break; }
+            }
+        }
+        while (re < map.rawText.length && /[.,!?;:'"’”\]\)]/.test(map.rawText[re])) re++;
+
+        try {
+            const textNode = map.span.firstChild; 
+            if (textNode && textNode.nodeType === Node.TEXT_NODE) {
+                const range = document.createRange();
+                const startIdx = Math.max(0, Math.min(rs, textNode.length));
+                const endIdx = Math.max(0, Math.min(re, textNode.length));
+                range.setStart(textNode, startIdx);
+                range.setEnd(textNode, endIdx);
+                
+                const rects = Array.from(range.getClientRects());
+                rects.forEach(r => {
+                    if (r.width < 1 || r.height < 1) return;
+                    const left   = r.left - cRect.left;
+                    const top    = r.top  - cRect.top;
+                    const right  = r.right - cRect.left;
+                    const bottom = r.bottom - cRect.top;
+                    
+                    const rowKey = Math.round(top / 2) * 2;
+                    if (!rows.has(rowKey)) {
+                        rows.set(rowKey, { left, right, top, bottom });
+                    } else {
+                        const row = rows.get(rowKey);
+                        row.left   = Math.min(row.left, left);
+                        row.right  = Math.max(row.right, right);
+                        row.top    = Math.min(row.top, top);
+                        row.bottom = Math.max(row.bottom, bottom);
+                    }
+                });
+            }
+        } catch(e) {}
+    });
+
+    if (rows.size === 0) return;
+    
+    // 3. Draw perfectly aligned canvas boxes
+    hlCanvas.width = Math.round(cRect.width * dpr);
+    hlCanvas.height = Math.round(cRect.height * dpr);
+    hlCanvas.style.width = cRect.width + 'px';
+    hlCanvas.style.height = cRect.height + 'px';
+    const ctx = hlCanvas.getContext('2d');
+    ctx.clearRect(0, 0, hlCanvas.width, hlCanvas.height);
+    ctx.scale(dpr, dpr);
+
+    const pad = hlPadding;
+    const r   = hlRadius;
+    
+    ctx.fillStyle = `rgba(${hlBaseColor},${hlOpacity})`;
+    if (hlOutline) { 
+        ctx.strokeStyle = `rgba(${hlBaseColor},${Math.min(1, hlOpacity * 2.5)})`; 
+        ctx.lineWidth = 1; 
+    }
+
+    rows.forEach(row => {
+        const x  = row.left  - pad;
+        const y  = row.top;
+        const w  = (row.right - row.left) + pad * 2;
+        const h  = (row.bottom - row.top) + 1;
+        const cr = Math.min(r, w / 2, h / 2);
+        ctx.beginPath();
+        ctx.moveTo(x + cr, y);
+        ctx.lineTo(x + w - cr, y);
+        ctx.quadraticCurveTo(x + w, y, x + w, y + cr);
+        ctx.lineTo(x + w, y + h - cr);
+        ctx.quadraticCurveTo(x + w, y + h, x + w - cr, y + h);
+        ctx.lineTo(x + cr, y + h);
+        ctx.quadraticCurveTo(x, y + h, x, y + h - cr);
+        ctx.lineTo(x, y + cr);
+        ctx.quadraticCurveTo(x, y, x + cr, y);
+        ctx.closePath();
+        ctx.fill();
+        if (hlOutline) ctx.stroke();
+    });
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+
+    // 4. Scroll tracking — robust version
+    _scrollToHighlightedSentence(firstSpan);
+}
+
+/**
+ * Scrolls the PDF viewer so the highlighted sentence is vertically centred.
+ * Handles:
+ *  - zero-size rects during layout transitions (retries up to 3×)
+ *  - always scrolls on the first sentence of a page (no dead-zone guard)
+ *  - ignores the is-scrolling class so auto-scroll always wins
+ */
+let _autoScrollRetryTimer = null;
+function _scrollToHighlightedSentence(span, attempt = 0) {
+    if (!span || !viewerArea) return;
+
+    // Cancel any pending retry from a previous sentence
+    clearTimeout(_autoScrollRetryTimer);
+
+    const vr  = viewerArea.getBoundingClientRect();
+    const hr  = span.getBoundingClientRect();
+
+    // If the viewer or span has no layout yet, retry after a short delay (max 3×)
+    if (vr.height < 10 || hr.width < 1) {
+        if (attempt < 3) {
+            _autoScrollRetryTimer = setTimeout(() => _scrollToHighlightedSentence(span, attempt + 1), 80);
+        }
+        return;
+    }
+
+    const elementTop    = hr.top    - vr.top;
+    const elementBottom = hr.bottom - vr.top;
+    const elementCenter = elementTop + hr.height / 2;
+    const viewportCenter = vr.height / 2;
+
+    // Always scroll if element is outside the middle 50 % band, OR if this is
+    // the very first sentence (elementTop near 0 means page just turned).
+    const inBand = elementTop > vr.height * 0.2 && elementBottom < vr.height * 0.8;
+    if (!inBand) {
+        viewerArea.scrollTo({
+            top: viewerArea.scrollTop + elementCenter - viewportCenter,
+            behavior: 'smooth',
+        });
+    }
+}
+
+/* ─── PDF Sentence Span Map (rebuilt each page render) ─────────────────────
+   Maps each sentence index → the normalized char offset range in the full
+   span text so we can resolve "which sentence is this span in?" in O(1).   */
+let _pdfSentenceOffsets = new Map(); // idx → {start, end}
+
+function _rebuildPdfSentenceOffsets() {
+    _pdfSentenceOffsets = new Map();
+    if (!sentences || !sentences.length) return;
+    const normalize = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const allSpans = Array.from(document.querySelectorAll('.textLayer span'));
+    let fullNorm = '';
+    allSpans.forEach(span => {
+        const raw = span.dataset.originalText !== undefined ? span.dataset.originalText : span.textContent;
+        fullNorm += normalize(raw);
+    });
+    let cursor = 0;
+    sentences.forEach((sent, i) => {
+        const tn = normalize(sent);
+        if (!tn) return;
+        let mi = fullNorm.indexOf(tn, cursor);
+        if (mi === -1) mi = fullNorm.indexOf(tn, 0);
+        if (mi !== -1) {
+            _pdfSentenceOffsets.set(i, { start: mi, end: mi + tn.length });
+            cursor = mi + tn.length;
+        }
+    });
+}
+
+function _pdfSentenceAtOffset(normOffset) {
+    // Linear scan is fine — sentence count per page is small (< 200)
+    for (const [idx, s] of _pdfSentenceOffsets) {
+        if (normOffset >= s.start && normOffset < s.end) return idx;
+    }
+    return -1;
+}
+
+/* ─── PDF Hover Canvas ─── */
+let _hoverCanvas = null;
+let _hoverSentenceIdx = -1;
+
+function _ensureHoverCanvas() {
+    if (_hoverCanvas) return _hoverCanvas;
+    const container = document.getElementById('pdf-container');
+    if (!container) return null;
+    _hoverCanvas = document.createElement('canvas');
+    _hoverCanvas.id = 'hover-canvas';
+    _hoverCanvas.style.cssText = `
+        position:absolute; top:0; left:0; width:100%; height:100%;
+        pointer-events:none; z-index:4;
+    `;
+    container.style.position = 'relative';
+    container.appendChild(_hoverCanvas);
+    return _hoverCanvas;
+}
+
+function _drawHoverHighlight(sentIdx) {
+    const canvas = _ensureHoverCanvas();
+    if (!canvas) return;
+    const container = document.getElementById('pdf-container');
+    if (!container) return;
+    const dpr = window.devicePixelRatio || 1;
+    const cRect = container.getBoundingClientRect();
+    canvas.width = Math.round(cRect.width * dpr);
+    canvas.height = Math.round(cRect.height * dpr);
+    canvas.style.width = cRect.width + 'px';
+    canvas.style.height = cRect.height + 'px';
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    if (sentIdx < 0 || !sentences[sentIdx]) return;
+
+    // Use the exact same math from highlightActiveSentence to find character boundaries
+    const normalize = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+    const allSpans = Array.from(document.querySelectorAll('.textLayer span'));
+    const targetNorm = normalize(sentences[sentIdx]);
+    if (!targetNorm) return;
+
+    const entry = _pdfSentenceOffsets.get(sentIdx);
+    if (!entry) return;
+
+    let fullNorm = '';
+    const spanNormOffsets = [];
+    allSpans.forEach(span => {
+        const raw = span.dataset.originalText !== undefined ? span.dataset.originalText : span.textContent;
+        spanNormOffsets.push({ span, rawText: raw, normStart: fullNorm.length, normEnd: fullNorm.length + normalize(raw).length });
+        fullNorm += normalize(raw);
+    });
+
+    const rows = new Map();
+    spanNormOffsets.forEach(map => {
+        const os = Math.max(map.normStart, entry.start);
+        const oe = Math.min(map.normEnd, entry.end);
+        if (os >= oe) return;
+
         let alpha = map.normStart, rs = 0, re = map.rawText.length;
         let rsFound = false;
         for (let i = 0; i < map.rawText.length; i++) {
@@ -3232,141 +4178,240 @@ function highlightActiveSentence(sentenceIndex, allSentences) {
             }
         }
         while (re < map.rawText.length && /[^\w\s]/.test(map.rawText[re])) re++;
-        const before = escapeHtml(map.rawText.slice(0, rs));
-        const hi = escapeHtml(map.rawText.slice(rs, re));
-        const after = escapeHtml(map.rawText.slice(re));
-        if (hi) {
-            map.element.innerHTML = `${before}<mark class="reading-highlight">${hi}</mark>${after}`;
-            const markEl = map.element.querySelector('mark.reading-highlight');
-            if (!firstEl && markEl) firstEl = markEl;
-            matchedSpans.push(map.element);
-        }
-    });
-    const hlCanvas = document.getElementById('highlight-canvas');
-    const container = document.getElementById('pdf-container');
-    if (hlCanvas && container && matchedSpans.length > 0) {
-        const dpr = window.devicePixelRatio || 1;
-        const cRect = container.getBoundingClientRect();
-        const rows = new Map();
-        matchedSpans.forEach(span => {
-            const marks = span.querySelectorAll('mark.reading-highlight');
-            marks.forEach(mark => {
-                const r = mark.getBoundingClientRect();
-                if (r.width < 1 || r.height < 1) return;
-                const left = r.left - cRect.left;
-                const top = r.top - cRect.top;
-                const right = r.right - cRect.left;
-                const bottom = r.bottom - cRect.top;
-                const rowKey = Math.round(top / 2) * 2;
-                if (!rows.has(rowKey)) {
-                    rows.set(rowKey, { left, right, top, bottom });
-                } else {
-                    const row = rows.get(rowKey);
-                    row.left = Math.min(row.left, left);
-                    row.right = Math.max(row.right, right);
-                    row.top = Math.min(row.top, top);
-                    row.bottom = Math.max(row.bottom, bottom);
-                }
-            });
-        });
-        if (rows.size === 0) return;
-        hlCanvas.width = Math.round(cRect.width * dpr);
-        hlCanvas.height = Math.round(cRect.height * dpr);
-        hlCanvas.style.width = cRect.width + 'px';
-        hlCanvas.style.height = cRect.height + 'px';
-        const ctx = hlCanvas.getContext('2d');
-        ctx.clearRect(0, 0, hlCanvas.width, hlCanvas.height);
-        ctx.scale(dpr, dpr);
-        const pad = hlPadding;
-        const r = hlRadius;
-        const fillColor = `rgba(${hlBaseColor},${hlOpacity})`;
-        const strokeColor = hlOutline ? `rgba(${hlBaseColor},${Math.min(1, hlOpacity * 2.5)})` : null;
-        ctx.fillStyle = fillColor;
-        if (strokeColor) { ctx.strokeStyle = strokeColor; ctx.lineWidth = 1; }
-        rows.forEach((row) => {
-            const x = row.left - pad;
-            const y = row.top;
-            const w = (row.right - row.left) + pad * 2;
-            const h = (row.bottom - row.top) + 1;
-            const cr = Math.min(r, w / 2, h / 2);
-            ctx.beginPath();
-            ctx.moveTo(x + cr, y);
-            ctx.lineTo(x + w - cr, y);
-            ctx.quadraticCurveTo(x + w, y, x + w, y + cr);
-            ctx.lineTo(x + w, y + h - cr);
-            ctx.quadraticCurveTo(x + w, y + h, x + w - cr, y + h);
-            ctx.lineTo(x + cr, y + h);
-            ctx.quadraticCurveTo(x, y + h, x, y + h - cr);
-            ctx.lineTo(x, y + cr);
-            ctx.quadraticCurveTo(x, y, x + cr, y);
-            ctx.closePath();
-            ctx.fill();
-            if (strokeColor) ctx.stroke();
-        });
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-    }
 
-    if (firstEl && viewerArea) {
-        const vr = viewerArea.getBoundingClientRect();
-        const hr = firstEl.getBoundingClientRect();
-        // Calculate the absolute center of the highlighted element
-        const elementCenter = hr.top - vr.top + (hr.height / 2);
-        const viewportCenter = vr.height / 2;
-        
-        // Scroll only if the highlight strays outside a 25% boundary from the center
-        if (elementCenter < vr.height * 0.25 || elementCenter > vr.height * 0.75) {
-            viewerArea.scrollTo({ 
-                top: viewerArea.scrollTop + elementCenter - viewportCenter, 
-                behavior: 'smooth' 
-            });
-        }
-    }
+        // Native DOM Range gives exact pixel bounds of the substring without mutating the DOM
+        try {
+            const textNode = map.span.firstChild; 
+            if (textNode && textNode.nodeType === Node.TEXT_NODE) {
+                const range = document.createRange();
+                const startIdx = Math.max(0, Math.min(rs, textNode.length));
+                const endIdx = Math.max(0, Math.min(re, textNode.length));
+                range.setStart(textNode, startIdx);
+                range.setEnd(textNode, endIdx);
+                
+                const rects = Array.from(range.getClientRects());
+                rects.forEach(r => {
+                    if (r.width < 1 || r.height < 1) return;
+                    const left   = r.left - cRect.left;
+                    const top    = r.top  - cRect.top;
+                    const right  = r.right - cRect.left;
+                    const bottom = r.bottom - cRect.top;
+                    
+                    const rowKey = Math.round(top / 2) * 2;
+                    if (!rows.has(rowKey)) {
+                        rows.set(rowKey, { left, right, top, bottom });
+                    } else {
+                        const row = rows.get(rowKey);
+                        row.left   = Math.min(row.left, left);
+                        row.right  = Math.max(row.right, right);
+                        row.top    = Math.min(row.top, top);
+                        row.bottom = Math.max(row.bottom, bottom);
+                    }
+                });
+            }
+        } catch(e) {}
+    });
+
+    if (rows.size === 0) return;
+    ctx.scale(dpr, dpr);
+    const pad = hlPadding;
+    const r   = hlRadius;
+    const hoverOpacity = Math.min(1, hlOpacity * 0.55);
+    ctx.fillStyle   = `rgba(${hlBaseColor}, ${hoverOpacity})`;
+    ctx.strokeStyle = `rgba(${hlBaseColor}, ${Math.min(1, hlOpacity)})`;
+    ctx.lineWidth   = 1;
+
+    rows.forEach(row => {
+        const x  = row.left  - pad;
+        const y  = row.top;
+        const w  = (row.right - row.left) + pad * 2;
+        const h  = (row.bottom - row.top) + 1;
+        const cr = Math.min(r, w / 2, h / 2);
+        ctx.beginPath();
+        ctx.moveTo(x + cr, y);
+        ctx.lineTo(x + w - cr, y);
+        ctx.quadraticCurveTo(x + w, y, x + w, y + cr);
+        ctx.lineTo(x + w, y + h - cr);
+        ctx.quadraticCurveTo(x + w, y + h, x + w - cr, y + h);
+        ctx.lineTo(x + cr, y + h);
+        ctx.quadraticCurveTo(x, y + h, x, y + h - cr);
+        ctx.lineTo(x, y + cr);
+        ctx.quadraticCurveTo(x, y, x + cr, y);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+    });
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
 }
 
-/* ─── Click-to-Read ─── */
-document.getElementById('text-layer').addEventListener('click', e => {
-    let target = e.target;
-    if (target.tagName.toLowerCase() === 'mark') target = target.parentElement;
-    if (target.tagName.toLowerCase() !== 'span') return;
-    if (!sentences || !sentences.length) return;
-    const allSpans = Array.from(document.querySelectorAll('.textLayer span'));
-    const ti = allSpans.indexOf(target);
-    if (ti === -1) return;
+function _clearHoverCanvas() {
+    if (!_hoverCanvas) return;
+    const ctx = _hoverCanvas.getContext('2d');
+    ctx.clearRect(0, 0, _hoverCanvas.width, _hoverCanvas.height);
+    _hoverSentenceIdx = -1;
+}
+
+/* ─── Click-to-Read + Hover ─── */
+const _textLayerEl = document.getElementById('text-layer');
+
+function _spanSentenceIndex(spanEl) {
+    if (!sentences || !sentences.length) return -1;
     const normalize = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-    let fullNorm = '';
-    let offsets = [];
-    allSpans.forEach(span => {
-        const raw = span.dataset.originalText !== undefined ? span.dataset.originalText : span.textContent;
-        offsets.push(fullNorm.length);
-        fullNorm += normalize(raw);
-    });
-    const clickedOffset = offsets[ti];
-    let cursor = 0, found = -1;
-    for (let i = 0; i < sentences.length; i++) {
-        const tn = normalize(sentences[i]);
-        if (!tn) continue;
-        let mi = fullNorm.indexOf(tn, cursor);
-        if (mi === -1) mi = fullNorm.indexOf(tn, 0);
-        if (mi !== -1) {
-            if (clickedOffset >= mi && clickedOffset < mi + tn.length) { found = i; break; }
-            cursor = mi + tn.length;
+    const allSpans = Array.from(document.querySelectorAll('.textLayer span'));
+    const ti = allSpans.indexOf(spanEl);
+    if (ti === -1) return -1;
+    let normLen = 0;
+    for (let i = 0; i < ti; i++) {
+        const raw = allSpans[i].dataset.originalText !== undefined ? allSpans[i].dataset.originalText : allSpans[i].textContent;
+        normLen += normalize(raw).length;
+    }
+    return _pdfSentenceAtOffset(normLen);
+}
+
+_textLayerEl.addEventListener('mousemove', e => {
+    if (documentHandler instanceof EPUBHandler) return;
+    if (!sentences || !sentences.length || !_pdfSentenceOffsets.size) { _clearHoverCanvas(); return; }
+
+    // Use caretRangeFromPoint for pinpoint accuracy — the same approach as EPUB hover.
+    // This gives us the exact text-node character under the cursor rather than just
+    // which span the mouse is over (spans can span multiple sentences at line boundaries).
+    let idx = -1;
+    if (document.caretRangeFromPoint) {
+        const range = document.caretRangeFromPoint(e.clientX, e.clientY);
+        if (range) {
+            const node = range.startContainer;
+            const charOffset = range.startOffset;
+            // Walk up to a .textLayer span
+            const span = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+            if (span && span.matches && span.matches('.textLayer span')) {
+                // Find normalized offset of this span in the full page text
+                const normalize = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+                const allSpans = Array.from(document.querySelectorAll('.textLayer span'));
+                const si = allSpans.indexOf(span);
+                if (si !== -1) {
+                    let normBefore = 0;
+                    for (let i = 0; i < si; i++) {
+                        const raw = allSpans[i].dataset.originalText !== undefined ? allSpans[i].dataset.originalText : allSpans[i].textContent;
+                        normBefore += normalize(raw).length;
+                    }
+                    // Add normalized char offset within this span to get exact position
+                    const spanRaw = span.dataset.originalText !== undefined ? span.dataset.originalText : span.textContent;
+                    const textUpToOffset = spanRaw.slice(0, charOffset);
+                    normBefore += normalize(textUpToOffset).length;
+                    idx = _pdfSentenceAtOffset(normBefore);
+                }
+            }
+        }
+    } else {
+        // Fallback for browsers without caretRangeFromPoint: use the hovered span
+        let target = e.target;
+        if (target.tagName && target.tagName.toLowerCase() === 'mark') target = target.parentElement;
+        if (target.tagName && target.tagName.toLowerCase() === 'span') {
+            idx = _spanSentenceIndex(target);
         }
     }
-    if (found !== -1) startReadingPage(found);
+
+    if (idx === _hoverSentenceIdx) return; // same sentence, no redraw needed
+    _hoverSentenceIdx = idx;
+    if (idx === -1) { _clearHoverCanvas(); return; }
+    _drawHoverHighlight(idx);
+});
+
+_textLayerEl.addEventListener('mouseleave', () => {
+    _clearHoverCanvas();
+});
+
+/* ─── Click-to-Read ─── */
+
+/* ─── Click-to-Read ─── */
+_textLayerEl.addEventListener('click', e => {
+    if (documentHandler instanceof EPUBHandler) return;
+    if (!sentences || !sentences.length || !_pdfSentenceOffsets.size) return;
+
+    let found = -1;
+    
+    // Primary path: Use precise character coordinates under the mouse
+    if (document.caretRangeFromPoint) {
+        const range = document.caretRangeFromPoint(e.clientX, e.clientY);
+        if (range) {
+            const node = range.startContainer;
+            const charOffset = range.startOffset;
+            const span = node.nodeType === Node.TEXT_NODE ? node.parentElement : node;
+            
+            if (span && span.matches && span.matches('.textLayer span')) {
+                const normalize = s => (s || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+                const allSpans = Array.from(document.querySelectorAll('.textLayer span'));
+                const si = allSpans.indexOf(span);
+                
+                if (si !== -1) {
+                    let normBefore = 0;
+                    for (let i = 0; i < si; i++) {
+                        const raw = allSpans[i].dataset.originalText !== undefined ? allSpans[i].dataset.originalText : allSpans[i].textContent;
+                        normBefore += normalize(raw).length;
+                    }
+                    const spanRaw = span.dataset.originalText !== undefined ? span.dataset.originalText : span.textContent;
+                    const textUpToOffset = spanRaw.slice(0, charOffset);
+                    normBefore += normalize(textUpToOffset).length;
+                    found = _pdfSentenceAtOffset(normBefore);
+                }
+            }
+        }
+    } else {
+        // Fallback for browsers lacking caretRangeFromPoint
+        let target = e.target;
+        if (target.tagName && target.tagName.toLowerCase() === 'mark') target = target.parentElement;
+        if (target.tagName && target.tagName.toLowerCase() === 'span') {
+            found = _spanSentenceIndex(target);
+        }
+    }
+
+    if (found !== -1) {
+        startReadingPage(found);
+        // Re-highlight on the next frame so the scroll fires after stopPipeline
+        // clears the canvas inside startReadingPage.
+        requestAnimationFrame(() => {
+            if (sentences && sentences.length && found < sentences.length) {
+                highlightActiveSentence(found, sentences);
+            }
+        });
+    }
 });
 
 /* ─── Delete Cache Range ─── */
-deleteRangeBtn.addEventListener('click', async () => {
-    if (!currentFileName || !pdfDoc) return;
-    const rangeStr = deleteRangeInput.value.trim();
-    if (!rangeStr) { deleteStatus.textContent = 'Enter a page range (e.g. 5-10)'; return; }
-    const match = rangeStr.match(/^(\d+)\s*[-–]\s*(\d+)$/);
-    if (!match) { deleteStatus.textContent = 'Invalid range format. Use e.g. 5-10'; return; }
+/* ─── Delete Cache Range ─── */
+document.getElementById('delete-range-btn').onclick = async () => {
+    // 1. Safety Checks
+    if (!currentFileName || (!pdfDoc && !(documentHandler instanceof EPUBHandler))) return;
+    
+    const rangeStr = document.getElementById('delete-range-input').value.trim();
+    if (!rangeStr) { 
+        deleteStatus.textContent = 'Enter a page range (e.g. 5-10 or 5)'; 
+        return; 
+    }
+    
+    // 2. Upgraded Regex: Matches "18-20" OR just "18"
+    const match = rangeStr.match(/^(\d+)(?:\s*[-–]\s*(\d+))?$/);
+    if (!match) { 
+        deleteStatus.textContent = 'Invalid range format. Use e.g. 5-10 or 5'; 
+        return; 
+    }
+    
+    // 3. Parse Pages
     const fromPage = Math.max(1, parseInt(match[1], 10));
-    const toPage = Math.min(pdfDoc.numPages, parseInt(match[2], 10));
-    if (fromPage > toPage) { deleteStatus.textContent = 'Invalid range: from > to'; return; }
+    const pageCount = pdfDoc ? pdfDoc.numPages : (documentHandler instanceof EPUBHandler ? documentHandler.pageCount : 9999);
+    
+    // If no second number is provided, just use the first number
+    const toPage = Math.min(pageCount, parseInt(match[2] || match[1], 10));
+    
+    if (fromPage > toPage) { 
+        deleteStatus.textContent = 'Invalid range: from > to'; 
+        return; 
+    }
+    
+    // 4. Execute Fetch
     deleteStatus.textContent = 'Deleting…';
     deleteRangeBtn.disabled = true;
+    
     try {
         const res = await fetch('/delete_cache_range', {
             method: 'POST',
@@ -3377,20 +4422,25 @@ deleteRangeBtn.addEventListener('click', async () => {
                 page_to: toPage
             })
         });
+        
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
         deleteStatus.textContent = `Deleted ${data.deleted} cached audio file(s).`;
+        
+        // Refresh UI & Cache states
         updateCacheBadge();
         Object.keys(pageDurationCache).forEach(k => delete pageDurationCache[k]);
         Object.keys(chapterDurationCache).forEach(k => delete chapterDurationCache[k]);
         refreshTimeEstimates();
-    } catch (e) {
-        deleteStatus.textContent = `Error: ${e.message}`;
+        
+    } catch (err) {
+        console.error("Delete Cache Error:", err);
+        deleteStatus.textContent = `Error: ${err.message}`;
     } finally {
         deleteRangeBtn.disabled = false;
-        deleteRangeInput.value = '';
+        document.getElementById('delete-range-input').value = '';
     }
-});
+};
 
 /* ─── Upload Document to Server ─── */
 const serverUploadInput = document.getElementById('server-upload');
@@ -3513,6 +4563,16 @@ async function refreshTimeEstimates() {
 async function startReadingPage(startIndex = 0) {
     if (!currentPageText.trim() || !sentences.length) return;
     if (!pdfDoc && !(documentHandler instanceof EPUBHandler)) return;
+
+    // ── Smart queue redirect ──
+    // Drop items from the queue that haven't been sent to the server yet.
+    // The single item currently in-flight will finish and cache normally.
+    _ttsQueue.forEach(idx => {
+        delete audioCache[idx];
+        inFlight = Math.max(0, inFlight - 1);
+    });
+    _ttsQueue = [];
+
     if (isPlaying) stopPipeline();
     
     currentIndex = startIndex;
@@ -3524,7 +4584,7 @@ async function startReadingPage(startIndex = 0) {
     
     await fetchSentenceDurationsForCurrentPage();
     
-    // CHANGED: Abort if the user clicked "Stop" while we were awaiting the fetch above
+    // Abort if the user clicked "Stop" while we were awaiting the fetch above
     if (!isPlaying) return;
 
     pageRemaining = 0;
@@ -3544,7 +4604,6 @@ async function startReadingPage(startIndex = 0) {
     const required = Math.min(REQUIRED_START_BUFFER, sentences.length - currentIndex);
     let readyCount = 0;
     for (let i = currentIndex; i < currentIndex + required; i++) {
-        // CHANGED: Buffer logic sync to allow null (failed) chunks to count toward the starting requirement
         if (audioCache[i] !== undefined && audioCache[i] !== 'fetching') readyCount++;
     }
     

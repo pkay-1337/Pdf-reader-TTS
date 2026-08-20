@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
-    <title>DocReader Pro</title>
+    <title>Pdf Reader</title>
 
     <!-- PDF.js served locally -->
     <script src="/static/pdfjs/pdf.min.js"></script>
@@ -27,8 +27,8 @@
                     <polyline points="10 9 9 9 8 9"/>
                 </svg>
             </div>
-            <h1>DocReader Pro</h1>
-            <p>A private, powerful PDF reader with full-text search, chapter navigation, and text-to-speech. Your files never leave your device.</p>
+            <h1>Pdf Reader</h1>
+            <p>meow :3</p>
             <!-- Upload to Server -->
             <div style="margin-top:24px; display:flex; flex-direction:column; gap:8px;">
                 <hr style="border:none; border-top:1px solid var(--border);">
@@ -176,10 +176,10 @@
                             <div class="control-label">Text-to-Speech</div>
                             <select id="voice-selector" class="styled-select">
                                 <optgroup label="🇺🇸 US Female">
-                                    <option value="af_heart">Heart (Default)</option>
+                                    <option value="af_bella">Bella</option>
+                                    <option value="af_heart">Heart</option>
                                     <option value="af_alloy">Alloy</option>
                                     <option value="af_aoede">Aoede</option>
-                                    <option value="af_bella">Bella</option>
                                     <option value="af_jessica">Jessica</option>
                                     <option value="af_kore">Kore</option>
                                     <option value="af_nicole">Nicole</option>
@@ -322,6 +322,17 @@
 			<option value="monokai">Monokai</option>
 			<option value="dracula">Dracula</option>
 			<option value="catppuccin">Catppuccin</option>
+
+		   <option value="tokyo-night">Tokyo Night</option>
+		   <option value="tokyo-night-light">Tokyo Night Light</option>
+		   <option value="everforest-dark">Everforest Dark</option>
+		   <option value="everforest-light">Everforest Light</option>
+		   <option value="ayu-dark">Ayu Dark</option>
+		   <option value="ayu-light">Ayu Light</option>
+		   <option value="rosepine">Rosé Pine</option>
+		   <option value="rosepine-dawn">Rosé Pine Dawn</option>
+		   <option value="paper">Paper</option>
+		   <option value="midnight">Midnight</option>
 		</select>
 	</div>
 
@@ -339,12 +350,6 @@
                                 <button class="hl-preset" data-color="rgba(251,146,60,0.35)" data-label="Orange" style="background:rgba(251,146,60,0.6)" title="Orange"></button>
                             </div>
 
-                            <div class="control-label" style="margin-bottom:6px">Opacity <span id="hl-opacity-val">32%</span></div>
-                            <input type="range" id="hl-opacity-slider" min="10" max="70" step="2" value="32" style="margin-bottom:12px">
-
-                            <div class="control-label" style="margin-bottom:6px">Corner radius <span id="hl-radius-val">3px</span></div>
-                            <input type="range" id="hl-radius-slider" min="0" max="8" step="1" value="3" style="margin-bottom:12px">
-
                             <div class="toggle-row">
                                 <span class="toggle-label">Show outline ring</span>
                                 <label class="switch">
@@ -352,6 +357,25 @@
                                     <span class="slider"></span>
                                 </label>
                             </div>
+                            <div class="control-label" style="margin-bottom:6px">Opacity <span id="hl-opacity-val">32%</span></div>
+                            <input type="range" id="hl-opacity-slider" min="10" max="70" step="2" value="32" style="margin-bottom:12px">
+
+							<div class="control-label" style="margin-bottom:6px">Corner radius <span id="hl-radius-val">3px</span></div>
+                            <input type="range" id="hl-radius-slider" min="0" max="8" step="1" value="3" style="margin-bottom:12px">
+
+                            <div class="control-label" style="margin-bottom:6px">Padding <span id="hl-padding-val">1px</span></div>
+                            <input type="range" id="hl-padding-slider" min="0" max="10" step="1" value="1" style="margin-bottom:12px">
+
+                            <div class="control-label" style="margin-bottom:6px">Hover Opacity <span id="hl-hover-opacity-val">18%</span></div>
+                            <input type="range" id="hl-hover-opacity-slider" min="5" max="80" step="1" value="18" style="margin-bottom:12px">
+							<!-- Side Margins Control -->
+							<div class="control-section">
+								<div class="control-label">Side Margins <span id="epub-padding-val">28px</span></div>
+								<div class="slider-row">
+									<input type="range" id="epub-padding-slider" min="0" max="80" step="4" value="28">
+								</div>
+							</div>
+
                         </div>
                     </div>
 
