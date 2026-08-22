@@ -7,3 +7,4 @@ tts_cache
 pdf
 static/fonts/font_*
 supertonic-test/
+benchmark/output/
