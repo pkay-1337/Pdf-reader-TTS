@@ -102,16 +102,20 @@ body {
 
 /* ─── Welcome Screen ─── */
 #welcome-screen {
+    /* Scrollable on small screens: the card can exceed the viewport height
+       (upload + drop zone + server library), so we must never clip it.
+       (display:flex comes from .screen.active) */
     justify-content: center;
-    align-items: center;
+    overflow-y: auto;
+    overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
     background: var(--bg);
     position: relative;
-    overflow: hidden;
 }
 
 #welcome-screen::before {
     content: '';
-    position: absolute;
+    position: fixed; /* stay put while the card scrolls */
     inset: 0;
     background: radial-gradient(ellipse 70% 50% at 50% -10%, var(--accent-glow), transparent);
     pointer-events: none;
@@ -127,6 +131,10 @@ body {
     text-align: center;
     box-shadow: var(--shadow-lg);
     position: relative;
+    /* margin:auto centers the card when it fits and degrades to normal
+       flow (scrollable) when it's taller than the screen — plain
+       align-items:center would clip both edges instead. */
+    margin: auto;
 }
 
 .welcome-logo {
@@ -1639,6 +1647,57 @@ body.topbar-hidden .sidebar-overlay {
 }
 
 @media (max-width: 480px) {
+    /* ─── Welcome screen on phones ───
+       The desktop card (52px/44px padding + 220px library list) overflows a
+       phone viewport. Tighten spacing, shrink type, give the library list a
+       viewport-relative height and comfortable touch targets. */
+    .welcome-card {
+        padding: 28px 18px;
+        width: calc(100% - 20px);
+        border-radius: var(--radius-md);
+    }
+    .welcome-logo {
+        width: 46px;
+        height: 46px;
+        margin-bottom: 14px;
+    }
+    .welcome-logo svg {
+        width: 22px;
+        height: 22px;
+    }
+    .welcome-card h1 {
+        font-size: 19px;
+        margin-bottom: 6px;
+    }
+    .welcome-card p {
+        font-size: 13px;
+        margin-bottom: 18px;
+    }
+    .drop-zone {
+        padding: 20px 12px;
+    }
+    .drop-zone .drop-icon {
+        font-size: 28px;
+        margin-bottom: 8px;
+    }
+    #server-pdf-section {
+        margin-top: 16px !important;
+    }
+    #server-pdf-list {
+        max-height: min(220px, 38vh) !important; /* beats the inline style in index.html */
+        padding: 4px;
+    }
+    .server-pdf-item {
+        padding: 12px;   /* ≥44px touch target with the icon */
+        gap: 10px;
+    }
+    .server-pdf-item-name {
+        font-size: 14px;
+        white-space: normal;       /* long titles wrap instead of hiding */
+        word-break: break-word;
+        line-height: 1.35;
+    }
+
     .topbar-filename {
         display: none;
     }
@@ -2150,4 +2209,98 @@ mark.reading-highlight {
     width: 0 !important;
     height: 0 !important;
     background: transparent !important;
+}
+
+/* ─── Extended Themes ─── */
+
+body.theme-one-dark {
+    --bg: #282c34; --surface: #21252b; --surface-2: #3e4451; --border: #5c6370; --border-focus: #61afef;
+    --brand: #61afef; --accent: #61afef; --accent-soft: #2c313a; --accent-glow: rgba(97,175,239,0.12);
+    --text-primary: #d7dae0; --text-secondary: #abb2bf; --text-tertiary: #828997;
+    --danger: #e06c75; --danger-soft: #2a1214; --success: #98c379; --warning: #e5c07b;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.3); --shadow-md: 0 4px 6px rgba(0,0,0,0.4); --shadow-lg: 0 10px 15px rgba(0,0,0,0.5);
+    --toc-chapter-bg: rgba(97,175,239,0.08); --toc-chapter-border: rgba(97,175,239,0.2);
+    --toc-subtopic-color: #abb2bf; --toc-subsub-color: #828997; --toc-line-color: #5c6370;
+    --pdf-filter: invert(0.9) hue-rotate(190deg) saturate(0.85) brightness(0.95);
+}
+body.theme-kanagawa {
+    --bg: #1f1f28; --surface: #2a2a37; --surface-2: #363646; --border: #44445a; --border-focus: #7e9cd8;
+    --brand: #7e9cd8; --accent: #7e9cd8; --accent-soft: #2a2a37; --accent-glow: rgba(126,156,216,0.12);
+    --text-primary: #dcd7ba; --text-secondary: #c8c093; --text-tertiary: #727169;
+    --danger: #e46876; --danger-soft: #2a1520; --success: #98bb6c; --warning: #ffa066;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.3); --shadow-md: 0 4px 6px rgba(0,0,0,0.4); --shadow-lg: 0 10px 15px rgba(0,0,0,0.5);
+    --toc-chapter-bg: rgba(126,156,216,0.08); --toc-chapter-border: rgba(126,156,216,0.2);
+    --toc-subtopic-color: #c8c093; --toc-subsub-color: #727169; --toc-line-color: #44445a;
+    --pdf-filter: invert(0.88) sepia(0.25) hue-rotate(160deg) saturate(0.8) brightness(0.92);
+}
+body.theme-night-owl {
+    --bg: #011627; --surface: #0e2d47; --surface-2: #14375a; --border: #24455f; --border-focus: #82aaff;
+    --brand: #82aaff; --accent: #82aaff; --accent-soft: #0e2d47; --accent-glow: rgba(130,170,255,0.12);
+    --text-primary: #d6deeb; --text-secondary: #a1bccb; --text-tertiary: #637777;
+    --danger: #ef5350; --danger-soft: #2a1114; --success: #addb67; --warning: #ffcb8b;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.35); --shadow-md: 0 4px 6px rgba(0,0,0,0.45); --shadow-lg: 0 10px 15px rgba(0,0,0,0.55);
+    --toc-chapter-bg: rgba(130,170,255,0.08); --toc-chapter-border: rgba(130,170,255,0.2);
+    --toc-subtopic-color: #a1bccb; --toc-subsub-color: #637777; --toc-line-color: #24455f;
+    --pdf-filter: invert(0.9) hue-rotate(180deg) saturate(1.1) brightness(0.95);
+}
+body.theme-material-ocean {
+    --bg: #0f111a; --surface: #1b2030; --surface-2: #262d40; --border: #394356; --border-focus: #84ffff;
+    --brand: #84ffff; --accent: #84ffff; --accent-soft: #1b2030; --accent-glow: rgba(132,255,255,0.1);
+    --text-primary: #e3e6ee; --text-secondary: #9fabdb; --text-tertiary: #6d7da8;
+    --danger: #f07178; --danger-soft: #2a1418; --success: #c3e88d; --warning: #ffcb6b;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.35); --shadow-md: 0 4px 6px rgba(0,0,0,0.45); --shadow-lg: 0 10px 15px rgba(0,0,0,0.55);
+    --toc-chapter-bg: rgba(132,255,255,0.07); --toc-chapter-border: rgba(132,255,255,0.18);
+    --toc-subtopic-color: #9fabdb; --toc-subsub-color: #6d7da8; --toc-line-color: #394356;
+    --pdf-filter: invert(0.9) hue-rotate(200deg) saturate(1.1) brightness(0.93);
+}
+body.theme-synthwave {
+    --bg: #262335; --surface: #2e2a45; --surface-2: #38325a; --border: #4a4668; --border-focus: #ff7edb;
+    --brand: #ff7edb; --accent: #ff7edb; --accent-soft: #2e2a45; --accent-glow: rgba(255,126,219,0.14);
+    --text-primary: #dedbf0; --text-secondary: #b6b1d9; --text-tertiary: #8e87b0;
+    --danger: #fe4450; --danger-soft: #2a0e14; --success: #72f1b8; --warning: #fede5d;
+    --shadow-sm: 0 1px 3px rgba(0,0,0,0.35); --shadow-md: 0 4px 6px rgba(0,0,0,0.45); --shadow-lg: 0 10px 15px rgba(0,0,0,0.55);
+    --toc-chapter-bg: rgba(255,126,219,0.08); --toc-chapter-border: rgba(255,126,219,0.22);
+    --toc-subtopic-color: #b6b1d9; --toc-subsub-color: #8e87b0; --toc-line-color: #4a4668;
+    --pdf-filter: invert(0.9) hue-rotate(280deg) saturate(1.4) brightness(0.9);
+}
+body.theme-github-light {
+    --bg: #ffffff; --surface: #f6f8fa; --surface-2: #eaeef2; --border: #d0d7de; --border-focus: #0969da;
+    --brand: #0969da; --accent: #0969da; --accent-soft: #ddf4ff; --accent-glow: rgba(9,105,218,0.08);
+    --text-primary: #1f2328; --text-secondary: #59636e; --text-tertiary: #818b98;
+    --danger: #cf222e; --danger-soft: #ffebe9; --success: #1a7f37; --warning: #9a6700;
+    --shadow-sm: 0 1px 3px rgba(31,35,40,0.08); --shadow-md: 0 4px 6px rgba(31,35,40,0.1); --shadow-lg: 0 10px 15px rgba(31,35,40,0.12);
+    --toc-chapter-bg: rgba(9,105,218,0.06); --toc-chapter-border: rgba(9,105,218,0.18);
+    --toc-subtopic-color: #59636e; --toc-subsub-color: #818b98; --toc-line-color: #d0d7de;
+    --pdf-filter: sepia(0.06) brightness(1.01);
+}
+body.theme-catppuccin-latte {
+    --bg: #eff1f5; --surface: #e6e9ef; --surface-2: #dce0e8; --border: #bcc0cc; --border-focus: #8839ef;
+    --brand: #8839ef; --accent: #8839ef; --accent-soft: #e6e9ef; --accent-glow: rgba(136,57,239,0.08);
+    --text-primary: #4c4f69; --text-secondary: #5c5f77; --text-tertiary: #8c8fa1;
+    --danger: #d20f39; --danger-soft: #feecee; --success: #40a02b; --warning: #df8e1d;
+    --shadow-sm: 0 1px 3px rgba(76,79,105,0.08); --shadow-md: 0 4px 6px rgba(76,79,105,0.1); --shadow-lg: 0 10px 15px rgba(76,79,105,0.12);
+    --toc-chapter-bg: rgba(136,57,239,0.06); --toc-chapter-border: rgba(136,57,239,0.18);
+    --toc-subtopic-color: #5c5f77; --toc-subsub-color: #8c8fa1; --toc-line-color: #bcc0cc;
+    --pdf-filter: none;
+}
+body.theme-nord-light {
+    --bg: #eceff4; --surface: #e5e9f0; --surface-2: #d8dee9; --border: #c9d1dc; --border-focus: #5e81ac;
+    --brand: #5e81ac; --accent: #5e81ac; --accent-soft: #e5e9f0; --accent-glow: rgba(94,129,172,0.1);
+    --text-primary: #2e3440; --text-secondary: #434c5e; --text-tertiary: #7b88a1;
+    --danger: #bf616a; --danger-soft: #fbeaec; --success: #567d2d; --warning: #9c7500;
+    --shadow-sm: 0 1px 3px rgba(46,52,64,0.08); --shadow-md: 0 4px 6px rgba(46,52,64,0.1); --shadow-lg: 0 10px 15px rgba(46,52,64,0.12);
+    --toc-chapter-bg: rgba(94,129,172,0.07); --toc-chapter-border: rgba(94,129,172,0.18);
+    --toc-subtopic-color: #434c5e; --toc-subsub-color: #7b88a1; --toc-line-color: #c9d1dc;
+    --pdf-filter: none;
+}
+
+body.theme-github-dark {
+    --bg: #0d1117; --surface: #161b22; --surface-2: #21262d; --border: #30363d; --border-focus: #58a6ff;
+    --brand: #58a6ff; --accent: #58a6ff; --accent-soft: #161b22; --accent-glow: rgba(88,166,255,0.12);
+    --text-primary: #e6edf3; --text-secondary: #b0bac4; --text-tertiary: #8b949e;
+    --danger: #f85149; --danger-soft: #25171c; --success: #3fb950; --warning: #d29922;
+    --shadow-sm: 0 1px 3px rgba(1,4,9,0.3); --shadow-md: 0 4px 6px rgba(1,4,9,0.4); --shadow-lg: 0 10px 15px rgba(1,4,9,0.5);
+    --toc-chapter-bg: rgba(88,166,255,0.08); --toc-chapter-border: rgba(88,166,255,0.2);
+    --toc-subtopic-color: #b0bac4; --toc-subsub-color: #8b949e; --toc-line-color: #30363d;
+    --pdf-filter: invert(0.88) hue-rotate(180deg) brightness(0.95);
 }

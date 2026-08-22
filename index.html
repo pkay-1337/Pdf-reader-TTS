@@ -269,7 +269,7 @@
 
                                 <div id="save-range-row" class="page-range-row" style="display:none">
                                     <label>Pages</label>
-                                    <input type="text" id="page-range-input" class="page-range-input" placeholder="e.g. 5-10">
+                                    <input type="text" id="page-range-input" class="page-range-input" placeholder="e.g. 5-10 or 7">
                                     <button id="download-range-btn" class="btn-download" style="margin-top:0;width:auto;padding:6px 12px">
                                         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
                                         Go
@@ -291,7 +291,7 @@
                                     <div style="font-size:12px; font-weight:600; color:var(--text-secondary); margin-bottom:6px;">Manage Cache</div>
                                     <div class="page-range-row">
                                         <label>Delete pages</label>
-                                        <input type="text" id="delete-range-input" class="page-range-input" placeholder="e.g. 5-10" style="flex:1;">
+                                        <input type="text" id="delete-range-input" class="page-range-input" placeholder="e.g. 5-10 or 7" style="flex:1;">
                                         <button id="delete-range-btn" class="btn-sm" style="background:var(--danger-soft);color:var(--danger);border-color:var(--danger);">Delete</button>
                                     </div>
                                     <div id="delete-status" style="font-size:11px;color:var(--text-tertiary);margin-top:4px;"></div>
@@ -344,6 +344,15 @@
 		   <option value="rosepine-dawn">Rosé Pine Dawn</option>
 		   <option value="paper">Paper</option>
 		   <option value="midnight">Midnight</option>
+		   <option value="one-dark">One Dark</option>
+		   <option value="kanagawa">Kanagawa</option>
+		   <option value="night-owl">Night Owl</option>
+		   <option value="material-ocean">Material Ocean</option>
+		   <option value="synthwave">Synthwave '84</option>
+		   <option value="github-light">GitHub Light</option>
+		   <option value="github-dark">GitHub Dark</option>
+		   <option value="catppuccin-latte">Catppuccin Latte</option>
+		   <option value="nord-light">Nord Light</option>
 		</select>
 	</div>
 
@@ -359,6 +368,27 @@
                                 <button class="hl-preset" data-color="rgba(239,68,68,0.32)" data-label="Red" style="background:rgba(239,68,68,0.55)" title="Red"></button>
                                 <button class="hl-preset" data-color="rgba(168,85,247,0.32)" data-label="Purple" style="background:rgba(168,85,247,0.55)" title="Purple"></button>
                                 <button class="hl-preset" data-color="rgba(251,146,60,0.35)" data-label="Orange" style="background:rgba(251,146,60,0.6)" title="Orange"></button>
+                                <button class="hl-preset" data-color="rgba(236,72,153,0.32)" data-label="Pink" style="background:rgba(236,72,153,0.55)" title="Pink"></button>
+                                <button class="hl-preset" data-color="rgba(255,105,180,0.35)" data-label="Hot Pink" style="background:rgba(255,105,180,0.6)" title="Hot Pink"></button>
+                                <button class="hl-preset" data-color="rgba(244,63,94,0.32)" data-label="Rose" style="background:rgba(244,63,94,0.55)" title="Rose"></button>
+                                <button class="hl-preset" data-color="rgba(217,70,239,0.30)" data-label="Fuchsia" style="background:rgba(217,70,239,0.5)" title="Fuchsia"></button>
+                                <button class="hl-preset" data-color="rgba(139,92,246,0.32)" data-label="Violet" style="background:rgba(139,92,246,0.55)" title="Violet"></button>
+                                <button class="hl-preset" data-color="rgba(167,139,250,0.38)" data-label="Lavender" style="background:rgba(167,139,250,0.65)" title="Lavender"></button>
+                                <button class="hl-preset" data-color="rgba(99,102,241,0.30)" data-label="Indigo" style="background:rgba(99,102,241,0.5)" title="Indigo"></button>
+                                <button class="hl-preset" data-color="rgba(37,99,235,0.30)" data-label="Royal Blue" style="background:rgba(37,99,235,0.5)" title="Royal Blue"></button>
+                                <button class="hl-preset" data-color="rgba(14,165,233,0.32)" data-label="Sky" style="background:rgba(14,165,233,0.55)" title="Sky"></button>
+                                <button class="hl-preset" data-color="rgba(6,182,212,0.32)" data-label="Cyan" style="background:rgba(6,182,212,0.55)" title="Cyan"></button>
+                                <button class="hl-preset" data-color="rgba(20,184,166,0.33)" data-label="Teal" style="background:rgba(20,184,166,0.55)" title="Teal"></button>
+                                <button class="hl-preset" data-color="rgba(64,224,208,0.35)" data-label="Turquoise" style="background:rgba(64,224,208,0.6)" title="Turquoise"></button>
+                                <button class="hl-preset" data-color="rgba(52,211,153,0.38)" data-label="Mint" style="background:rgba(52,211,153,0.65)" title="Mint"></button>
+                                <button class="hl-preset" data-color="rgba(132,204,22,0.35)" data-label="Lime" style="background:rgba(132,204,22,0.6)" title="Lime"></button>
+                                <button class="hl-preset" data-color="rgba(134,148,42,0.35)" data-label="Olive" style="background:rgba(134,148,42,0.6)" title="Olive"></button>
+                                <button class="hl-preset" data-color="rgba(161,98,7,0.32)" data-label="Brown" style="background:rgba(161,98,7,0.55)" title="Brown"></button>
+                                <button class="hl-preset" data-color="rgba(159,18,57,0.32)" data-label="Maroon" style="background:rgba(159,18,57,0.55)" title="Maroon"></button>
+                                <button class="hl-preset" data-color="rgba(251,113,133,0.35)" data-label="Salmon" style="background:rgba(251,113,133,0.6)" title="Salmon"></button>
+                                <button class="hl-preset" data-color="rgba(255,127,80,0.35)" data-label="Coral" style="background:rgba(255,127,80,0.6)" title="Coral"></button>
+                                <button class="hl-preset" data-color="rgba(100,116,139,0.30)" data-label="Steel Gray" style="background:rgba(100,116,139,0.5)" title="Steel Gray"></button>
+                                <button class="hl-preset" data-color="rgba(255,255,255,0.45)" data-label="White" style="background:#fff;box-shadow:inset 0 0 0 1px var(--border)" title="White"></button>
                             </div>
 
                             <div class="toggle-row">
@@ -390,7 +420,7 @@
 							<div class="control-section">
 								<div class="control-label">Side Margins <span id="epub-padding-val">28px</span></div>
 								<div class="slider-row">
-									<input type="range" id="epub-padding-slider" min="0" max="80" step="4" value="28">
+									<input type="range" id="epub-padding-slider" min="0" max="200" step="4" value="28">
 								</div>
 							</div>
 

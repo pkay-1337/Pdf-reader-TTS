@@ -803,6 +803,7 @@ async def ws_tts(websocket: WebSocket):
             page  = data.get("page")
             line  = data.get("line")
             save  = data.get("save", False)
+            request_id = data.get("request_id")
 
             # Clean the text
             original_text = text
@@ -825,7 +826,11 @@ async def ws_tts(websocket: WebSocket):
             if original_text != cleaned_text:
                 console.print(f"[cyan]📝 WebSocket cleaned TTS text:[/cyan] {cleaned_text}")
 
-            can_cache = bool(book and page is not None and line is not None)
+            cache_key_ok = bool(book and page is not None and line is not None)
+            # Only persist new entries when the client's "save audio" toggle is on.
+            # Reading existing entries (e.g. from an explicit batch preload) is fine.
+            can_cache = cache_key_ok
+            can_write_cache = bool(cache_key_ok and save)
             cached = False
             duration = None
 
@@ -845,7 +850,7 @@ async def ws_tts(websocket: WebSocket):
                         while chunk:
                             await websocket.send_bytes(chunk)
                             chunk = f.read(8192)
-                    await websocket.send_json({"type": "done", "cached": True})
+                    await websocket.send_json({"type": "done", "cached": True, "request_id": request_id})
                     continue
 
             try:
@@ -854,10 +859,10 @@ async def ws_tts(websocket: WebSocket):
             except Exception as e:
                 log_error("ws_tts", e, {"text": cache_text[:200], "voice": voice})
                 log_ws_message("tts", "error", {"detail": str(e)})
-                await websocket.send_json({"type": "error", "detail": str(e)})
+                await websocket.send_json({"type": "error", "detail": str(e), "request_id": request_id})
                 continue
 
-            if can_cache:  # Save newly generated audio if caching is enabled
+            if can_write_cache:  # Save newly generated audio only when "save audio" is enabled
                 with open(cache_file, "wb") as f:
                     f.write(wav_bytes)
                 duration = get_duration_seconds(cache_file)
@@ -878,7 +883,7 @@ async def ws_tts(websocket: WebSocket):
             
             for i in range(0, len(wav_bytes), chunk_size):
                 await websocket.send_bytes(wav_bytes[i:i + chunk_size])
-            await websocket.send_json({"type": "done", "cached": False})
+            await websocket.send_json({"type": "done", "cached": False, "request_id": request_id})
 
     except WebSocketDisconnect:
         log_ws_disconnect("tts", id(websocket))
