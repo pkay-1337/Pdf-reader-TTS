@@ -1,6 +1,9 @@
 kokoro-v1.0.onnx
 voices-v1.0.bin
+supertonic-assets/
 tts-env
 __pycache__
 tts_cache
 pdf
+static/fonts/font_*
+supertonic-test/

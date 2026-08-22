@@ -1,5 +1,6 @@
 import io
 import os
+import gc
 import asyncio
 import re
 import json
@@ -11,7 +12,6 @@ from fastapi.responses import StreamingResponse, FileResponse, JSONResponse, HTM
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Set
-from kokoro_onnx import Kokoro
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 import numpy as np
@@ -47,6 +47,9 @@ PDF_DIR = os.getenv("PDF_DIR", "/home/pk/books/books/language")
 AUDIO_CACHE_DIR = os.getenv("AUDIO_CACHE_DIR", "./tts_cache")
 KOKORO_MODEL_PATH = os.getenv("KOKORO_MODEL", "kokoro-v1.0.onnx")
 KOKORO_VOICES_PATH = os.getenv("KOKORO_VOICES", "voices-v1.0.bin")
+SUPERTONIC_ASSETS_DIR = os.getenv("SUPERTONIC_ASSETS", "supertonic-assets")
+SUPERSONIC_TOTAL_STEPS = int(os.getenv("SUPERSONIC_STEPS", "5"))
+TTS_KEEP_BOTH = os.getenv("TTS_KEEP_BOTH", "0") == "1"
 MAX_WORKERS = int(os.getenv("TTS_WORKERS", "2"))
 PRELOAD_CONCURRENCY = int(os.getenv("PRELOAD_CONCURRENCY", "4")) 
 os.makedirs(PDF_DIR, exist_ok=True)
@@ -78,8 +81,9 @@ def log_startup():
             f"[bold cyan]DocReader Pro Server[/bold cyan]\n"
             f"[green]PDF Directory:[/green] {PDF_DIR}\n"
             f"[green]Audio Cache:[/green] {AUDIO_CACHE_DIR}\n"
-            f"[green]Model:[/green] {KOKORO_MODEL_PATH}\n"
-            f"[green]Voices:[/green] {KOKORO_VOICES_PATH}\n"
+            f"[green]Kokoro:[/green] {KOKORO_MODEL_PATH} (lazy)\n"
+            f"[green]Supertonic 3:[/green] {SUPERTONIC_ASSETS_DIR} (lazy)\n"
+            f"[green]Keep both loaded:[/green] {'yes' if TTS_KEEP_BOTH else 'no'}\n"
             f"[green]Workers:[/green] {MAX_WORKERS}",
             title="🚀 Startup",
             border_style="bold blue"
@@ -90,8 +94,8 @@ def log_startup():
         console.print("DocReader Pro Server")
         console.print(f"PDF Directory: {PDF_DIR}")
         console.print(f"Audio Cache: {AUDIO_CACHE_DIR}")
-        console.print(f"Model: {KOKORO_MODEL_PATH}")
-        console.print(f"Voices: {KOKORO_VOICES_PATH}")
+        console.print(f"Kokoro: {KOKORO_MODEL_PATH} (lazy)")
+        console.print(f"Supertonic 3: {SUPERTONIC_ASSETS_DIR} (lazy)")
         console.print(f"Workers: {MAX_WORKERS}")
         console.print("="*60)
 
@@ -364,18 +368,62 @@ class ConnectionManager:
 
 mgr = ConnectionManager()
 
-# ─── Kokoro model ───
-kokoro = None
-_model_lock = asyncio.Lock()
+# ─── TTS engines (lazy-loaded — only one resident at a time by default) ───
+SUPER_PREFIX = "s3-"
+
+kokoro = None       # kokoro_onnx.Kokoro, loaded on first Kokoro voice request
+_supertonic = None  # supertonic.TTS,      loaded on first s3-* voice request
+_engine_lock = asyncio.Lock()
 _tts_executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
 
-try:
-    print("Loading Kokoro model...")
-    kokoro = Kokoro(KOKORO_MODEL_PATH, KOKORO_VOICES_PATH)
-    print("Model loaded.")
-except Exception as e:
-    print(f"Error loading Kokoro: {e}")
-    kokoro = None
+
+def _engine_for_voice(voice: str) -> str:
+    return "supertonic" if voice.startswith(SUPER_PREFIX) else "kokoro"
+
+
+def _load_kokoro_sync():
+    from kokoro_onnx import Kokoro
+    return Kokoro(KOKORO_MODEL_PATH, KOKORO_VOICES_PATH)
+
+
+def _load_supertonic_sync():
+    from supertonic import TTS
+    return TTS(model="supertonic-3", model_dir=SUPERTONIC_ASSETS_DIR, auto_download=False)
+
+
+async def get_engine(voice: str) -> tuple:
+    """Return (engine_name, model). Loads the engine on first use; when switching
+    engines the previously resident model is unloaded to free RAM (unless
+    TTS_KEEP_BOTH=1)."""
+    global kokoro, _supertonic
+    wanted = _engine_for_voice(voice)
+    loop = asyncio.get_running_loop()
+
+    async with _engine_lock:
+        if wanted == "kokoro":
+            if kokoro is None:
+                if not TTS_KEEP_BOTH and _supertonic is not None:
+                    console.print("[yellow]🧹 Unloading Supertonic 3 to free RAM[/yellow]")
+                    _supertonic = None
+                    gc.collect()
+                console.print("[cyan]Loading Kokoro model...[/cyan]")
+                kokoro = await loop.run_in_executor(_tts_executor, _load_kokoro_sync)
+                console.print("[green]✅ Kokoro loaded[/green]")
+            return "kokoro", kokoro
+        else:
+            if _supertonic is None:
+                if not TTS_KEEP_BOTH and kokoro is not None:
+                    console.print("[yellow]🧹 Unloading Kokoro to free RAM[/yellow]")
+                    kokoro = None
+                    gc.collect()
+                console.print("[cyan]Loading Supertonic 3 model...[/cyan]")
+                _supertonic = await loop.run_in_executor(_tts_executor, _load_supertonic_sync)
+                console.print("[green]✅ Supertonic 3 loaded[/green]")
+            return "supertonic", _supertonic
+
+
+def get_loaded_engines() -> dict:
+    return {"kokoro": kokoro is not None, "supertonic": _supertonic is not None}
 
 # ─── Background preload jobs ───
 _preload_jobs: Dict[str, dict] = {}
@@ -513,16 +561,15 @@ class DeleteCacheRangePayload(BaseModel):
 # ─── Core TTS synthesis ───
 
 async def synthesize_audio(text: str, voice: str, speed: float = 1.0, original_text: str = None) -> tuple:
-    """Synthesize audio from text. Returns (audio_bytes, elapsed_ms)."""
+    """Synthesize audio from text. Returns (audio_bytes, elapsed_ms).
+    Routes s3-* voices to Supertonic 3, everything else to Kokoro."""
     start_time = time.time()
-    
+
     # Clean the text before synthesis
     cleaned_text = clean_text_for_tts(text)
-    
-    if not kokoro:
-        error_msg = "Kokoro model not loaded."
-        log_error("synthesize_audio", Exception(error_msg))
-        raise HTTPException(status_code=503, detail=error_msg)
+
+    engine_name, model = await get_engine(voice)
+    loop = asyncio.get_running_loop()
     # ----------------------------------------------------------------------
     # NEW FIX: Combine empty text and unpronounceable text checks into one!
     # If the text is empty OR has no letters/numbers, return 0.1s of silence.
@@ -539,36 +586,55 @@ async def synthesize_audio(text: str, voice: str, speed: float = 1.0, original_t
         return wav_io.read(), 0.0
     # ----------------------------------------------------------------------
 
-    func = partial(kokoro.create, cleaned_text, voice=voice, speed=speed, lang="en-us")
-    loop = asyncio.get_running_loop()
+    if engine_name == "kokoro":
+        func = partial(model.create, cleaned_text, voice=voice, speed=speed, lang="en-us")
+        try:
+            audio_data, sample_rate = await loop.run_in_executor(_tts_executor, func)
+        except IndexError as e:
+            if "index 510 is out of bounds" not in str(e):
+                log_error("synthesize_audio", e, {"text": cleaned_text[:200], "voice": voice, "speed": speed})
+                raise
+            mid = len(cleaned_text) // 2
+            cut = max(cleaned_text.rfind('.', 0, mid), cleaned_text.rfind('!', 0, mid), cleaned_text.rfind('?', 0, mid))
+            if cut <= 0:
+                cut = cleaned_text.rfind(' ', 0, mid)
+            if cut <= 0:
+                cut = mid
+            part1 = cleaned_text[:cut + 1].strip()
+            part2 = cleaned_text[cut + 1:].strip()
+            parts = []
+            for part in (part1, part2):
+                if not part:
+                    continue
+                f = partial(model.create, part, voice=voice, speed=speed, lang="en-us")
+                ad, sample_rate = await loop.run_in_executor(_tts_executor, f)
+                if len(ad) > 0:
+                    parts.append(ad)
+            if not parts:
+                error_msg = "Model generated empty audio after split."
+                log_error("synthesize_audio", ValueError(error_msg))
+                raise ValueError(error_msg)
+            audio_data = np.concatenate(parts) if len(parts) > 1 else parts[0]
+    else:
+        sup_name = voice[len(SUPER_PREFIX):]
+        try:
+            style = model.get_voice_style(sup_name)
+        except Exception as e:
+            error_msg = f"Unknown Supertonic voice '{sup_name}'."
+            log_error("synthesize_audio", e, {"voice": voice})
+            raise HTTPException(status_code=400, detail=error_msg)
 
-    try:
-        audio_data, sample_rate = await loop.run_in_executor(_tts_executor, func)
-    except IndexError as e:
-        if "index 510 is out of bounds" not in str(e):
-            log_error("synthesize_audio", e, {"text": cleaned_text[:200], "voice": voice, "speed": speed})
-            raise
-        mid = len(cleaned_text) // 2
-        cut = max(cleaned_text.rfind('.', 0, mid), cleaned_text.rfind('!', 0, mid), cleaned_text.rfind('?', 0, mid))
-        if cut <= 0:
-            cut = cleaned_text.rfind(' ', 0, mid)
-        if cut <= 0:
-            cut = mid
-        part1 = cleaned_text[:cut + 1].strip()
-        part2 = cleaned_text[cut + 1:].strip()
-        parts = []
-        for part in (part1, part2):
-            if not part:
-                continue
-            f = partial(kokoro.create, part, voice=voice, speed=speed, lang="en-us")
-            ad, sample_rate = await loop.run_in_executor(_tts_executor, f)
-            if len(ad) > 0:
-                parts.append(ad)
-        if not parts:
-            error_msg = "Model generated empty audio after split."
-            log_error("synthesize_audio", ValueError(error_msg))
-            raise ValueError(error_msg)
-        audio_data = np.concatenate(parts) if len(parts) > 1 else parts[0]
+        def _super_run():
+            wav, _dur = model.synthesize(
+                cleaned_text,
+                voice_style=style,
+                lang="en",
+                total_steps=SUPERSONIC_TOTAL_STEPS,
+                speed=max(0.7, min(speed, 2.0)),
+            )
+            return np.asarray(wav).squeeze(0), int(model.sample_rate)
+
+        audio_data, sample_rate = await loop.run_in_executor(_tts_executor, _super_run)
 
     if len(audio_data) == 0:
         error_msg = "Model generated empty audio."
@@ -586,8 +652,9 @@ async def synthesize_audio(text: str, voice: str, speed: float = 1.0, original_t
 
 @app.get("/health")
 async def health():
-    log_request("/health", "GET", {"model_loaded": kokoro is not None})
-    return {"status": "ok", "model_loaded": kokoro is not None}
+    engines = get_loaded_engines()
+    log_request("/health", "GET", {"engines_loaded": engines})
+    return {"status": "ok", "model_loaded": engines["kokoro"], "engines": engines}
 
 @app.get("/documents")
 async def list_documents():
@@ -666,6 +733,8 @@ async def set_settings(payload: SettingsPayload):
     if payload.page < 1:
         raise HTTPException(status_code=400, detail="Invalid page number")
     data = payload.dict()  # includes all fields
+    if not settings_changed(payload.book_name, data):
+        return {"status": "ok", "changed": False}
     save_settings(payload.book_name, data)
     log_settings(payload.book_name, payload.page, payload.scale, payload.speed,
                  payload.topSkipLines, payload.bottomSkipLines)
@@ -894,6 +963,16 @@ async def ws_tts(websocket: WebSocket):
 
 # ─── WebSocket: Session sync ───
 
+def normalize_settings(data: dict) -> dict:
+    """Strip transport-only keys so settings can be compared/stored cleanly."""
+    return {k: v for k, v in data.items() if k != "type"}
+
+
+def settings_changed(book_name: str, incoming: dict) -> bool:
+    """True only if incoming settings differ from what's already stored."""
+    return normalize_settings(incoming) != normalize_settings(load_settings(book_name))
+
+
 @app.websocket("/ws/session/{book_name}")
 async def ws_session(websocket: WebSocket, book_name: str):
     room = f"session:{book_name}"
@@ -905,7 +984,9 @@ async def ws_session(websocket: WebSocket, book_name: str):
         while True:
             data = await websocket.receive_json()
             if data.get("type") == "settings":
-                save_settings(book_name, data)
+                if not settings_changed(book_name, data):
+                    continue  # no-op update — skip save, log and broadcast
+                save_settings(book_name, normalize_settings(data))
                 log_settings(book_name, data.get("page"), data.get("scale"), data.get("speed"),
                              data.get("topSkipLines"), data.get("bottomSkipLines"))
                 await mgr.broadcast(room, {"type": "settings_sync", **data})

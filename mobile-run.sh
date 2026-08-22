@@ -5,6 +5,9 @@ export PDF_DIR="/home/pk/books/books/language"
 export AUDIO_CACHE_DIR="./tts_cache"                
 export KOKORO_MODEL="kokoro-v1.0.onnx"
 export KOKORO_VOICES="voices-v1.0.bin"
+export SUPERTONIC_ASSETS="supertonic-assets"        # Supertonic 3 ONNX assets
+export SUPERSONIC_STEPS="5"                         # quality: 2 (fast) .. 12 (best)
+export TTS_KEEP_BOTH="0"                            # 0 = only one TTS engine in RAM
 export TTS_WORKERS="2"                              
 
 # Add this variable to control parallel preload downloads
