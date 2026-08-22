@@ -20,9 +20,13 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY main.py .
 COPY index.html .
 
-# Copy Kokoro model files (must be present on the build host)
+# Copy Kokoro model files (must be present on the build host — run
+# ./download-static-files.sh once if they're missing)
 COPY kokoro-v1.0.onnx .
 COPY voices-v1.0.bin  .
+
+# Copy Supertonic 3 ONNX assets (onnx models + voice styles)
+COPY supertonic-assets/ ./supertonic-assets/
 
 # Copy the offline static assets tree:
 #   static/
@@ -44,6 +48,9 @@ ENV PDF_DIR=/app/pdf \
     AUDIO_CACHE_DIR=/app/tts_cache \
     KOKORO_MODEL=kokoro-v1.0.onnx \
     KOKORO_VOICES=voices-v1.0.bin \
+    SUPERTONIC_ASSETS=supertonic-assets \
+    SUPERSONIC_STEPS=5 \
+    TTS_KEEP_BOTH=0 \
     TTS_WORKERS=1
 
 EXPOSE 8000

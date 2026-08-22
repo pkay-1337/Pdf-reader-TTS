@@ -13,5 +13,8 @@ services:
       AUDIO_CACHE_DIR: /app/tts_cache
       KOKORO_MODEL: kokoro-v1.0.onnx
       KOKORO_VOICES: voices-v1.0.bin
+      SUPERTONIC_ASSETS: supertonic-assets
+      SUPERSONIC_STEPS: "5"
+      TTS_KEEP_BOTH: "0"
       TTS_WORKERS: "1"
     restart: unless-stopped

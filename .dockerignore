@@ -1,0 +1,16 @@
+# keep build context small — big/local-only stuff never enters the image
+tts-env/
+tts_cache/
+pdf/
+benchmark/output/
+supertonic-test/
+__pycache__/
+*.pyc
+.git/
+lazygit
+problems
+backup.*
+override_v1.css
+docker-compose.yml
+Dockerfile
+.dockerignore
