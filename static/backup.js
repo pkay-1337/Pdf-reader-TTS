@@ -93,6 +93,7 @@ let hlHoverOpacity = 0.18;
 let hlRadius = 3;
 let hlOutline = false;
 let hlPadding = 1;
+let focusModeEnabled = false;
 let playbackSpeed = 1.0;
 const pageStats = {};
 let topbarVisible = true;
@@ -280,17 +281,19 @@ function addPdfToList(doc, listEl) {
     item.addEventListener('click', async () => {
         item.style.opacity = '0.5';
         item.style.pointerEvents = 'none';
+        // Always build the URL ourselves instead of trusting the server's raw (unencoded) `url`
+        // field, so we know for certain it's a valid, properly-encoded request.
+        const url = `/documents/${encodeURIComponent(doc.name)}`;
         try {
-            const url = doc.url || `/documents/${encodeURIComponent(doc.name)}`;
             const res = await fetch(url);
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
             const blob = await res.blob();
             const mimeType = isEpub ? 'application/epub+zip' : 'application/pdf';
             const file = new File([blob], doc.name, { type: mimeType });
             loadDocument(file, 1);
         } catch (err) {
-            console.error(`[SERVER-DOC] Failed to load ${doc.name}:`, err);
-            alert(`Could not load "${doc.name}" from server. Is the server running?`);
+            console.error(`[SERVER-DOC] Failed to load ${doc.name} (url=${url}):`, err);
+            alert(`Could not load "${doc.name}" from server.\nURL: ${url}\nError: ${err && err.message ? err.message : err}`);
             item.style.opacity = '';
             item.style.pointerEvents = '';
         }
@@ -391,6 +394,26 @@ document.getElementById('hl-outline-toggle').addEventListener('change', e => {
     applyHighlightSettings();
     saveHighlightSettings();
 });
+
+/* ─── Focus Mode ─── */
+const focusModeBtn = document.getElementById('focus-mode-btn');
+const focusModeToggle = document.getElementById('focus-mode-toggle');
+function setFocusMode(enabled) {
+    focusModeEnabled = !!enabled;
+    if (focusModeBtn) focusModeBtn.classList.toggle('active', focusModeEnabled);
+    if (focusModeToggle) focusModeToggle.checked = focusModeEnabled;
+    localStorage.setItem('docreader-focus-mode', focusModeEnabled ? '1' : '0');
+    if (documentHandler instanceof EPUBHandler) {
+        documentHandler.setFocusMode(focusModeEnabled);
+    }
+}
+if (focusModeBtn) focusModeBtn.addEventListener('click', () => setFocusMode(!focusModeEnabled));
+if (focusModeToggle) focusModeToggle.addEventListener('change', e => setFocusMode(e.target.checked));
+// Restore saved preference (UI only here — EPUBHandler isn't defined yet at this point in the
+// file, so don't touch documentHandler; it gets applied once a book actually loads instead)
+focusModeEnabled = localStorage.getItem('docreader-focus-mode') === '1';
+if (focusModeBtn) focusModeBtn.classList.toggle('active', focusModeEnabled);
+if (focusModeToggle) focusModeToggle.checked = focusModeEnabled;
 
 /* ─── Sidebar Tabs ─── */
 tabToc.addEventListener('click', () => {
@@ -614,16 +637,39 @@ function saveSettingsThrottled(page, scl, sentenceIndex) {
 
 function saveSettings(page, scl, sentenceIndex) {
     if (!currentFileName) return;
+    
+    // Get current values from the UI / state
+    const voice = document.getElementById('voice-selector')?.value || 'af_sarah';
+    const autoReadNext = document.getElementById('auto-read-next')?.checked || false;
+    const saveAudio = document.getElementById('save-audio-toggle')?.checked || false;
+    const theme = document.getElementById('theme-selector')?.value || 'default-light';
+
     const payload = {
         type: 'settings',
         book_name: currentFileName,
-        page,
+        page: page,
         scale: scl,
         sentenceIndex: sentenceIndex || 0,
         speed: playbackSpeed,
-        topSkipLines,
-        bottomSkipLines,
+        topSkipLines: topSkipLines,
+        bottomSkipLines: bottomSkipLines,
+        
+        // ─── NEW FIELDS ───
+        epubSidePadding: epubSidePadding,          // EPUB side margins
+        focusModeEnabled: focusModeEnabled,        // focus mode state
+        theme: theme,                              // selected theme
+        voice: voice,                              // TTS voice
+        autoReadNext: autoReadNext,                // auto-advance pages
+        saveAudioEnabled: saveAudioEnabled,         // save audio toggle
+        hlBaseColor: hlBaseColor,
+        hlOpacity: hlOpacity,
+        hlHoverOpacity: hlHoverOpacity,
+        hlRadius: hlRadius,
+        hlPadding: hlPadding,
+        hlOutline: hlOutline
+
     };
+
     if (WS._sockets['session'] && WS._sockets['session'].readyState === WebSocket.OPEN) {
         WS.send('session', payload);
     } else {
@@ -670,7 +716,9 @@ async function loadSettings(bookName) {
 
 /* ─── Document dispatcher ─── */
 function isEpubFile(file) {
-    return file.type === 'application/epub+zip' || file.name.toLowerCase().endsWith('.epub');
+    const result = file.type === 'application/epub+zip' || file.name.toLowerCase().endsWith('.epub');
+    console.log(`[isEpubFile] name="${file.name}" type="${file.type}" -> ${result}`);
+    return result;
 }
 async function loadDocument(file, startPage = 1) {
     if (isEpubFile(file)) {
@@ -695,6 +743,7 @@ class EPUBHandler {
         this.chapterCharMap = {};
         this._destroyed = false;
         this._rendering = false; // guard against concurrent renders
+        this._focusMode = false;
     }
 
 	async load(file, startPage, containerEl, scale, theme) {
@@ -746,6 +795,10 @@ class EPUBHandler {
                 }));
             });
             
+            // 1b. Re-apply focus mode (dim everything but the active sentence) on every content render
+            this._injectFocusModeStyle(doc);
+            if (this._focusMode) doc.body.classList.add('dr-focus-mode');
+
             // 2. Hardware scroll lag fix
             let epubScrollTimeout;
             win.addEventListener('scroll', () => {
@@ -1286,6 +1339,15 @@ class EPUBHandler {
 
             this.currentPage = safePageNum;
             this._injectReadingStyle();
+            this._injectFocusModeStyle();
+            if (this._focusMode) {
+                try {
+                    const contents = this.rendition.getContents();
+                    if (contents && contents[0] && contents[0].document) {
+                        contents[0].document.body.classList.add('dr-focus-mode');
+                    }
+                } catch(e) {}
+            }
             this._lastHighlightNormIndex = 0; 
             
             const { text, sentenceCfiMap } = this._extractTextFromRendition();
@@ -1303,6 +1365,211 @@ class EPUBHandler {
 
 
 	_injectReadingStyle(targetDoc) {
+		    if (!this.rendition) {
+        console.warn('[EPUB] Skipping highlight injection – rendition not ready');
+        return;
+    }
+
+    try {
+        let doc = targetDoc;
+        if (!doc) {
+            const contents = this.rendition.getContents();
+            if (!contents || !contents.length) return;
+            doc = contents[0].document;
+        }
+        if (!doc || !doc.head) return;
+
+        // ── Inline style on body (takes highest precedence) ──
+        if (doc.body) {
+            doc.body.style.padding = `20px ${epubSidePadding}px 60px`;
+        }
+
+        // ── Inject CSS rule (fallback, with !important) ──
+        const id = 'epub-reader-style';
+        let s = doc.getElementById(id);
+        if (!s) {
+            s = doc.createElement('style');
+            s.id = id;
+            doc.head.appendChild(s);
+        }
+        s.textContent = `
+            @font-face { font-family: 'Mononoki'; src: url('${window.location.origin}/static/fonts/mononoki-Regular.ttf') format('truetype'); }
+            
+            /* ─── HIDE EVERY SCROLLBAR, EVERYWHERE ─── */
+            * {
+                font-family: 'Mononoki', monospace !important; 
+                box-sizing: border-box !important; 
+                max-width: 100% !important;
+                scrollbar-width: none !important;
+                -ms-overflow-style: none !important;
+            }
+            
+            ::-webkit-scrollbar {
+                display: none !important;
+                width: 0 !important;
+                height: 0 !important;
+                background: transparent !important;
+            }
+            
+            .epub-container, .epub-view, 
+            .epub-container *, .epub-view *,
+            [class*="epub-container"], [class*="epub-view"] {
+                scrollbar-width: none !important;
+                -ms-overflow-style: none !important;
+            }
+            .epub-container::-webkit-scrollbar, .epub-view::-webkit-scrollbar,
+            .epub-container *::-webkit-scrollbar, .epub-view *::-webkit-scrollbar,
+            [class*="epub-container"]::-webkit-scrollbar, [class*="epub-view"]::-webkit-scrollbar {
+                display: none !important;
+                width: 0 !important;
+                height: 0 !important;
+                background: transparent !important;
+            }
+            
+            html, body {
+                overflow-x: hidden !important;
+                overflow-y: auto !important;
+                width: 100% !important;
+                max-width: 100% !important;
+                margin: 0 !important;
+                scrollbar-width: none !important;
+                -ms-overflow-style: none !important;
+            }
+            
+            body { 
+                margin: 0 auto !important; 
+                /* The inline style above will take precedence, but we keep this as a fallback */
+                padding: 20px ${epubSidePadding}px 60px !important; 
+                word-wrap: break-word !important; 
+                overflow-wrap: break-word !important; 
+                will-change: scroll-position; 
+                transform: translateZ(0); 
+            }
+            body.is-scrolling * { pointer-events: none !important; }
+            
+            img, svg, figure, video, audio, table { 
+                max-width: 100% !important; 
+                height: auto !important; 
+            }
+            
+            pre, code, table {
+                overflow-x: auto !important;
+                max-width: 100% !important;
+            }
+
+            h1,h2,h3,h4,h5,h6 { margin-top: 1.4em; margin-bottom: 0.5em; line-height: 1.3; }
+            p { margin: 0 0 0.9em; }
+            
+            a, a:visited, a:hover, a:active {
+                color: inherit !important;
+                text-decoration: underline !important;
+                text-underline-offset: 2px !important;
+                opacity: 0.75;
+            }
+            a:hover { opacity: 1; }
+            
+            .docreader-code-wrapper {
+                background: rgba(120, 120, 120, 0.12) !important;
+                border: 1px solid rgba(120, 120, 120, 0.25) !important;
+                border-radius: 6px !important;
+                padding: 14px !important;
+                margin: 12px 0 !important;
+                overflow-x: auto !important;
+                width: 100% !important;
+                max-width: 100% !important;
+            }
+            .docreader-code-wrapper p, .docreader-code-wrapper pre, .docreader-code-wrapper div {
+                margin: 0 !important;
+                padding: 0 !important;
+                background: transparent !important;
+                border: none !important;
+                line-height: 1.5 !important;
+            }
+        `;
+    } catch(e) {}
+}
+	_injectHighlightStyle(targetDoc) {
+		    if (!this.rendition) {
+        console.warn('[EPUB] Skipping highlight injection – rendition not ready');
+        return;
+    }
+
+    try {
+        let doc = targetDoc;
+        if (!doc) {
+            const contents = this.rendition.getContents();
+            if (!contents || !contents.length) return;
+            doc = contents[0].document;
+        }
+        if (!doc || !doc.head) return;
+
+        const id = 'epub-hl-style';
+        let s = doc.getElementById(id);
+        if (!s) {
+            s = doc.createElement('style');
+            s.id = id;
+            doc.head.appendChild(s);
+        }
+
+        const color = `rgba(${hlBaseColor}, ${hlOpacity})`;
+        const hoverColor = `rgba(${hlBaseColor}, ${hlHoverOpacity})`;
+        const radius = hlRadius + 'px';
+        const pad = hlPadding; // used for both horizontal and vertical padding
+
+        const outlineColor = hlOutline
+            ? `rgba(${hlBaseColor}, ${Math.min(1, hlOpacity * 2.5)})`
+            : null;
+
+        // Build the outline box-shadow (only if enabled)
+        const outlineShadow = outlineColor
+            ? `0 0 0 1px ${outlineColor} !important;`
+            : '';
+
+        s.textContent = `
+            .dr-sent {
+                cursor: pointer !important;
+                background-color: transparent !important;
+                box-shadow: none !important;
+                transition: background-color 0.08s ease, box-shadow 0.08s ease !important;
+                border-radius: ${radius} !important;
+                /* Uniform padding — extends background in all directions */
+                padding: ${pad}px ${pad}px !important;
+                margin: 0 !important;
+                box-decoration-break: clone !important;
+                -webkit-box-decoration-break: clone !important;
+            }
+
+            .dr-sent.dr-sentence-hover {
+                background-color: ${hoverColor} !important;
+                box-shadow: ${outlineShadow}
+            }
+
+            .dr-sent.dr-sentence-active {
+                background-color: ${color} !important;
+                box-shadow: ${outlineShadow}
+            }
+
+            /* Fragment stitching – remove inner border-radius to avoid gaps */
+            .dr-sent.dr-fragment-start.dr-sentence-hover,
+            .dr-sent.dr-fragment-start.dr-sentence-active {
+                border-top-right-radius: 0 !important;
+                border-bottom-right-radius: 0 !important;
+            }
+            .dr-sent.dr-fragment-middle.dr-sentence-hover,
+            .dr-sent.dr-fragment-middle.dr-sentence-active {
+                border-radius: 0 !important;
+            }
+            .dr-sent.dr-fragment-end.dr-sentence-hover,
+            .dr-sent.dr-fragment-end.dr-sentence-active {
+                border-top-left-radius: 0 !important;
+                border-bottom-left-radius: 0 !important;
+            }
+        `;
+    } catch(e) {
+        console.warn('Error injecting highlight style:', e);
+    }
+}
+	_injectFocusModeStyle(targetDoc) {
         try {
             let doc = targetDoc;
             if (!doc) {
@@ -1311,167 +1578,47 @@ class EPUBHandler {
                 doc = contents[0].document;
             }
             if (!doc || !doc.head) return;
-            
-            const id = 'epub-reader-style';
+
+            const id = 'epub-focus-style';
             let s = doc.getElementById(id);
             if (!s) {
                 s = doc.createElement('style');
                 s.id = id;
                 doc.head.appendChild(s);
             }
-            s.textContent = `
-                @font-face { font-family: 'Mononoki'; src: url('${window.location.origin}/static/fonts/mononoki-Regular.ttf') format('truetype'); }
-                
-                * { 
-                    font-family: 'Mononoki', monospace !important; 
-                    box-sizing: border-box !important; 
-                    max-width: 100% !important;
-                }
-                
-                /* Chromium & global scrollbar hiding inside the EPUB iframe */
-                ::-webkit-scrollbar {
-                    display: none !important;
-                    width: 0px !important;
-                    height: 0px !important;
-                    background: transparent !important;
-                }
-                
-                html, body {
-                    overflow-x: hidden !important;
-                    width: 100% !important;
-                    max-width: 100% !important;
-                    margin: 0 !important;
-                    scrollbar-width: none !important;
-                    -ms-overflow-style: none !important;
-                }
-                
-                body { 
-                    margin: 0 auto !important; 
-                    padding: 20px ${epubSidePadding}px 60px !important; 
-                    word-wrap: break-word !important; 
-                    overflow-wrap: break-word !important; 
-                    will-change: scroll-position; 
-                    transform: translateZ(0); 
-                }
-                body.is-scrolling * { pointer-events: none !important; }
-                
-                img, svg, figure, video, audio, table { 
-                    max-width: 100% !important; 
-                    height: auto !important; 
-                }
-                
-                pre, code, table {
-                    overflow-x: auto !important;
-                    max-width: 100% !important;
-                }
 
-                h1,h2,h3,h4,h5,h6 { margin-top: 1.4em; margin-bottom: 0.5em; line-height: 1.3; }
-                p { margin: 0 0 0.9em; }
-                
-                a, a:visited, a:hover, a:active {
-                    color: inherit !important;
-                    text-decoration: underline !important;
-                    text-underline-offset: 2px !important;
-                    opacity: 0.75;
+            s.textContent = `
+                /* ── Focus mode: dim everything except the active reading sentence ── */
+                body.dr-focus-mode .dr-sent,
+                body.dr-focus-mode img,
+                body.dr-focus-mode svg,
+                body.dr-focus-mode figure {
+                    opacity: 0.2 !important;
+                    filter: saturate(0.5) blur(0.15px) !important;
+                    transition: opacity 0.4s ease, filter 0.4s ease !important;
                 }
-                a:hover { opacity: 1; }
-                
-                .docreader-code-wrapper {
-                    background: rgba(120, 120, 120, 0.12) !important;
-                    border: 1px solid rgba(120, 120, 120, 0.25) !important;
-                    border-radius: 6px !important;
-                    padding: 14px !important;
-                    margin: 12px 0 !important;
-                    overflow-x: auto !important;
-                    width: 100% !important;
-                    max-width: 100% !important;
+                body.dr-focus-mode .dr-sent.dr-sentence-active {
+                    opacity: 1 !important;
+                    filter: none !important;
+                    text-shadow: 0 0 22px rgba(${hlBaseColor}, 0.35) !important;
                 }
-                .docreader-code-wrapper p, .docreader-code-wrapper pre, .docreader-code-wrapper div {
-                    margin: 0 !important;
-                    padding: 0 !important;
-                    background: transparent !important;
-                    border: none !important;
-                    line-height: 1.5 !important;
+                body.dr-focus-mode .dr-sent.dr-sentence-hover:not(.dr-sentence-active) {
+                    opacity: 0.55 !important;
+                    filter: none !important;
                 }
             `;
         } catch(e) {}
     }
 
-	_injectHighlightStyle(targetDoc) {
+	setFocusMode(enabled) {
+        this._focusMode = !!enabled;
         try {
-            let doc = targetDoc;
-            if (!doc) {
-                const contents = this.rendition.getContents();
-                if (!contents || !contents.length) return;
-                doc = contents[0].document;
+            const contents = this.rendition && this.rendition.getContents();
+            if (contents && contents[0] && contents[0].document) {
+                const doc = contents[0].document;
+                this._injectFocusModeStyle(doc);
+                doc.body.classList.toggle('dr-focus-mode', this._focusMode);
             }
-            if (!doc || !doc.head) return;
-            
-            const id = 'epub-hl-style';
-            let s = doc.getElementById(id);
-            if (!s) {
-                s = doc.createElement('style');
-                s.id = id;
-                doc.head.appendChild(s);
-            }
-            
-            // Restore all the original plush styles
-            const color = `rgba(${hlBaseColor}, ${hlOpacity})`;
-            const hoverColor = `rgba(${hlBaseColor}, ${hlHoverOpacity})`;
-            const radius = hlRadius + 'px';
-            const pad = hlPadding;
-
-            const activeOutline = hlOutline 
-                ? `0 0 0 1px rgba(${hlBaseColor}, ${Math.min(1, hlOpacity * 2.5)})` 
-                : 'none';
-            const hoverOutline = `0 0 0 1px rgba(${hlBaseColor}, ${Math.min(1, hlOpacity)})`;
-
-            s.textContent = `
-                /* ── Sentence hover & active highlight ── */
-                .dr-sent {
-                    cursor: pointer !important;
-                    background-color: transparent !important;
-                    box-shadow: none !important;
-                    transition: background-color 0.08s ease, box-shadow 0.08s ease !important;
-                    
-                    /* Plush padding and radius is back! */
-                    border-radius: ${radius} !important;
-                    padding: ${pad}px !important;
-                    margin: 0 -${pad}px !important;
-                    
-                    box-decoration-break: clone !important;
-                    -webkit-box-decoration-break: clone !important;
-                }
-                .dr-sent.dr-sentence-hover {
-                    background-color: ${hoverColor} !important;
-                    box-shadow: ${hoverOutline} !important;
-                }
-                .dr-sent.dr-sentence-active {
-                    background-color: ${color} !important;
-                    box-shadow: ${activeOutline} !important;
-                }
-
-                /* ── Fragment Stitching (Prevents overlapping transparency) ── */
-                .dr-sent.dr-fragment-start {
-                    padding-right: 0 !important;
-                    margin-right: 0 !important;
-                    border-top-right-radius: 0 !important;
-                    border-bottom-right-radius: 0 !important;
-                }
-                .dr-sent.dr-fragment-middle {
-                    padding-left: 0 !important;
-                    padding-right: 0 !important;
-                    margin-left: 0 !important;
-                    margin-right: 0 !important;
-                    border-radius: 0 !important;
-                }
-                .dr-sent.dr-fragment-end {
-                    padding-left: 0 !important;
-                    margin-left: 0 !important;
-                    border-top-left-radius: 0 !important;
-                    border-bottom-left-radius: 0 !important;
-                }
-            `;
         } catch(e) {}
     }
 
@@ -1560,6 +1707,16 @@ async function loadPDF(file, startPage = 1) {
         const task = pdfjsLib.getDocument(fileUrl);
         pdfDoc = await task.promise;
         documentHandler = null; // PDF uses pdfDoc directly
+		// Index all pages in background for search
+(async function indexAllPages() {
+    try {
+        for (let p = 1; p <= pdfDoc.numPages; p++) {
+            const page = await pdfDoc.getPage(p);
+            const tc = await page.getTextContent();
+            searchAllPageTexts[p] = tc.items.map(i => i.str).join(' ');
+        }
+    } catch(e) { console.warn('Indexing error:', e); }
+})();
 
         // 🔥 Clear TOC immediately to prevent stale items during rendering
         tocList.innerHTML = '';
@@ -1573,19 +1730,109 @@ async function loadPDF(file, startPage = 1) {
 
         const settings = await loadSettings(currentFileName);
         if (settings) {
-            pageNum = settings.page || 1;
-            scale = settings.scale || 1.5;
-            currentIndex = settings.sentenceIndex || 0;
-            playbackSpeed = settings.speed || 1.0;
-            speedSlider.value = playbackSpeed;
-            speedVal.textContent = playbackSpeed.toFixed(1) + '×';
-            zoomSlider.value = scale;
-            zoomVal.textContent = Math.round(scale * 100) + '%';
-            topSkipLines = settings.topSkipLines || 0;
-            bottomSkipLines = settings.bottomSkipLines || 0;
-            document.getElementById('skip-top-lines').value = topSkipLines;
-            document.getElementById('skip-bottom-lines').value = bottomSkipLines;
-        } else {
+    // ── Existing settings ──
+    pageNum = settings.page || 1;
+    scale = settings.scale || 1.5;
+    currentIndex = settings.sentenceIndex || 0;
+    playbackSpeed = settings.speed || 1.0;
+    speedSlider.value = playbackSpeed;
+    speedVal.textContent = playbackSpeed.toFixed(1) + '×';
+    zoomSlider.value = scale;
+    zoomVal.textContent = Math.round(scale * 100) + '%';
+    topSkipLines = settings.topSkipLines || 0;
+    bottomSkipLines = settings.bottomSkipLines || 0;
+    document.getElementById('skip-top-lines').value = topSkipLines;
+    document.getElementById('skip-bottom-lines').value = bottomSkipLines;
+
+    // ── EPUB side padding ──
+    if (settings.epubSidePadding !== undefined) {
+        epubSidePadding = settings.epubSidePadding;
+        document.getElementById('epub-padding-slider').value = epubSidePadding;
+        document.getElementById('epub-padding-val').textContent = epubSidePadding + 'px';
+        if (documentHandler instanceof EPUBHandler) {
+            documentHandler._injectReadingStyle();
+        }
+    }
+
+    // ── Focus mode ──
+    if (settings.focusModeEnabled !== undefined) {
+        focusModeEnabled = settings.focusModeEnabled;
+        document.getElementById('focus-mode-toggle').checked = focusModeEnabled;
+        document.getElementById('focus-mode-btn').classList.toggle('active', focusModeEnabled);
+        if (documentHandler instanceof EPUBHandler) {
+            documentHandler.setFocusMode(focusModeEnabled);
+        }
+    }
+
+    // ── Theme ──
+    if (settings.theme) {
+        applyTheme(settings.theme);
+    }
+
+    // ── Voice ──
+    if (settings.voice) {
+        const voiceSelector = document.getElementById('voice-selector');
+        if (voiceSelector && voiceSelector.querySelector(`option[value="${settings.voice}"]`)) {
+            voiceSelector.value = settings.voice;
+        }
+    }
+
+    // ── Auto-read next ──
+    if (settings.autoReadNext !== undefined) {
+        document.getElementById('auto-read-next').checked = settings.autoReadNext;
+    }
+
+    // ── Save audio toggle ──
+    if (settings.saveAudioEnabled !== undefined) {
+        saveAudioEnabled = settings.saveAudioEnabled;
+        document.getElementById('save-audio-toggle').checked = saveAudioEnabled;
+        document.getElementById('save-range-row').style.display = saveAudioEnabled ? 'flex' : 'none';
+    }
+
+    // ─── APPLY HIGHLIGHT SETTINGS ───
+    if (settings.hlBaseColor !== undefined) {
+        hlBaseColor = settings.hlBaseColor;
+        // Update the preset buttons
+        document.querySelectorAll('.hl-preset').forEach(btn => {
+            btn.classList.remove('active');
+            const presetRGB = HL_PRESETS[btn.dataset.color];
+            if (presetRGB === hlBaseColor) btn.classList.add('active');
+        });
+    }
+
+    if (settings.hlOpacity !== undefined) {
+        hlOpacity = settings.hlOpacity;
+        document.getElementById('hl-opacity-slider').value = Math.round(hlOpacity * 100);
+        document.getElementById('hl-opacity-val').textContent = Math.round(hlOpacity * 100) + '%';
+    }
+
+    if (settings.hlHoverOpacity !== undefined) {
+        hlHoverOpacity = settings.hlHoverOpacity;
+        document.getElementById('hl-hover-opacity-slider').value = Math.round(hlHoverOpacity * 100);
+        document.getElementById('hl-hover-opacity-val').textContent = Math.round(hlHoverOpacity * 100) + '%';
+    }
+
+    if (settings.hlRadius !== undefined) {
+        hlRadius = settings.hlRadius;
+        document.getElementById('hl-radius-slider').value = hlRadius;
+        document.getElementById('hl-radius-val').textContent = hlRadius + 'px';
+    }
+
+    if (settings.hlPadding !== undefined) {
+        hlPadding = settings.hlPadding;
+        document.getElementById('hl-padding-slider').value = hlPadding;
+        document.getElementById('hl-padding-val').textContent = hlPadding + 'px';
+    }
+
+    if (settings.hlOutline !== undefined) {
+        hlOutline = settings.hlOutline;
+        document.getElementById('hl-outline-toggle').checked = hlOutline;
+    }
+
+    // Finally, call applyHighlightSettings() to re-render the highlight style
+    // (this updates CSS variables and re-injects EPUB highlight styles)
+    applyHighlightSettings();
+} else {
             if (window.innerWidth <= 768) {
                 const vw = viewerArea.clientWidth - 16;
                 const fp = await pdfDoc.getPage(1);
@@ -1614,7 +1861,7 @@ async function loadPDF(file, startPage = 1) {
 
     } catch (err) {
         console.error(err);
-        alert('Failed to load PDF.');
+        alert(`Failed to load PDF.\nFile: "${file.name}" (type="${file.type}")\nError: ${err && err.message ? err.message : err}`);
         resetUI();
     } finally {
         hideLoading();
@@ -1674,25 +1921,117 @@ async function loadEPUB(file, startPage = 1) {
 
     try {
         const settings = await loadSettings(currentFileName);
-        if (settings) {
-            pageNum = settings.page || 1;
-            scale = settings.scale || 1.5;
-            currentIndex = settings.sentenceIndex || 0;
-            playbackSpeed = settings.speed || 1.0;
-            speedSlider.value = playbackSpeed;
-            speedVal.textContent = playbackSpeed.toFixed(1) + '×';
-            zoomSlider.value = scale;
-            zoomVal.textContent = Math.round(scale * 100) + '%';
-            topSkipLines = settings.topSkipLines || 0;
-            bottomSkipLines = settings.bottomSkipLines || 0;
-            document.getElementById('skip-top-lines').value = topSkipLines;
-            document.getElementById('skip-bottom-lines').value = bottomSkipLines;
+		if (settings) {
+    // ── Existing settings ──
+    pageNum = settings.page || 1;
+    scale = settings.scale || 1.5;
+    currentIndex = settings.sentenceIndex || 0;
+    playbackSpeed = settings.speed || 1.0;
+    speedSlider.value = playbackSpeed;
+    speedVal.textContent = playbackSpeed.toFixed(1) + '×';
+    zoomSlider.value = scale;
+    zoomVal.textContent = Math.round(scale * 100) + '%';
+    topSkipLines = settings.topSkipLines || 0;
+    bottomSkipLines = settings.bottomSkipLines || 0;
+    document.getElementById('skip-top-lines').value = topSkipLines;
+    document.getElementById('skip-bottom-lines').value = bottomSkipLines;
+
+    // ── EPUB side padding ──
+    if (settings.epubSidePadding !== undefined) {
+        epubSidePadding = settings.epubSidePadding;
+        document.getElementById('epub-padding-slider').value = epubSidePadding;
+        document.getElementById('epub-padding-val').textContent = epubSidePadding + 'px';
+        if (documentHandler instanceof EPUBHandler) {
+            documentHandler._injectReadingStyle();
         }
+    }
+
+    // ── Focus mode ──
+    if (settings.focusModeEnabled !== undefined) {
+        focusModeEnabled = settings.focusModeEnabled;
+        document.getElementById('focus-mode-toggle').checked = focusModeEnabled;
+        document.getElementById('focus-mode-btn').classList.toggle('active', focusModeEnabled);
+        if (documentHandler instanceof EPUBHandler) {
+            documentHandler.setFocusMode(focusModeEnabled);
+        }
+    }
+
+    // ── Theme ──
+    if (settings.theme) {
+        applyTheme(settings.theme);
+    }
+
+    // ── Voice ──
+    if (settings.voice) {
+        const voiceSelector = document.getElementById('voice-selector');
+        if (voiceSelector && voiceSelector.querySelector(`option[value="${settings.voice}"]`)) {
+            voiceSelector.value = settings.voice;
+        }
+    }
+
+    // ── Auto-read next ──
+    if (settings.autoReadNext !== undefined) {
+        document.getElementById('auto-read-next').checked = settings.autoReadNext;
+    }
+
+    // ── Save audio toggle ──
+    if (settings.saveAudioEnabled !== undefined) {
+        saveAudioEnabled = settings.saveAudioEnabled;
+        document.getElementById('save-audio-toggle').checked = saveAudioEnabled;
+        document.getElementById('save-range-row').style.display = saveAudioEnabled ? 'flex' : 'none';
+    }
+
+    // ─── APPLY HIGHLIGHT SETTINGS ───
+    if (settings.hlBaseColor !== undefined) {
+        hlBaseColor = settings.hlBaseColor;
+        // Update the preset buttons
+        document.querySelectorAll('.hl-preset').forEach(btn => {
+            btn.classList.remove('active');
+            const presetRGB = HL_PRESETS[btn.dataset.color];
+            if (presetRGB === hlBaseColor) btn.classList.add('active');
+        });
+    }
+
+    if (settings.hlOpacity !== undefined) {
+        hlOpacity = settings.hlOpacity;
+        document.getElementById('hl-opacity-slider').value = Math.round(hlOpacity * 100);
+        document.getElementById('hl-opacity-val').textContent = Math.round(hlOpacity * 100) + '%';
+    }
+
+    if (settings.hlHoverOpacity !== undefined) {
+        hlHoverOpacity = settings.hlHoverOpacity;
+        document.getElementById('hl-hover-opacity-slider').value = Math.round(hlHoverOpacity * 100);
+        document.getElementById('hl-hover-opacity-val').textContent = Math.round(hlHoverOpacity * 100) + '%';
+    }
+
+    if (settings.hlRadius !== undefined) {
+        hlRadius = settings.hlRadius;
+        document.getElementById('hl-radius-slider').value = hlRadius;
+        document.getElementById('hl-radius-val').textContent = hlRadius + 'px';
+    }
+
+    if (settings.hlPadding !== undefined) {
+        hlPadding = settings.hlPadding;
+        document.getElementById('hl-padding-slider').value = hlPadding;
+        document.getElementById('hl-padding-val').textContent = hlPadding + 'px';
+    }
+
+    if (settings.hlOutline !== undefined) {
+        hlOutline = settings.hlOutline;
+        document.getElementById('hl-outline-toggle').checked = hlOutline;
+    }
+
+    // Finally, call applyHighlightSettings() to re-render the highlight style
+    // (this updates CSS variables and re-injects EPUB highlight styles)
+    applyHighlightSettings();
+}
+        
         if (startPage > 1) pageNum = startPage;
 
         const viewerArea = document.getElementById('pdf-viewer-area');
         const currentTheme = localStorage.getItem('docreader-theme') || 'default-light';
         await documentHandler.load(file, pageNum, viewerArea, scale, currentTheme);
+        documentHandler.setFocusMode(focusModeEnabled);
 
         // Update page count
         const totalPages = documentHandler.pageCount;
@@ -2346,85 +2685,119 @@ searchClearBtn.addEventListener('click', clearSearch);
 
 let currentSearchId = 0;
 
+
 async function performSearch() {
-    const searchId = ++currentSearchId; // CHANGED: Track the active search execution
+    const searchId = ++currentSearchId;
     const query = searchInput.value.trim();
-    
-    if (!query || !pdfDoc) { clearSearch(); return; }
-    
+
+    if (!query) { clearSearch(); return; }
+
+    const isPdf = !!pdfDoc;
+    const isEpub = documentHandler instanceof EPUBHandler;
+    if (!isPdf && !isEpub) { clearSearch(); return; }
+
     searchClearBtn.style.display = '';
     searchCount.textContent = '…';
     searchResultsPanel.classList.add('visible');
     searchResultsList.innerHTML = '<div style="padding:14px 16px;color:var(--text-tertiary);font-size:13px">Searching…</div>';
     searchMatches = [];
-    
-    const lowerQuery = query.toLowerCase();
-    showLoading('Searching document…');
-    
-    for (let p = 1; p <= pdfDoc.numPages; p++) {
-        // CHANGED: Abort the loop if a new search was triggered
-        if (searchId !== currentSearchId) return; 
-        
-        const text = await getPageText(p);
-        const lowerText = text.toLowerCase();
-        let pos = 0;
-        while (true) {
-            const idx = lowerText.indexOf(lowerQuery, pos);
-            if (idx === -1) break;
-            const context = text.slice(Math.max(0, idx - 40), idx + query.length + 60);
-            searchMatches.push({ page: p, index: idx, context, query });
-            pos = idx + 1;
+
+    try {
+        if (isPdf) {
+            // ── PDF search ──
+            const lowerQuery = query.toLowerCase();
+            showLoading('Searching PDF…');
+            // If we haven't indexed all pages yet, do it now (but it's already done on load)
+            // Still, ensure we have text for all pages
+            for (let p = 1; p <= pdfDoc.numPages; p++) {
+                if (searchId !== currentSearchId) return;
+                let text = searchAllPageTexts[p];
+                if (text === undefined) {
+                    // fallback: fetch on the fly
+                    const page = await pdfDoc.getPage(p);
+                    const tc = await page.getTextContent();
+                    text = tc.items.map(i => i.str).join(' ');
+                    searchAllPageTexts[p] = text;
+                }
+                const lowerText = text.toLowerCase();
+                let pos = 0;
+                while (true) {
+                    const idx = lowerText.indexOf(lowerQuery, pos);
+                    if (idx === -1) break;
+                    const context = text.slice(Math.max(0, idx - 40), idx + query.length + 60);
+                    searchMatches.push({ page: p, index: idx, context, query });
+                    pos = idx + 1;
+                }
+            }
+            hideLoading();
+        } else if (isEpub) {
+            // ── EPUB search ──
+            const results = await documentHandler.search(query);
+            if (results && results.length) {
+                searchMatches = results.map(r => ({
+                    page: r.page,
+                    context: r.context || `(match on page ${r.page})`,
+                    query: query,
+                    index: 0
+                }));
+            } else {
+                searchMatches = [];
+            }
         }
-    }
-    
-    // CHANGED: Final check before updating the DOM to prevent race conditions
-    if (searchId !== currentSearchId) return; 
-    
-    hideLoading();
-    
-    if (searchMatches.length === 0) {
-        searchCount.textContent = '0';
-        searchResultsList.innerHTML = '<div class="toc-empty">No results found for <strong>"' + escapeHtml(query) + '"</strong></div>';
+
+        if (searchId !== currentSearchId) return;
+
+        if (searchMatches.length === 0) {
+            searchCount.textContent = '0';
+            searchResultsList.innerHTML = `<div class="toc-empty">No results found for <strong>"${escapeHtml(query)}"</strong></div>`;
+            searchCurrentMatch = -1;
+            searchPrevBtn.disabled = true;
+            searchNextBtn.disabled = true;
+            return;
+        }
+
+        searchCount.textContent = searchMatches.length;
+        resultsHeaderText.textContent = `${searchMatches.length} result${searchMatches.length !== 1 ? 's' : ''}`;
+        searchResultsList.innerHTML = '';
+
+        searchMatches.forEach((m, i) => {
+            const item = document.createElement('div');
+            item.className = 'search-result-item';
+            item.dataset.index = i;
+            const badge = document.createElement('span');
+            badge.className = 'result-page-badge';
+            badge.textContent = 'p.' + m.page;
+            const text = document.createElement('span');
+            text.className = 'result-text';
+
+            const context = m.context || `Match on page ${m.page}`;
+            const hi = context.toLowerCase().indexOf(query.toLowerCase());
+            if (hi >= 0) {
+                text.innerHTML =
+                    escapeHtml(context.slice(0, hi)) +
+                    '<em>' + escapeHtml(context.slice(hi, hi + query.length)) + '</em>' +
+                    escapeHtml(context.slice(hi + query.length));
+            } else {
+                text.textContent = context;
+            }
+
+            item.appendChild(badge);
+            item.appendChild(text);
+            item.addEventListener('click', () => goToSearchMatch(i));
+            searchResultsList.appendChild(item);
+        });
+
         searchCurrentMatch = -1;
-        searchPrevBtn.disabled = true;
-        searchNextBtn.disabled = true;
-        return;
+        searchPrevBtn.disabled = false;
+        searchNextBtn.disabled = false;
+        nextSearchMatch();
+
+    } catch (e) {
+        console.error('Search error:', e);
+        hideLoading();
+        searchCount.textContent = 'Error';
+        searchResultsList.innerHTML = `<div class="toc-empty">Search failed: ${e.message}</div>`;
     }
-    
-    searchCount.textContent = searchMatches.length;
-    resultsHeaderText.textContent = `${searchMatches.length} result${searchMatches.length !== 1 ? 's' : ''}`;
-    searchResultsList.innerHTML = '';
-    
-    searchMatches.forEach((m, i) => {
-        const item = document.createElement('div');
-        item.className = 'search-result-item';
-        item.dataset.index = i;
-        const badge = document.createElement('span');
-        badge.className = 'result-page-badge';
-        badge.textContent = 'p.' + m.page;
-        const text = document.createElement('span');
-        text.className = 'result-text';
-        
-        const hi = m.context.toLowerCase().indexOf(m.query.toLowerCase());
-        if (hi >= 0) {
-            text.innerHTML =
-                escapeHtml(m.context.slice(0, hi)) +
-                '<em>' + escapeHtml(m.context.slice(hi, hi + m.query.length)) + '</em>' +
-                escapeHtml(m.context.slice(hi + m.query.length));
-        } else {
-            text.textContent = m.context;
-        }
-        
-        item.appendChild(badge);
-        item.appendChild(text);
-        item.addEventListener('click', () => goToSearchMatch(i));
-        searchResultsList.appendChild(item);
-    });
-    
-    searchCurrentMatch = -1;
-    searchPrevBtn.disabled = false;
-    searchNextBtn.disabled = false;
-    nextSearchMatch();
 }
 
 function goToSearchMatch(idx) {
@@ -2436,12 +2809,33 @@ function goToSearchMatch(idx) {
         el.classList.toggle('active', i === idx);
     });
     document.querySelectorAll('.search-result-item')[idx]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
-    if (match.page !== pageNum) {
-        goToAbsolutePage(match.page, () => highlightSearchOnPage(match.query));
-    } else {
-        highlightSearchOnPage(match.query);
+
+    const targetPage = match.page;
+    if (targetPage && targetPage > 0) {
+        const isEpub = documentHandler instanceof EPUBHandler;
+        if (isEpub) {
+            epubGoToPage(targetPage);
+        } else if (pdfDoc) {
+            goToAbsolutePage(targetPage);
+        }
+    }
+
+    // Highlight search term on PDF (if it's a PDF and we have a query)
+    if (pdfDoc && match.query) {
+        // Wait for page render, then highlight
+        const highlight = () => {
+            // ensure we are on the right page
+            if (pageNum === targetPage) {
+                highlightSearchOnPage(match.query);
+            } else {
+                // if page changed, re-attempt after a short delay
+                setTimeout(highlight, 200);
+            }
+        };
+        setTimeout(highlight, 300);
     }
 }
+
 function nextSearchMatch() {
     goToSearchMatch(searchCurrentMatch + 1 < searchMatches.length ? searchCurrentMatch + 1 : 0);
 }
@@ -2991,6 +3385,7 @@ document.addEventListener('keydown', e => {
     if (tag === 'input' || tag === 'select' || tag === 'textarea') return;
     if (e.key === 'Escape') { resetUI(); return; }
     if (e.key === 's' || e.key === 'S') { toggleSidebar(); return; }
+    if (e.key === 'f' || e.key === 'F') { setFocusMode(!focusModeEnabled); return; }
     if (!pdfDoc && !(documentHandler instanceof EPUBHandler)) return;
     if (e.key === 'ArrowLeft' || e.key.toLowerCase() === 'h') goToPage(-1);
     if (e.key === 'ArrowRight' || e.key.toLowerCase() === 'l') goToPage(1);
@@ -3316,6 +3711,13 @@ function _ensureTtsSocket() {
     );
 }
 async function fetchSentenceAudio(idx) {
+	    if (!sentences || idx >= sentences.length || !sentences[idx]) {
+        console.warn(`[TTS] Sentence ${idx} not available, skipping`);
+        // Mark as done so the queue continues
+        _onTtsDone(idx);
+        return;
+    }
+
     try {
         const raw = sentences[idx];
         const text = normalizeTTSText(/^\d{1,2}$/.test(raw.trim()) ? `Page ${raw.trim()}.` : raw);
@@ -4561,6 +4963,11 @@ async function refreshTimeEstimates() {
 
 /* ─── startReadingPage ─── */
 async function startReadingPage(startIndex = 0) {
+    if (!currentPageText.trim() || !sentences.length) {
+        console.warn('[TTS] No sentences available for this page');
+        return;
+    }
+
     if (!currentPageText.trim() || !sentences.length) return;
     if (!pdfDoc && !(documentHandler instanceof EPUBHandler)) return;
 
