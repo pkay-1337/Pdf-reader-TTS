@@ -288,6 +288,7 @@ def clean_text_for_tts(text: str) -> str:
         r'<': ' less than ',
         r'>': ' greater than ',
         r'=': ' equals ',
+        r'●': ' ',
         r'\+': ' plus ',
         r'\*': ' asterisk '
     }

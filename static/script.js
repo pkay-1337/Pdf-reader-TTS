@@ -5379,22 +5379,7 @@ function highlightActiveSentence(sentenceIndex, allSentences) {
     const pad = hlPadding;
     const r   = hlRadius;
 
-    // Focus mode: draw dimming overlay if enabled
-    if (focusModeEnabled) {
-        ctx.fillStyle = 'rgba(0,0,0,0.55)';
-        ctx.fillRect(0, 0, cRect.width, cRect.height);
-        // We'll later draw the active sentence with full opacity
-    }
-
-    // Draw active sentence highlight (with full opacity if focus mode)
-    const activeOpacity = focusModeEnabled ? 1.0 : hlOpacity;
-    ctx.fillStyle = `rgba(${hlBaseColor}, ${activeOpacity})`;
-    if (hlOutline) { 
-        ctx.strokeStyle = `rgba(${hlBaseColor}, ${Math.min(1, activeOpacity * 2.5)})`; 
-        ctx.lineWidth = 1; 
-    }
-
-    rows.forEach(row => {
+    const traceRowPath = (row) => {
         const x  = row.left  - pad;
         const y  = row.top;
         const w  = (row.right - row.left) + pad * 2;
@@ -5411,6 +5396,27 @@ function highlightActiveSentence(sentenceIndex, allSentences) {
         ctx.lineTo(x, y + cr);
         ctx.quadraticCurveTo(x, y, x + cr, y);
         ctx.closePath();
+    };
+
+    // Focus mode: dim the page, then carve the dim back out over the active
+    // rows so their text stays at full brightness (instead of painting an
+    // opaque band on top of the text layer).
+    if (focusModeEnabled) {
+        ctx.fillStyle = 'rgba(0,0,0,0.55)';
+        ctx.fillRect(0, 0, cRect.width, cRect.height);
+        ctx.globalCompositeOperation = 'destination-out';
+        rows.forEach(row => { traceRowPath(row); ctx.fill(); });
+        ctx.globalCompositeOperation = 'source-over';
+    }
+
+    ctx.fillStyle = `rgba(${hlBaseColor}, ${hlOpacity})`;
+    if (hlOutline) { 
+        ctx.strokeStyle = `rgba(${hlBaseColor}, ${Math.min(1, hlOpacity * 2.5)})`; 
+        ctx.lineWidth = 1; 
+    }
+
+    rows.forEach(row => {
+        traceRowPath(row);
         ctx.fill();
         if (hlOutline) ctx.stroke();
     });
