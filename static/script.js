@@ -1265,6 +1265,39 @@ function setupCodeBlockWrapper(wrapper) {
     const label = doc.createElement('span');
     label.className = 'docreader-code-lang';
     label.textContent = spec.name;
+
+    const actions = doc.createElement('span');
+    actions.className = 'docreader-code-toolbar-actions';
+
+    const copyBtn = doc.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'docreader-code-copy-btn';
+    copyBtn.title = 'Copy code';
+    copyBtn.textContent = 'Copy';
+    copyBtn.addEventListener('click', () => {
+        const codeText = Array.prototype.slice
+            .call(wrapper.querySelectorAll('p.snippet, p.code, div.snippet, div.code, pre'))
+            .map(el => el.textContent.replace(/\s+$/g, ''))
+            .filter(s => s.length)
+            .join('\n');
+        if (!codeText) return;
+        const done = () => {
+            const prev = copyBtn.textContent;
+            copyBtn.textContent = '✓';
+            copyBtn.disabled = true;
+            setTimeout(() => { copyBtn.textContent = prev; copyBtn.disabled = false; }, 1200);
+        };
+        try {
+            if (navigator.clipboard && navigator.clipboard.writeText) {
+                navigator.clipboard.writeText(codeText).then(done).catch(() => hlLegacyCopy(doc, codeText, done));
+            } else {
+                hlLegacyCopy(doc, codeText, done);
+            }
+        } catch (e) {
+            hlLegacyCopy(doc, codeText, done);
+        }
+    });
+
     const btn = doc.createElement('button');
     btn.type = 'button';
     btn.className = 'docreader-code-hl-toggle';
@@ -1276,13 +1309,35 @@ function setupCodeBlockWrapper(wrapper) {
         btn.setAttribute('aria-pressed', off ? 'false' : 'true');
         btn.textContent = off ? 'HL off' : 'HL';
     });
+
+    actions.appendChild(copyBtn);
+    actions.appendChild(btn);
     toolbar.appendChild(label);
-    toolbar.appendChild(btn);
+    toolbar.appendChild(actions);
     wrapper.insertBefore(toolbar, wrapper.firstChild);
 
     const st = { inBlockComment: false };
     wrapper.querySelectorAll('p.snippet, p.code, div.snippet, div.code, pre')
         .forEach(el => renderHighlightedCode(el, spec, st));
+}
+
+/* Clipboard fallback for sandboxed iframes without the async Clipboard API.
+ * The textarea must live in the SAME document the click activated (the epub
+ * iframe), otherwise execCommand('copy') is rejected by the browser. */
+function hlLegacyCopy(doc, text, done) {
+    try {
+        const ta = doc.createElement('textarea');
+        ta.value = text;
+        ta.setAttribute('readonly', '');
+        ta.style.cssText = 'position:fixed;top:-10px;left:0;width:2px;height:2px;opacity:0;';
+        doc.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        ta.setSelectionRange(0, text.length);
+        const ok = doc.execCommand('copy');
+        ta.remove();
+        if (ok) done();
+    } catch (e) {}
 }
 
 /* ─── EPUB Handler ───
@@ -1734,8 +1789,10 @@ class EPUBHandler {
                         // not reading content — never feed it to the TTS extractor.
                         if (n.classList &&
                             (n.classList.contains('docreader-code-toolbar') ||
+                             n.classList.contains('docreader-code-toolbar-actions') ||
                              n.classList.contains('docreader-code-lang') ||
-                             n.classList.contains('docreader-code-hl-toggle'))) return NodeFilter.FILTER_REJECT;
+                             n.classList.contains('docreader-code-hl-toggle') ||
+                             n.classList.contains('docreader-code-copy-btn'))) return NodeFilter.FILTER_REJECT;
                         if (tag === 'br') return NodeFilter.FILTER_ACCEPT;
                     }
                     return NodeFilter.FILTER_SKIP;
@@ -2502,6 +2559,14 @@ class EPUBHandler {
                     font-weight: 700 !important;
                     color: ${pal.muted} !important;
                 }
+                .docreader-code-wrapper .docreader-code-toolbar-actions {
+                    display: inline-flex !important;
+                    align-items: center !important;
+                    gap: 6px !important;
+                    margin: 0 !important;
+                    padding: 0 !important;
+                }
+                .docreader-code-wrapper .docreader-code-copy-btn,
                 .docreader-code-wrapper .docreader-code-hl-toggle {
                     font: inherit !important;
                     font-weight: 700 !important;
@@ -2512,6 +2577,11 @@ class EPUBHandler {
                     padding: 1px 8px !important;
                     cursor: pointer !important;
                 }
+                .docreader-code-wrapper .docreader-code-copy-btn:disabled {
+                    opacity: 0.7 !important;
+                    cursor: default !important;
+                }
+                .docreader-code-wrapper .docreader-code-copy-btn:hover,
                 .docreader-code-wrapper .docreader-code-hl-toggle:hover {
                     background: rgba(120,120,120,0.15) !important;
                 }
