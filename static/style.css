@@ -511,6 +511,23 @@ input[type="file"] {
     background: var(--accent-soft);
     border-left-color: var(--accent);
 }
+.toc-item.downloaded .toc-item-label {
+    color: var(--success);
+}
+.toc-item.downloaded .toc-item-num {
+    background: var(--success);
+    border-color: var(--success);
+    color: #fff;
+}
+.toc-dl-badge {
+    flex-shrink: 0;
+    align-self: center;
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--success);
+    margin-left: auto;
+    padding-left: 4px;
+}
 
 .toc-item.level-0 {
     font-weight: 700;

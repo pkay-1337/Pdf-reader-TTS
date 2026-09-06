@@ -3113,6 +3113,113 @@ function loadEpubOutline() {
     }
 
     renderEpubTree(toc, 0, tocList);
+    refreshDownloadedChapters();
+}
+
+/* ─── Downloaded-chapter highlights (sidebar) ───
+ * A sidebar TOC item is marked "downloaded" once the server has cached audio
+ * for every sentence of its spine page. Expected sentence counts are computed
+ * lazily with the same extraction used by batch download and memoized, so
+ * re-checks after cache mutations stay cheap. */
+let downloadedPages = new Set();
+let pageExpectedSentences = {};
+
+/* A spine page counts as downloaded once the server holds audio for
+ * (essentially) every sentence. Extraction can diverge slightly across runs
+ * and a few chunks may fail synthesis server-side, so allow a small deficit
+ * instead of demanding an exact match. */
+const DL_COMPLETE_RATIO = 0.95;
+const isPageDownloaded = (cachedCount, expected) =>
+    expected > 0 && cachedCount / expected >= DL_COMPLETE_RATIO;
+
+/* Compute how many TTS sentences a spine page should contain. */
+async function pageSentenceCount(p) {
+    if (!documentHandler || !(documentHandler instanceof EPUBHandler)) return 0;
+    const item = documentHandler.spineItems[p - 1];
+    if (!item) return 0;
+    const s = await extractEpubPageSentences(
+        documentHandler.book, item, topSkipLines, bottomSkipLines
+    );
+    return Array.isArray(s) ? s.length : 0;
+}
+
+/* Fetch per-page cache status for the whole book, determine which spine pages
+ * are fully cached, and repaint the sidebar highlights. */
+async function refreshDownloadedChapters() {
+    if (!currentFileName || !(documentHandler instanceof EPUBHandler)) return;
+    const totalDocs = documentHandler.pageCount;
+    if (!totalDocs) return;
+    try {
+        const res = await fetch(
+            `/cache_status_bulk?book_name=${encodeURIComponent(currentFileName)}&page_from=1&page_to=${totalDocs}`
+        );
+        if (!res.ok) return;
+        const data = await res.json();
+        const pages = data.pages || {};
+        const jobs = [];
+        for (let p = 1; p <= totalDocs; p++) {
+            const cached = pages[String(p)] || [];
+            if (cached.length) jobs.push({ p, cached });
+        }
+        const fullyCached = [];
+        let next = 0;
+        // 4-work pool: same concurrency as batch download's extractors.
+        const worker = async () => {
+            while (next < jobs.length) {
+                const job = jobs[next++];
+                try {
+                    let expected = pageExpectedSentences[job.p];
+                    if (expected === undefined) {
+                        expected = await pageSentenceCount(job.p);
+                        pageExpectedSentences[job.p] = expected;
+                    }
+                    if (isPageDownloaded(job.cached.length, expected)) fullyCached.push(job.p);
+                } catch (e) { console.warn('[DL-HL] page', job.p, 'count failed:', e); }
+            }
+        };
+        await Promise.all(Array.from({ length: Math.min(4, Math.max(1, jobs.length)) }, worker));
+        downloadedPages = new Set(fullyCached);
+        applyDownloadedHighlights();
+    } catch (e) {
+        console.warn('[DL-HL] refresh failed:', e);
+    }
+}
+
+/* Toggle the downloaded style and checkmark badge on every sidebar TOC item. */
+function applyDownloadedHighlights() {
+    tocList.querySelectorAll('.toc-item').forEach(el => {
+        const page = parseInt(el.dataset.page, 10);
+        const isDl = page > 0 && downloadedPages.has(page);
+        el.classList.toggle('downloaded', isDl);
+        let badge = el.querySelector('.toc-dl-badge');
+        if (isDl && !badge) {
+            badge = document.createElement('span');
+            badge.className = 'toc-dl-badge';
+            badge.title = 'Audio downloaded';
+            badge.textContent = '✓';
+            el.appendChild(badge);
+        } else if (!isDl && badge) {
+            badge.remove();
+        }
+    });
+}
+
+/* Live cache mutation on a single page: recompute just that page's highlight
+ * using the memoized expected count (computing it once if unknown). */
+async function handlePageCacheChange(p, cachedLines) {
+    if (!currentFileName || !(documentHandler instanceof EPUBHandler)) return;
+    if (p < 1 || p > documentHandler.pageCount) return;
+    let expected = pageExpectedSentences[p];
+    if (expected === undefined) {
+        try {
+            expected = await pageSentenceCount(p);
+            pageExpectedSentences[p] = expected;
+        } catch (e) { return; }
+    }
+    const count = Array.isArray(cachedLines) ? cachedLines.length : 0;
+    if (isPageDownloaded(count, expected)) downloadedPages.add(p);
+    else downloadedPages.delete(p);
+    applyDownloadedHighlights();
 }
 
 /* Full reset of reading state: stop playback, revoke cached audio, clear
@@ -4811,11 +4918,17 @@ function openCacheSocket(bookName) {
                     cacheStatusTimeout = null;
                 }
             }
+            if (documentHandler instanceof EPUBHandler && msg.page) {
+                handlePageCacheChange(msg.page, msg.cached_lines);
+            }
         }
         if (msg.type === 'cache_cleared') {
             if (msg.page === pageNum) {
                 cacheBadge.classList.remove('visible');
                 delete pageDurationCache[msg.page];
+            }
+            if (documentHandler instanceof EPUBHandler) {
+                refreshDownloadedChapters();
             }
         }
     }, () => {
@@ -5151,6 +5264,7 @@ function finishDownload(pageCount) {
         isDownloadingRange = false;
         downloadRangeBtn.disabled = false;
         updateCacheBadge();
+        refreshDownloadedChapters();
         Object.keys(pageDurationCache).forEach(k => delete pageDurationCache[k]);
         Object.keys(chapterDurationCache).forEach(k => delete chapterDurationCache[k]);
         refreshTimeEstimates();
