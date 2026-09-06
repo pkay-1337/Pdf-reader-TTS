@@ -1009,6 +1009,282 @@ async function loadDocument(file, startPage = 1) {
     }
 }
 
+/* ─── Syntax highlighting (code blocks) ───
+ * Dependency-free tokenizer driven by declarative per-language specs in
+ * SYNTAX_HIGHLIGHTERS. The shared tokenizer handles comments (incl. multi-line
+ * state carried across paragraph rows), strings/chars, preprocessor
+ * directives, numbers, keywords/types, function calls and operator runs.
+ *
+ * To support a new language just append a spec object here; detection uses
+ * each spec's `classes` token (e.g. "language-python") on the block, falling
+ * back to HL_LANG_DEFAULT for unlabeled snippets.
+ *
+ * Each merged code wrapper gets a small header row: a language label and an
+ * on/off toggle that flips .docreader-hl-off (CSS-neutralized colors, no
+ * re-tokenizing). */
+const SYNTAX_HIGHLIGHTERS = {
+    c: {
+        name: 'C',
+        keywords: new Set([
+            'auto','break','case','const','continue','default','do','else','enum','extern',
+            'for','goto','if','inline','register','restrict','return','sizeof','static',
+            'struct','switch','typedef','union','volatile','while','_Alignas','_Alignof',
+            '_Atomic','_Bool','_Complex','_Generic','_Imaginary','_Noreturn','_Static_assert',
+            '_Thread_local',
+        ]),
+        types: new Set([
+            'void','char','short','int','long','float','double','signed','unsigned','bool',
+            'size_t','ssize_t','ptrdiff_t','wchar_t','int8_t','int16_t','int32_t','int64_t',
+            'uint8_t','uint16_t','uint32_t','uint64_t','intptr_t','uintptr_t','intmax_t',
+            'uintmax_t','FILE','va_list','off_t','pid_t','uid_t','gid_t','mode_t','dev_t',
+            'ino_t','nlink_t','blksize_t','blkcnt_t','time_t','clock_t','pthread_t',
+            'pthread_mutex_t','pthread_cond_t','pthread_attr_t','pthread_key_t','pthread_once_t',
+            'errno_t','socklen_t',
+        ]),
+        lineComment: '//',
+        blockComment: { open: '/*', close: '*/' },
+        strings: ['"', "'"],
+        preprocessor: true,
+        operators: '~!@#$%^&*()-=+[]{}|;:,.<>?/\\',
+        classes: ['language-c', 'lang-c', 'c', 'code'],
+    },
+    /* Example spec to copy when adding a language:
+    python: {
+        name: 'Python',
+        keywords: new Set(['def','return','import','from','as','class','if','elif','else',
+            'for','while','break','continue','pass','try','except','finally','raise',
+            'with','yield','lambda','global','nonlocal','del','assert','async','await',
+            'in','is','not','and','or','None','True','False']),
+        types: new Set(['int','float','str','bytes','bool','list','tuple','dict','set','object']),
+        lineComment: '#',
+        blockComment: { open: '"""', close: '"""' },
+        strings: ['"', "'"],
+        preprocessor: false,
+        operators: '+-/%*=<>!&|^~:;,()[]{}',
+        classes: ['language-python', 'lang-python', 'lang-py', 'py'],
+    },
+    */
+};
+
+/* Fallback language for blocks with no usable hint. */
+const HL_LANG_DEFAULT = 'c';
+
+/* Code colors tuned for light vs dark themes; see HL_LIGHT_THEMES. */
+const HL_PALETTES = {
+    light: {
+        muted: '#6e7781',    keyword: '#cf222e',  type: '#0550ae',
+        string: '#0a3069',   char: '#0a3069',     comment: '#6e7781',
+        number: '#0550ae',   preproc: '#953800',  operator: '#630f7f',
+        function: '#8250df',
+    },
+    dark: {
+        muted: '#8b949e',    keyword: '#ff7b72',  type: '#79c0ff',
+        string: '#a5d6ff',   char: '#a5d6ff',     comment: '#8b949e',
+        number: '#79c0ff',   preproc: '#ffa657',  operator: '#ff7b72',
+        function: '#d2a8ff',
+    },
+};
+
+const HL_LIGHT_THEMES = new Set([
+    'default-light', 'gruvbox-light', 'solarized-light', 'rosepine-dawn',
+    'paper', 'tokyo-night-light', 'everforest-light', 'ayu-light',
+    'github-light', 'catppuccin-latte', 'nord-light',
+]);
+const hlIsLightTheme = (t) => !!(t && HL_LIGHT_THEMES.has(t));
+
+const hlIsIdChar = (ch) => ch !== undefined && /[A-Za-z0-9_]/.test(ch);
+
+/* Scan a number literal (hex/bin/oct/dec, floats, integer suffixes). */
+function hlScanNumber(text, i) {
+    const rest = text.slice(i);
+    let m;
+    if ((m = /^0[xX][0-9a-fA-F]+/.exec(rest))) {
+        return text.slice(i, i + m[0].length + (text.slice(i + m[0].length).match(/^(?:[uUlL]{1,2})/) || [''])[0].length);
+    }
+    if ((m = /^0[bB][01]+/.exec(rest))) {
+        return text.slice(i, i + m[0].length + (text.slice(i + m[0].length).match(/^(?:[uUlL]{1,2})/) || [''])[0].length);
+    }
+    m = /^\d+(?:\.\d+)?(?:[eE][+-]?\d+)?/.exec(rest);
+    return text.slice(i, i + m[0].length);
+}
+
+/* Tokenize one text run into [{type, text}] using a language spec. `st` is a
+ * shared state object so multi-line block comments continue across rows. */
+function tokenizeCode(text, spec, st) {
+    const toks = [];
+    const n = text.length;
+    let i = 0;
+    const kw = spec.keywords || null;
+    const ty = spec.types || null;
+    const lineCom = spec.lineComment || null;
+    const blk = spec.blockComment || null;
+    const strs = spec.strings || [];
+    const ops = spec.operators || '';
+
+    while (i < n) {
+        const ch = text[i];
+
+        if (blk && st.inBlockComment) {
+            const close = text.indexOf(blk.close, i);
+            if (close === -1) { toks.push({ type: 'comment', text: text.slice(i) }); i = n; }
+            else {
+                toks.push({ type: 'comment', text: text.slice(i, close + blk.close.length) });
+                i = close + blk.close.length;
+                st.inBlockComment = false;
+            }
+            continue;
+        }
+        if (lineCom && text.startsWith(lineCom, i)) {
+            const eol = text.indexOf('\n', i);
+            toks.push({ type: 'comment', text: text.slice(i, eol === -1 ? n : eol) });
+            i = eol === -1 ? n : eol;
+            continue;
+        }
+        if (blk && text.startsWith(blk.open, i)) {
+            const close = text.indexOf(blk.close, i + blk.open.length);
+            if (close === -1) { toks.push({ type: 'comment', text: text.slice(i) }); st.inBlockComment = true; i = n; }
+            else {
+                toks.push({ type: 'comment', text: text.slice(i, close + blk.close.length) });
+                i = close + blk.close.length;
+            }
+            continue;
+        }
+        if (strs.includes(ch)) {
+            let k = i + 1;
+            while (k < n) {
+                const ck = text[k];
+                if (ck === '\\') { k += 2; continue; }
+                if (ck === ch) { k++; break; }
+                if (ck === '\n') break;
+                k++;
+            }
+            toks.push({ type: ch === '"' ? 'string' : 'char', text: text.slice(i, k) });
+            i = k;
+            continue;
+        }
+        if (spec.preprocessor && ch === '#') {
+            let atLineStart = true;
+            for (let k = i - 1; k >= 0; k--) {
+                const pk = text[k];
+                if (pk === '\n') break;
+                if (pk !== ' ' && pk !== '\t') { atLineStart = false; break; }
+            }
+            if (atLineStart) {
+                let eol = text.indexOf('\n', i);
+                if (eol === -1) eol = n;
+                toks.push({ type: 'preprocessor', text: text.slice(i, eol) });
+                i = eol;
+                continue;
+            }
+        }
+        if (ch >= '0' && ch <= '9') {
+            toks.push({ type: 'number', text: hlScanNumber(text, i) });
+            i += toks[toks.length - 1].text.length;
+            continue;
+        }
+        if (hlIsIdChar(ch)) {
+            let j = i;
+            while (j < n && hlIsIdChar(text[j])) j++;
+            const word = text.slice(i, j);
+            let type = 'identifier';
+            if (kw && kw.has(word)) type = 'keyword';
+            else if (ty && ty.has(word)) type = 'type';
+            else {
+                let k = j;
+                while (k < n && (text[k] === ' ' || text[k] === '\t')) k++;
+                if (text[k] === '(') type = 'function';
+            }
+            toks.push({ type, text: word });
+            i = j;
+            continue;
+        }
+        if (ops.includes(ch)) {
+            let j = i;
+            while (j < n && ops.includes(text[j])) j++;
+            toks.push({ type: 'operator', text: text.slice(i, j) });
+            i = j;
+            continue;
+        }
+        if (ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r') {
+            let j = i;
+            while (j < n && /\s/.test(text[j])) j++;
+            toks.push({ type: 'plain', text: text.slice(i, j) });
+            i = j;
+            continue;
+        }
+        toks.push({ type: 'plain', text: ch });
+        i++;
+    }
+    return toks;
+}
+
+/* Pick a language spec for a code block from class hints, or null to fall
+ * back to HL_LANG_DEFAULT. */
+function detectCodeLanguage(el) {
+    const scan = [el, ...el.querySelectorAll('*')];
+    for (const node of scan) {
+        if (!node.className) continue;
+        const cs = node.className.baseVal !== undefined ? node.className.baseVal : node.className;
+        const parts = String(cs).split(/\s+/);
+        for (const c of parts) {
+            const key = c.toLowerCase();
+            if (!key) continue;
+            for (const lang in SYNTAX_HIGHLIGHTERS) {
+                if (SYNTAX_HIGHLIGHTERS[lang].classes.includes(key)) return lang;
+            }
+        }
+    }
+    return null;
+}
+
+/* Wipe a single code row and rebuild it as .hl-* spans. */
+function renderHighlightedCode(el, spec, st) {
+    const text = el.textContent;
+    const toks = tokenizeCode(text, spec, st);
+    el.textContent = '';
+    const doc = el.ownerDocument;
+    for (const t of toks) {
+        if (t.type === 'plain') { el.appendChild(doc.createTextNode(t.text)); continue; }
+        const s = doc.createElement('span');
+        s.className = 'hl-' + t.type;
+        s.textContent = t.text;
+        el.appendChild(s);
+    }
+}
+
+/* Decorate a merged code wrapper: language header + HL on/off toggle, then
+ * highlight its rows (state shared across rows for multi-line comments). */
+function setupCodeBlockWrapper(wrapper) {
+    if (wrapper.dataset.hlReady) return;
+    wrapper.dataset.hlReady = '1';
+    const doc = wrapper.ownerDocument;
+    const spec = SYNTAX_HIGHLIGHTERS[detectCodeLanguage(wrapper) || HL_LANG_DEFAULT];
+
+    const toolbar = doc.createElement('div');
+    toolbar.className = 'docreader-code-toolbar';
+    const label = doc.createElement('span');
+    label.className = 'docreader-code-lang';
+    label.textContent = spec.name;
+    const btn = doc.createElement('button');
+    btn.type = 'button';
+    btn.className = 'docreader-code-hl-toggle';
+    btn.title = 'Toggle syntax highlighting';
+    btn.textContent = 'HL';
+    btn.setAttribute('aria-pressed', 'true');
+    btn.addEventListener('click', () => {
+        const off = wrapper.classList.toggle('docreader-hl-off');
+        btn.setAttribute('aria-pressed', off ? 'false' : 'true');
+        btn.textContent = off ? 'HL off' : 'HL';
+    });
+    toolbar.appendChild(label);
+    toolbar.appendChild(btn);
+    wrapper.insertBefore(toolbar, wrapper.firstChild);
+
+    const st = { inBlockComment: false };
+    wrapper.querySelectorAll('p.snippet, p.code, div.snippet, div.code, pre')
+        .forEach(el => renderHighlightedCode(el, spec, st));
+}
+
 /* ─── EPUB Handler ───
  * Wraps an epub.js rendition configured with flow:'scrolled-doc'.
  * Key invariants:
@@ -1151,7 +1427,8 @@ class EPUBHandler {
 
             // Group consecutive code-ish blocks into a single wrapper div so
             // CSS can style multi-paragraph snippets as one unit.
-            const codeBlocks = Array.from(doc.querySelectorAll('p.snippet, p.code, div.snippet, div.code, pre'));
+            const codeBlocks = Array.from(doc.querySelectorAll('p.snippet, p.code, div.snippet, div.code, pre'))
+                .filter(el => !el.closest('.docreader-code-wrapper'));
             let currentWrapper = null;
             codeBlocks.forEach(el => {
                 const prev = el.previousElementSibling;
@@ -1167,6 +1444,12 @@ class EPUBHandler {
 
             this._injectReadingStyle(doc);
             this._injectHighlightStyle(doc);
+
+            // Syntax highlighting: style + language header/toggle per block.
+            this._injectSyntaxHighlightCss(doc);
+            doc.querySelectorAll('.docreader-code-wrapper')
+                .forEach(w => setupCodeBlockWrapper(w));
+
             // Must come last so theme CSS can't be overridden by the above.
             this._injectThemeStyleIntoDoc(doc);
         });
@@ -1389,7 +1672,10 @@ class EPUBHandler {
         try {
             const contents = this.rendition && this.rendition.getContents();
             if (contents && contents.length) {
-                contents.forEach(c => this._injectThemeStyleIntoDoc(c.document));
+                contents.forEach(c => {
+                    this._injectThemeStyleIntoDoc(c.document);
+                    this._injectSyntaxHighlightCss(c.document);
+                });
             }
         } catch(e) {}
     }
@@ -1444,6 +1730,12 @@ class EPUBHandler {
                     if (n.nodeType === Node.ELEMENT_NODE) {
                         const tag = n.tagName.toLowerCase();
                         if (['script','style','nav','aside'].includes(tag)) return NodeFilter.FILTER_REJECT;
+                        // Code-block toolbar (language label + HL toggle) is chrome,
+                        // not reading content — never feed it to the TTS extractor.
+                        if (n.classList &&
+                            (n.classList.contains('docreader-code-toolbar') ||
+                             n.classList.contains('docreader-code-lang') ||
+                             n.classList.contains('docreader-code-hl-toggle'))) return NodeFilter.FILTER_REJECT;
                         if (tag === 'br') return NodeFilter.FILTER_ACCEPT;
                     }
                     return NodeFilter.FILTER_SKIP;
@@ -2078,6 +2370,14 @@ class EPUBHandler {
                     background: transparent !important;
                     border: none !important;
                     line-height: 1.5 !important;
+                    overflow-x: visible !important;
+                    white-space: pre !important;
+                }
+                .docreader-code-wrapper code {
+                    overflow-x: visible !important;
+                    white-space: pre !important;
+                    padding: 0 !important;
+                    background: transparent !important;
                 }
             `;
         } catch(e) {}
@@ -2157,6 +2457,88 @@ class EPUBHandler {
         } catch(e) {
             console.warn('Error injecting highlight style:', e);
         }
+    }
+
+    /* Inject code-block syntax-highlight CSS into a chapter document: toolbar
+     * layout, token colors (light/dark by theme), and the .docreader-hl-off
+     * neutralizer used by the per-block toggle. */
+    _injectSyntaxHighlightCss(targetDoc) {
+        try {
+            let doc = targetDoc;
+            if (!doc) {
+                const contents = this.rendition && this.rendition.getContents();
+                if (!contents || !contents.length) return;
+                doc = contents[0].document;
+            }
+            if (!doc || !doc.head) return;
+
+            const pal = HL_PALETTES[hlIsLightTheme(this._currentTheme) ? 'light' : 'dark'];
+            let s = doc.getElementById('docreader-hl-style');
+            if (!s) {
+                s = doc.createElement('style');
+                s.id = 'docreader-hl-style';
+                doc.head.appendChild(s);
+            }
+            s.textContent = `
+                .docreader-code-wrapper .docreader-code-toolbar {
+                    display: flex !important;
+                    align-items: center !important;
+                    justify-content: space-between !important;
+                    gap: 8px !important;
+                    margin: -14px -14px 12px !important;
+                    padding: 3px 10px !important;
+                    background: rgba(120,120,120,0.10) !important;
+                    border-bottom: 1px solid rgba(120,120,120,0.20) !important;
+                    border-radius: 6px 6px 0 0 !important;
+                    font-size: 11px !important;
+                    font-family: 'JetBrains Mono', monospace !important;
+                    color: ${pal.muted} !important;
+                    position: sticky !important;
+                    left: 0 !important;
+                }
+                .docreader-code-wrapper .docreader-code-lang {
+                    text-transform: uppercase !important;
+                    letter-spacing: 0.5px !important;
+                    font-weight: 700 !important;
+                    color: ${pal.muted} !important;
+                }
+                .docreader-code-wrapper .docreader-code-hl-toggle {
+                    font: inherit !important;
+                    font-weight: 700 !important;
+                    color: ${pal.function} !important;
+                    background: transparent !important;
+                    border: 1px solid rgba(120,120,120,0.35) !important;
+                    border-radius: 4px !important;
+                    padding: 1px 8px !important;
+                    cursor: pointer !important;
+                }
+                .docreader-code-wrapper .docreader-code-hl-toggle:hover {
+                    background: rgba(120,120,120,0.15) !important;
+                }
+                .docreader-code-wrapper .hl-keyword   { color: ${pal.keyword} !important; font-weight: 600 !important; }
+                .docreader-code-wrapper .hl-type      { color: ${pal.type} !important; }
+                .docreader-code-wrapper .hl-string    { color: ${pal.string} !important; }
+                .docreader-code-wrapper .hl-char      { color: ${pal.char} !important; }
+                .docreader-code-wrapper .hl-comment   { color: ${pal.comment} !important; font-style: italic !important; }
+                .docreader-code-wrapper .hl-number    { color: ${pal.number} !important; }
+                .docreader-code-wrapper .hl-preprocessor { color: ${pal.preproc} !important; font-weight: 600 !important; }
+                .docreader-code-wrapper .hl-operator  { color: ${pal.operator} !important; }
+                .docreader-code-wrapper .hl-function  { color: ${pal.function} !important; }
+                .docreader-code-wrapper.docreader-hl-off .hl-keyword,
+                .docreader-code-wrapper.docreader-hl-off .hl-type,
+                .docreader-code-wrapper.docreader-hl-off .hl-string,
+                .docreader-code-wrapper.docreader-hl-off .hl-char,
+                .docreader-code-wrapper.docreader-hl-off .hl-comment,
+                .docreader-code-wrapper.docreader-hl-off .hl-number,
+                .docreader-code-wrapper.docreader-hl-off .hl-preprocessor,
+                .docreader-code-wrapper.docreader-hl-off .hl-operator,
+                .docreader-code-wrapper.docreader-hl-off .hl-function {
+                    color: inherit !important;
+                    font-weight: inherit !important;
+                    font-style: inherit !important;
+                }
+            `;
+        } catch(e) {}
     }
 
     /* Inject focus-mode CSS: everything except the active sentence fades to
