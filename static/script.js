@@ -1445,12 +1445,24 @@ class EPUBHandler {
             // A sentence can wrap across lines producing multiple spans that
             // share data-sent-idx; all fragments get the hover class, with
             // start/middle/end markers so CSS can round only outer corners.
+            // A floating badge shows the 1-based line number next to the cursor.
             let _epubHoverIdx = -1;
+            const _epubHoverBadge = (clientX, clientY, sentIdx) => {
+                try { this._showLineBadge(doc, clientX, clientY, sentIdx); } catch(e) {}
+            };
+            const _epubHideBadge = () => {
+                try { this._hideLineBadge(doc); } catch(e) {}
+            };
             win.addEventListener('mousemove', (e) => {
                 const span = e.target.closest && e.target.closest('.dr-sent');
                 if (!span) { _clearEpubHover(); return; }
                 const bestSentIdx = Number(span.getAttribute('data-sent-idx'));
-                if (isNaN(bestSentIdx) || bestSentIdx === _epubHoverIdx) return;
+                if (isNaN(bestSentIdx)) { _clearEpubHover(); return; }
+                // Same sentence: keep highlight, just follow the cursor.
+                if (bestSentIdx === _epubHoverIdx) {
+                    _epubHoverBadge(e.clientX, e.clientY, bestSentIdx);
+                    return;
+                }
                 _clearEpubHover();
                 _epubHoverIdx = bestSentIdx;
                 const fragments = doc.querySelectorAll(`.dr-sent[data-sent-idx="${bestSentIdx}"]`);
@@ -1462,23 +1474,80 @@ class EPUBHandler {
                         else el.classList.add('dr-fragment-middle');
                     }
                 });
+                _epubHoverBadge(e.clientX, e.clientY, bestSentIdx);
             });
 
             /* Remove hover styling from all fragments of the last hovered
              * sentence, preserving 'active' fragment markers if playing. */
             function _clearEpubHover() {
+                _epubHideBadge();
                 if (_epubHoverIdx === -1) return;
                 doc.querySelectorAll('.dr-sent.dr-sentence-hover')
                    .forEach(el => {
-                       el.classList.remove('dr-sentence-hover');
-                       if (!el.classList.contains('dr-sentence-active')) {
-                           el.classList.remove('dr-fragment-start', 'dr-fragment-middle', 'dr-fragment-end');
-                       }
-                   });
+                        el.classList.remove('dr-sentence-hover');
+                        if (!el.classList.contains('dr-sentence-active')) {
+                            el.classList.remove('dr-fragment-start', 'dr-fragment-middle', 'dr-fragment-end');
+                        }
+                    });
                 _epubHoverIdx = -1;
             }
 
-            win.addEventListener('mouseleave', _clearEpubHover);
+            win.addEventListener('mouseleave', () => { _clearEpubHover(); _epubHideBadge(); });
+            win.addEventListener('scroll', () => { _epubHideBadge(); }, { passive: true });
+
+            // Long-press on touch devices: 500ms hold without moving shows the
+            // line-number badge pinned to the sentence. Sets a suppression
+            // window so the tap-to-play click handler ignores this gesture.
+            // Single taps are untouched and still start playback immediately.
+            let _lpTimer = null;
+            let _lpStartX = 0, _lpStartY = 0;
+            let _lpSentIdx = -1;
+            let _lpFired = false;
+            const _lpCancel = () => {
+                if (_lpTimer) { clearTimeout(_lpTimer); _lpTimer = null; }
+            };
+            win.addEventListener('touchstart', (e) => {
+                _lpFired = false;
+                _lpCancel();
+                if (!e.touches || e.touches.length !== 1) return;
+                const t = e.touches[0];
+                const span = t.target && t.target.closest && t.target.closest('.dr-sent');
+                if (!span) { _lpSentIdx = -1; return; }
+                const si = Number(span.getAttribute('data-sent-idx'));
+                if (isNaN(si)) { _lpSentIdx = -1; return; }
+                _lpSentIdx = si;
+                _lpStartX = t.clientX; _lpStartY = t.clientY;
+                _lpTimer = setTimeout(() => {
+                    _lpTimer = null;
+                    _lpFired = true;
+                    try {
+                        const frags = doc.querySelectorAll(`.dr-sent[data-sent-idx="${_lpSentIdx}"]`);
+                        const first = frags && frags[0];
+                        const rect = first && first.getBoundingClientRect ? first.getBoundingClientRect() : null;
+                        if (rect) this._showLineBadgeAtRect(doc, rect, _lpSentIdx);
+                        else this._showLineBadge(doc, _lpStartX, _lpStartY, _lpSentIdx);
+                    } catch(err) {}
+                    try { if (navigator.vibrate) navigator.vibrate(10); } catch(err) {}
+                    // Suppress the click-to-play that the tap would otherwise fire.
+                    try { window._epubSuppressClickUntil = Date.now() + 900; } catch(err) {}
+                    // Auto-hide so the badge never sticks.
+                    setTimeout(() => { try { this._hideLineBadge(doc); } catch(err) {} }, 1600);
+                }, 500);
+            }, { passive: true });
+            win.addEventListener('touchmove', (e) => {
+                if (!_lpTimer) return;
+                if (!e.touches || !e.touches.length) return;
+                const t = e.touches[0];
+                if (Math.hypot(t.clientX - _lpStartX, t.clientY - _lpStartY) > 10) _lpCancel();
+            }, { passive: true });
+            const _lpEnd = () => {
+                _lpCancel();
+                // If it was a plain tap (no long-press), make sure no stale badge lingers.
+                if (!_lpFired) { try { this._hideLineBadge(doc); } catch(e) {} }
+                setTimeout(() => { _lpFired = false; }, 950);
+            };
+            win.addEventListener('touchend', _lpEnd, { passive: true });
+            win.addEventListener('touchcancel', _lpEnd, { passive: true });
 
             // Group consecutive code-ish blocks into a single wrapper div so
             // CSS can style multi-paragraph snippets as one unit.
@@ -1895,6 +1964,8 @@ class EPUBHandler {
                         const span = doc.createElement('span');
                         span.className = 'dr-sent';
                         span.setAttribute('data-sent-idx', op.si);
+                        span.setAttribute('data-line-num', String(op.si + 1));
+                        span.setAttribute('title', 'Line ' + (op.si + 1));
                         range.surroundContents(span);
                     } catch(e) {}
                 });
@@ -2510,6 +2581,24 @@ class EPUBHandler {
                     border-top-left-radius: 0 !important;
                     border-bottom-left-radius: 0 !important;
                 }
+                #dr-line-badge {
+                    position: fixed !important;
+                    z-index: 99999 !important;
+                    pointer-events: none !important;
+                    background: #111827 !important;
+                    color: #f9fafb !important;
+                    font-family: monospace !important;
+                    font-size: 12px !important;
+                    font-weight: 700 !important;
+                    line-height: 1 !important;
+                    padding: 5px 8px !important;
+                    border-radius: 6px !important;
+                    box-shadow: 0 2px 8px rgba(0,0,0,0.35) !important;
+                    opacity: 0 !important;
+                    transition: opacity 0.12s ease !important;
+                    white-space: nowrap !important;
+                }
+                #dr-line-badge.dr-visible { opacity: 1 !important; }
             `;
         } catch(e) {
             console.warn('Error injecting highlight style:', e);
@@ -2667,6 +2756,68 @@ class EPUBHandler {
     }
 
     clearHighlights() { this._clearHighlights(); }
+
+    /* ─── Line-number badge (hover on desktop, long-press on mobile) ───
+     * One fixed-position div per chapter iframe (id dr-line-badge). Created
+     * lazily so re-renders / theme injections never duplicate it. All
+     * methods are null-safe: they no-op when the rendition/doc is gone. */
+    _ensureLineBadge(targetDoc) {
+        try {
+            let doc = targetDoc;
+            if (!doc) {
+                const contents = this.rendition && this.rendition.getContents();
+                if (!contents || !contents.length) return null;
+                doc = contents[0].document;
+            }
+            if (!doc || !doc.body) return null;
+            let badge = doc.getElementById('dr-line-badge');
+            if (!badge) {
+                badge = doc.createElement('div');
+                badge.id = 'dr-line-badge';
+                badge.setAttribute('aria-hidden', 'true');
+                doc.body.appendChild(badge);
+            }
+            return badge;
+        } catch(e) { return null; }
+    }
+
+    _showLineBadge(targetDoc, x, y, sentIdx) {
+        try {
+            const badge = this._ensureLineBadge(targetDoc);
+            if (!badge) return;
+            badge.textContent = 'Line ' + (sentIdx + 1);
+            badge.classList.add('dr-visible');
+            // Clamp inside the iframe viewport so the badge never clips.
+            const win = targetDoc && targetDoc.defaultView;
+            const vw = (win && win.innerWidth) || 400;
+            const bx = Math.max(4, Math.min(x + 14, vw - 90));
+            const by = Math.max(4, y - 30);
+            badge.style.left = bx + 'px';
+            badge.style.top = by + 'px';
+        } catch(e) {}
+    }
+
+    _showLineBadgeAtRect(targetDoc, rect, sentIdx) {
+        try {
+            if (!rect) return;
+            // Anchor above the sentence; fall back below it near the top edge.
+            const y = rect.top < 40 ? rect.bottom + 8 : rect.top;
+            this._showLineBadge(targetDoc, rect.left + rect.width / 2 - 14, y, sentIdx);
+        } catch(e) {}
+    }
+
+    _hideLineBadge(targetDoc) {
+        try {
+            let doc = targetDoc;
+            if (!doc) {
+                const contents = this.rendition && this.rendition.getContents();
+                if (!contents || !contents.length) return;
+                doc = contents[0].document;
+            }
+            const badge = doc && doc.getElementById && doc.getElementById('dr-line-badge');
+            if (badge) badge.classList.remove('dr-visible');
+        } catch(e) {}
+    }
 
     /* Resize the rendition. Same-scale calls are skipped (see setZoom) so a
      * settings_sync echo can't cancel an in-flight scroll restore; real size
@@ -3392,6 +3543,10 @@ async function loadEPUB(file, startPage = 1) {
         documentHandler.rendition.on('click', (e) => {
             // Click-to-read: tapping a sentence span starts playback there.
             // Links are exempt so navigation still works normally.
+            // A just-fired long-press (line-number peek) suppresses playback.
+            try {
+                if (window._epubSuppressClickUntil && Date.now() < window._epubSuppressClickUntil) return;
+            } catch(err) {}
             if (!sentences || !sentences.length) return;
             const clickedNode = e.target;
             if (!clickedNode) return;
@@ -5556,6 +5711,165 @@ downloadRangeBtn.addEventListener('click', async () => {
     
     const rangeStr = pageRangeInput.value.trim();
     if (!rangeStr) { pageRangeInput.focus(); return; }
+
+    // ─── Line-range mode (EPUB only): "100:200" = lines 100-200 of the
+    // current chapter. 1-based human line numbers; ":200" means 1-200,
+    // "100:" means 100-end. Page-range syntax below is unchanged. ───
+    if (rangeStr.includes(':')) {
+        if (!isEpub) {
+            dlProgress.classList.add('active');
+            dlProgressFill.style.width = '0%';
+            dlStatusText.textContent = 'Line download (a:b) is EPUB-only.';
+            setTimeout(() => {
+                dlProgress.classList.remove('active');
+                dlProgressFill.style.width = '0%';
+            }, 2500);
+            pageRangeInput.style.borderColor = 'var(--danger)';
+            setTimeout(() => pageRangeInput.style.borderColor = '', 1500);
+            return;
+        }
+        const lm = rangeStr.match(/^(\d*)\s*:\s*(\d*)$/);
+        if (!lm || (lm[1] === '' && lm[2] === '')) {
+            pageRangeInput.style.borderColor = 'var(--danger)';
+            setTimeout(() => pageRangeInput.style.borderColor = '', 1500);
+            return;
+        }
+        const chapterLines = (documentHandler && documentHandler.currentSentences && documentHandler.currentSentences.length)
+            ? documentHandler.currentSentences
+            : (sentences || []);
+        const totalLines = chapterLines.length;
+        if (!totalLines) {
+            dlProgress.classList.add('active');
+            dlStatusText.textContent = 'No lines loaded for this chapter yet.';
+            setTimeout(() => dlProgress.classList.remove('active'), 2500);
+            return;
+        }
+        let lineFrom = lm[1] === '' ? 1 : parseInt(lm[1], 10);
+        let lineTo = lm[2] === '' ? totalLines : parseInt(lm[2], 10);
+        if (!Number.isFinite(lineFrom) || !Number.isFinite(lineTo)) {
+            pageRangeInput.style.borderColor = 'var(--danger)';
+            setTimeout(() => pageRangeInput.style.borderColor = '', 1500);
+            return;
+        }
+        lineFrom = Math.max(1, lineFrom);
+        lineTo = Math.min(totalLines, lineTo);
+        if (lineFrom > lineTo || lineFrom > totalLines) {
+            dlProgress.classList.add('active');
+            dlProgressFill.style.width = '0%';
+            dlStatusText.textContent = `Invalid lines — this chapter has 1-${totalLines}.`;
+            setTimeout(() => {
+                dlProgress.classList.remove('active');
+                dlProgressFill.style.width = '0%';
+            }, 2500);
+            pageRangeInput.style.borderColor = 'var(--danger)';
+            setTimeout(() => pageRangeInput.style.borderColor = '', 1500);
+            return;
+        }
+
+        const voice = document.getElementById('voice-selector').value;
+        const dlBookName = currentFileName;
+        const dlPage = pageNum;
+        isDownloadingRange = true;
+        downloadRangeBtn.disabled = true;
+        dlProgress.classList.add('active');
+        dlProgressFill.style.width = '10%';
+        dlStatusText.textContent = `Scanning lines ${lineFrom}-${lineTo}…`;
+
+        let cachedSet = new Set();
+        try {
+            const statusRes = await fetch(
+                `/cache_status_bulk?book_name=${encodeURIComponent(dlBookName)}&page_from=${dlPage}&page_to=${dlPage}`
+            );
+            if (statusRes.ok) {
+                const statusData = await statusRes.json();
+                const pages = statusData.pages || {};
+                cachedSet = new Set(pages[String(dlPage)] || []);
+            }
+        } catch (e) {}
+
+        if (currentFileName !== dlBookName) {
+            dlStatusText.textContent = 'Cancelled';
+            setTimeout(() => {
+                dlProgress.classList.remove('active');
+                dlProgressFill.style.width = '0%';
+                isDownloadingRange = false;
+                downloadRangeBtn.disabled = false;
+            }, 2000);
+            return;
+        }
+
+        const lineSentences = {};
+        for (let si = lineFrom - 1; si <= lineTo - 1; si++) {
+            if (cachedSet.has(si)) continue;
+            const raw = chapterLines[si];
+            if (!raw) continue;
+            const text = normalizeTTSText(
+                /^\d{1,2}$/.test(raw.trim()) ? `Page ${raw.trim()}.` : raw
+            );
+            lineSentences[`${dlPage}_${si}`] = text;
+        }
+
+        const newLineCount = Object.keys(lineSentences).length;
+        if (newLineCount === 0) {
+            dlProgressFill.style.width = '100%';
+            dlStatusText.textContent = `Lines ${lineFrom}-${lineTo} already cached ✓`;
+            setTimeout(() => {
+                dlProgress.classList.remove('active');
+                dlProgressFill.style.width = '0%';
+                isDownloadingRange = false;
+                downloadRangeBtn.disabled = false;
+                updateCacheBadge();
+            }, 2000);
+            return;
+        }
+
+        dlStatusText.textContent = `Queuing ${newLineCount} chunks (lines ${lineFrom}-${lineTo})…`;
+        dlProgressFill.style.width = '45%';
+        try {
+            const res = await fetch('/preload', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    book_name: dlBookName,
+                    page_from: dlPage,
+                    page_to: dlPage,
+                    sentences: lineSentences,
+                    voice,
+                })
+            });
+            if (!res.ok) throw new Error(`HTTP ${res.status}`);
+            const data = await res.json();
+            const jobId = data.job_id;
+            if (jobId) {
+                dlProgressFill.style.width = '70%';
+                WS.open(`preload:${jobId}`, `/ws/preload/${jobId}`, msg => {
+                    if (!msg) return;
+                    if (currentFileName !== dlBookName) { WS.close(`preload:${jobId}`); return; }
+                    const done = msg.done || 0;
+                    const total = msg.total || newLineCount;
+                    const pct = Math.min(99, Math.round(70 + (done / Math.max(1, total)) * 29));
+                    dlProgressFill.style.width = pct + '%';
+                    dlStatusText.textContent = `Server generating… ${done} / ${total} (lines ${lineFrom}-${lineTo})`;
+                    if (msg.status === 'done') {
+                        WS.close(`preload:${jobId}`);
+                        finishDownload(1, `Done! Lines ${lineFrom}-${lineTo} (chapter ${dlPage}) queued ✓`);
+                    }
+                });
+                setTimeout(() => { WS.close(`preload:${jobId}`); finishDownload(1, `Done! Lines ${lineFrom}-${lineTo} (chapter ${dlPage}) queued ✓`); }, 600000);
+            } else {
+                finishDownload(1, `Done! Lines ${lineFrom}-${lineTo} (chapter ${dlPage}) queued ✓`);
+            }
+        } catch (e) {
+            dlStatusText.textContent = `Error: ${e.message}`;
+            setTimeout(() => {
+                dlProgress.classList.remove('active');
+                isDownloadingRange = false;
+                downloadRangeBtn.disabled = false;
+            }, 3000);
+        }
+        return;
+    }
+
     const match = rangeStr.match(/^(\d+)(?:\s*[-–]\s*(\d+))?$/);
     if (!match) {
         pageRangeInput.style.borderColor = 'var(--danger)';
@@ -5707,9 +6021,9 @@ downloadRangeBtn.addEventListener('click', async () => {
 });
 /* Shared completion path for the batch download: show success, restore the
  * button, invalidate duration caches so estimates pick up the new audio. */
-function finishDownload(pageCount) {
+function finishDownload(pageCount, customMsg) {
     dlProgressFill.style.width = '100%';
-    dlStatusText.textContent = `Done! ${pageCount} page(s) queued for caching ✓`;
+    dlStatusText.textContent = customMsg || `Done! ${pageCount} page(s) queued for caching ✓`;
     setTimeout(() => {
         dlProgress.classList.remove('active');
         dlProgressFill.style.width = '0%';
