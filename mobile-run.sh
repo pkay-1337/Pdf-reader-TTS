@@ -15,5 +15,5 @@ export PRELOAD_CONCURRENCY="2"
 
 # ─── Start the server ───
 echo -e "\033[0;34mStarting DocReader Pro backend on port 8000...\033[0m"
-uvicorn main:app --host 127.0.0.1 --port 8000
+uvicorn main:app --host 127.0.0.1 --port 9999
 
