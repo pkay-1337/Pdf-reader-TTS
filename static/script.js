@@ -1370,6 +1370,8 @@ class EPUBHandler {
         this._themeCssMap = null;      // theme name -> CSS built by _buildThemeCss
         this._themeApplyTimer = null;  // debounce handle for setTheme (50ms)
         this._lastAppliedScale = null; // dedupes setZoom so settings_sync echoes don't cancel restores
+        this._reflowActive = false;  // a _reflowPreservingPosition run is still settling
+        this._reflowQueued = null;   // latest coalesced {mutate, opts} while active
     }
 
     /* Open an EPUB file and bootstrap the rendition.
@@ -1828,7 +1830,7 @@ class EPUBHandler {
      *   3. nodeRanges records each text node's [start,end) span within fullText,
      *      letting us translate sentence offsets -> DOM ranges later.
      *   4. splitIntoTTSChunks carves the text into sentences; each is located in
-     *      fullText, gets a CFI (for jumps) and wrap operations.
+     *      fullText and translated to wrap operations (no CFI — it was never read).
      *   5. Wrap ops are grouped per node and applied right-to-left so earlier
      *      offsets stay valid while surrounding with <span class="dr-sent">.
      * Returns { text: normalized chapter text, sentenceCfiMap: si -> CFI }. */
@@ -1873,6 +1875,33 @@ class EPUBHandler {
             let lastParentBlock = null;
             let node;
 
+            // Per-element caches: many text nodes share one parent, so the
+            // style/block lookups happen once per element instead of once
+            // per text node (getComputedStyle flushes style per call).
+            const _hiddenCache = new Map();
+            const _blockCache = new Map();
+            const _BLOCK_SEL = 'p,div,h1,h2,h3,h4,h5,h6,li,blockquote,section,article,pre';
+            const isHiddenEl = (el) => {
+                let h = _hiddenCache.get(el);
+                if (h === undefined) {
+                    h = false;
+                    try {
+                        const cs = doc.defaultView ? doc.defaultView.getComputedStyle(el) : null;
+                        h = !!(cs && (cs.display === 'none' || cs.visibility === 'hidden'));
+                    } catch (e) { h = false; }
+                    _hiddenCache.set(el, h);
+                }
+                return h;
+            };
+            const nearestBlockOf = (el) => {
+                if (!_blockCache.has(el)) {
+                    let b = null;
+                    try { b = el.closest(_BLOCK_SEL); } catch (e) { b = null; }
+                    _blockCache.set(el, b);
+                }
+                return _blockCache.get(el);
+            };
+
             while ((node = walker.nextNode())) {
                 if (node.nodeType === Node.ELEMENT_NODE) { 
                     if (!fullText.endsWith('\n')) fullText += '\n';
@@ -1880,18 +1909,19 @@ class EPUBHandler {
                 }
 
                 const parent = node.parentElement;
-                if (parent) {
-                    const cs = doc.defaultView ? doc.defaultView.getComputedStyle(parent) : null;
-                    if (cs && (cs.display === 'none' || cs.visibility === 'hidden')) continue;
-                }
+                if (parent && isHiddenEl(parent)) continue;
 
                 let t = node.textContent.replace(/\s+/g, ' ');
                 if (t === '') continue;
 
-                const nearestBlock = parent ? parent.closest('p,div,h1,h2,h3,h4,h5,h6,li,blockquote,section,article,pre') : null;
+                const nearestBlock = parent ? nearestBlockOf(parent) : null;
                 if (nearestBlock && nearestBlock !== lastParentBlock) {
                     if (fullText.length > 0 && !fullText.endsWith('\n')) {
-                        fullText = fullText.trimEnd() + '\n';
+                        // Trailing run is at most one ' ' (whitespace is
+                        // collapsed on append), so drop one char instead of
+                        // copying the whole string via trimEnd().
+                        if (fullText.endsWith(' ')) fullText = fullText.slice(0, -1);
+                        fullText += '\n';
                     }
                     lastParentBlock = nearestBlock;
                 }
@@ -1907,32 +1937,28 @@ class EPUBHandler {
 
             // Map sentences back onto the DOM. `cursor` exploits the fact that
             // sentences are produced in order, so indexOf can resume forward.
+            // sentenceCfiMap is kept (empty) for API compat (it was computed
+            // per sentence via cfiFromRange but never read anywhere).
             const sentenceCfiMap = {};
             const wrapOperations = [];
             let cursor = 0;
 
+            // Sentences and nodeRanges both advance forward through fullText,
+            // so a single linear sweep replaces find()+filter() per sentence
+            // (was O(sentences x text-nodes)).
+            let ri = 0;
             sentencesArr.forEach((sent, si) => {
                 const idx = fullText.indexOf(sent, cursor);
                 if (idx === -1) return;
                 const sentEnd = idx + sent.length;
                 cursor = sentEnd;
 
-                const nr = nodeRanges.find(r => idx >= r.start && idx < r.end);
-                if (nr) {
-                    // CFI for the sentence's containing text node — used by
-                    // scrollToSentence/jump navigation.
-                    try {
-                        const range = doc.createRange();
-                        range.selectNodeContents(nr.node);
-                        const cfi = this.book.cfiFromRange ? this.book.cfiFromRange(range) : null;
-                        if (cfi) sentenceCfiMap[si] = cfi;
-                    } catch(e) {}
-                }
+                while (ri < nodeRanges.length && nodeRanges[ri].end <= idx) ri++;
 
                 // A sentence may straddle several text nodes (inline markup);
                 // emit one wrap op per overlapping node segment.
-                const overlaps = nodeRanges.filter(r => r.end > idx && r.start < sentEnd);
-                overlaps.forEach(r => {
+                for (let k = ri; k < nodeRanges.length && nodeRanges[k].start < sentEnd; k++) {
+                    const r = nodeRanges[k];
                     const overlapStart = Math.max(r.start, idx);
                     const overlapEnd = Math.min(r.end, sentEnd);
                     if (overlapStart < overlapEnd) {
@@ -1943,7 +1969,7 @@ class EPUBHandler {
                             si: si
                         });
                     }
-                });
+                }
             });
 
             const opsByNode = new Map();
@@ -1956,20 +1982,44 @@ class EPUBHandler {
                 // Sort descending: mutating offsets from the end backwards keeps
                 // earlier offsets in the same node untouched.
                 ops.sort((a, b) => b.startOffset - a.startOffset);
-                ops.forEach(op => {
-                    try {
-                        const range = doc.createRange();
-                        range.setStart(node, op.startOffset);
-                        range.setEnd(node, op.endOffset);
-                        const span = doc.createElement('span');
-                        span.className = 'dr-sent';
-                        span.setAttribute('data-sent-idx', op.si);
-                        span.setAttribute('data-line-num', String(op.si + 1));
-                        span.setAttribute('title', 'Line ' + (op.si + 1));
-                        range.surroundContents(span);
-                    } catch(e) {}
-                });
             });
+            // Wrap each sentence segment in a <span class="dr-sent">.
+            // splitText+insertBefore is used instead of Range.surroundContents
+            // (~1.6ms/call here: 2943 ops took 4.7s on one chapter). Split at
+            // end first, then at start (descending order keeps offsets valid).
+            // Wrapping happens in a detached fragment (extracted below) so
+            // per-mutation render costs don't apply; re-inserted once after.
+            const doWrap = () => {
+                opsByNode.forEach((ops, node) => {
+                    ops.forEach(op => {
+                        try {
+                            let t = node;
+                            if (op.endOffset < t.data.length) t.splitText(op.endOffset);
+                            let mid = t;
+                            if (op.startOffset > 0) mid = t.splitText(op.startOffset);
+                            const span = doc.createElement('span');
+                            span.className = 'dr-sent';
+                            span.setAttribute('data-sent-idx', op.si);
+                            span.setAttribute('data-line-num', String(op.si + 1));
+                            span.setAttribute('title', 'Line ' + (op.si + 1));
+                            mid.parentNode.insertBefore(span, mid);
+                            span.appendChild(mid);
+                        } catch(e) {}
+                    });
+                });
+            };
+            let _wrapped = false;
+            try {
+                const _r = doc.createRange();
+                _r.selectNodeContents(doc.body);
+                const _frag = _r.extractContents();
+                doWrap();
+                doc.body.appendChild(_frag);
+                _wrapped = true;
+            } catch (e) { _wrapped = false; }
+            if (!_wrapped) {
+                try { doWrap(); } catch (e) {}
+            }
 
             return { text: structuredText, sentenceCfiMap };
         } catch(e) {
@@ -2957,7 +3007,12 @@ class EPUBHandler {
         this._epubScrollTargets().forEach(t => {
             const s = saved.find(x => x.name === t.name);
             if (!s) return;
-            const target = Math.min(s.prevY, t.maxY());
+            let max = 0;
+            try { max = t.maxY(); } catch(e) {}
+            // Content not laid out yet (rebuild in flight): report failure so
+            // the caller keeps retrying instead of settling at scrollTop 0.
+            if (max <= 10) return;
+            const target = Math.min(s.prevY, max);
             if (Math.abs(t.getY() - target) > 2) t.setY(target);
             applied = true;
         });
@@ -2967,11 +3022,24 @@ class EPUBHandler {
     /* Run a mutation that reflows the chapter (resize, padding, font size)
        while keeping the reader anchored to the same reading position.
        NOTE: epub.js's manager.resize() clears all views and then ASYNC-
-       re-displays the section from its start CFI, which resets scroll.
+       re-displays the section from its start CFI, which resets scroll and
+       wipes .dr-sent spans. So the settle chain is: wait for the rebuilt
+       document -> re-wrap sentence spans -> restore the anchor. Reflows are
+       SERIALIZED: a request arriving mid-reflow is coalesced (latest wins)
+       because overlapping rendition.resize() calls corrupt epub.js state
+       (blank iframe). opts.onSettled({rewrapped}) fires exactly once per run.
        We anchor to the topmost visible sentence span so the line that was
        at the top of the view stays there regardless of text reflow. */
-    _reflowPreservingPosition(mutate) {
+    _reflowPreservingPosition(mutate, opts = {}) {
         if (!this.rendition || this._destroyed) return;
+        // Coalesce overlapping reflows (sidebar toggle + ResizeObserver, or
+        // devtools resize bursts, otherwise fire together). Anchor is
+        // captured fresh when the queued run executes.
+        if (this._reflowActive) {
+            this._reflowQueued = { mutate, opts };
+            return;
+        }
+        this._reflowActive = true;
 
         const anchor = this._captureTopAnchor();
         const pixelFallback = this._epubScrollTargets().map(t => ({ name: t.name, prevY: t.getY() }));
@@ -2982,6 +3050,7 @@ class EPUBHandler {
 
         let settled = false;
         let pendingTimer = null;
+        let rewrapped = false;
         // Dim the reader while the chapter rebuilds so the intermediate
         // "jumped to top" frame is never visible. 3s failsafe undims even if
         // events never fire (prevents a permanently black reader).
@@ -2989,7 +3058,16 @@ class EPUBHandler {
             document.querySelector('#epub-viewer .epub-container') ||
             document.getElementById('epub-viewer') ||
             document.getElementById('epub-container');
-        const undim = () => { if (scrollerEl) scrollerEl.style.opacity = ''; };
+        // Re-query at undim time: the rebuild may have replaced the dimmed
+        // element, and a stale reference would leave the new one dark.
+        const undim = () => {
+            try {
+                if (scrollerEl) scrollerEl.style.opacity = '';
+                ['#epub-viewer .epub-container', '#epub-viewer', '#epub-container'].forEach(sel => {
+                    document.querySelectorAll(sel).forEach(el => { el.style.opacity = ''; });
+                });
+            } catch(e) {}
+        };
         if (scrollerEl) {
             clearTimeout(scrollerEl._dimFailsafe);
             scrollerEl.style.transition = 'opacity 80ms linear';
@@ -3004,25 +3082,64 @@ class EPUBHandler {
             clearTimeout(pendingTimer);
             undim();
         };
-        const attemptRestore = (attempt = 0) => {
-            if (settled || this._destroyed || !this.rendition) return;
-            // Prefer sentence-ordinal anchoring; degrade to raw pixel offsets.
-            const ok = anchor ? this._applyTopAnchor(anchor) : this._restorePixelOffsets(pixelFallback);
-            if (ok) {
-                settled = true;
-                cleanup();
-                _dlog('reading position restored');
-                return;
+        const finish = () => {
+            this._reflowActive = false;
+            try { if (opts.onSettled) opts.onSettled({ rewrapped }); } catch(e) {}
+            const q = this._reflowQueued;
+            this._reflowQueued = null;
+            if (q && !this._destroyed && this.rendition) {
+                this._reflowPreservingPosition(q.mutate, q.opts);
             }
-            // Chapter still re-rendering; bounded retry (~2.5s max)
-            if (attempt < 50) pendingTimer = setTimeout(() => attemptRestore(attempt + 1), 50);
-            else { settled = true; cleanup(); }
+        };
+        const done = () => {
+            if (settled) return;
+            settled = true;
+            cleanup();
+            finish();
+        };
+        const retry = (n) => {
+            if (n < 60) pendingTimer = setTimeout(() => attempt(n + 1), 50);
+            else done(); // give up (~3s): keep old sentences, never clobber
+        };
+        const attempt = (n = 0) => {
+            if (settled || this._destroyed || !this.rendition) return;
+            try {
+                const contents = this.rendition.getContents();
+                const cdoc = contents && contents[0] && contents[0].document;
+                if (!cdoc || !cdoc.body || cdoc.readyState !== 'complete') return retry(n);
+                // Rebuilds wipe .dr-sent spans: re-wrap before restoring, so
+                // the anchor exists and `sentences` matches the live DOM.
+                let spans = null;
+                try { spans = cdoc.querySelectorAll('.dr-sent'); } catch(e) {}
+                const hadSentences = !!(this.currentSentences && this.currentSentences.length);
+                if ((!spans || spans.length === 0) && hadSentences) {
+                    try {
+                        const { text } = this._extractTextFromRendition();
+                        const prevLen = (this.currentText || '').length;
+                        // Clobber guard: a mid-rebuild chapter yields empty or
+                        // partial text — wait for more instead of corrupting
+                        // `sentences` (which would kill highlighting).
+                        if (text && (prevLen < 100 || text.length >= prevLen * 0.5)) {
+                            this.currentText = text;
+                            this.currentSentences = splitIntoTTSChunks(text, 250);
+                            this.sentenceCfiMap = {};
+                            rewrapped = true;
+                        } else {
+                            return retry(n);
+                        }
+                    } catch(e) { return retry(n); }
+                }
+                // Prefer sentence-ordinal anchoring; degrade to raw pixel offsets.
+                const ok = anchor ? this._applyTopAnchor(anchor) : this._restorePixelOffsets(pixelFallback);
+                if (ok) { done(); return; }
+            } catch(e) {}
+            return retry(n);
         };
         // Event-driven restore: epub.js fires 'rendered'/'displayed' after the
         // async re-display; each event restarts the bounded retry loop.
         const onRerendered = () => {
             clearTimeout(pendingTimer);
-            attemptRestore(0);
+            attempt(0);
         };
 
         try {
@@ -3033,16 +3150,18 @@ class EPUBHandler {
         try { mutate(); } catch(e) {}
 
         // Kick immediately and again shortly after, in case no event fires
-        attemptRestore(0);
-        pendingTimer = setTimeout(() => attemptRestore(0), 120);
+        attempt(0);
+        pendingTimer = setTimeout(() => attempt(0), 120);
     }
 
-    /* Public wrapper: resize the rendition while preserving reading position. */
-    resizePreservingScroll(width, height) {
+    /* Public wrapper: resize the rendition while preserving reading position.
+     * Serialized with other reflows (see _reflowPreservingPosition); opts
+     * passes through (e.g. {onSettled}). */
+    resizePreservingScroll(width, height, opts) {
         if (!this.rendition || !(width > 0) || !(height > 0)) return;
         this._reflowPreservingPosition(() => {
             try { this.rendition.resize(width, height); } catch(e) {}
-        });
+        }, opts || {});
     }
 
     /* Precompute character length of every spine chapter (for time
@@ -3566,8 +3685,11 @@ async function loadEPUB(file, startPage = 1) {
          *      first (same-size) event, which would otherwise cancel the
          *      load-time scroll restore;
          *   2. sub-pixel jitter filter;
-         *   3. 200ms trailing debounce before epub.js resize, plus a separate
-         *      250ms debounce for re-extracting sentence spans afterwards. */
+         *   3. 200ms trailing debounce before epub.js resize. Overlapping
+         *      resizes are serialized inside _reflowPreservingPosition, and
+         *      sentence re-wrapping happens in its settle chain (after the
+         *      rebuild completes) — never on a separate timer that can fire
+         *      mid-rebuild and clobber `sentences` with partial text. */
         if (window._epubResizeObserver) {
             window._epubResizeObserver.disconnect();
         }
@@ -3604,25 +3726,17 @@ async function loadEPUB(file, startPage = 1) {
                             return;
                         }
                         documentHandler._lastResizedKey = key;
-                        documentHandler.resizePreservingScroll(lastW, lastH);
+                        documentHandler.resizePreservingScroll(lastW, lastH, {
+                            onSettled: () => {
+                                try {
+                                    if (!documentHandler || documentHandler !== epubHandler || gen !== docGeneration) return;
+                                    sentences = documentHandler.currentSentences;
+                                    if (isPlaying) highlightActiveSentence(currentIndex, sentences);
+                                } catch(e) {}
+                            }
+                        });
                     } catch(e) {}
                 }, 200);
-                // Second debounce: after the resize settles, re-wrap sentence
-                // spans (text reflowed) and refresh the active highlight.
-                if (window._epubResizeDebounce) clearTimeout(window._epubResizeDebounce);
-                window._epubResizeDebounce = setTimeout(() => {
-                    window._epubResizeDebounce = null;
-                    try {
-                        if (!documentHandler || documentHandler !== epubHandler || gen !== docGeneration) return;
-                        documentHandler._injectReadingStyle();
-                        const { text, sentenceCfiMap } = documentHandler._extractTextFromRendition();
-                        documentHandler.currentText = text;
-                        documentHandler.currentSentences = splitIntoTTSChunks(text, 250);
-                        documentHandler.sentenceCfiMap = sentenceCfiMap;
-                        sentences = documentHandler.currentSentences;
-                        if (isPlaying) highlightActiveSentence(currentIndex, sentences);
-                    } catch(e) {}
-                }, 250);
             });
             window._epubResizeObserver.observe(epubContainerEl);
         }
@@ -3720,113 +3834,6 @@ function loadEpubOutline() {
     }
 
     renderEpubTree(toc, 0, tocList);
-    refreshDownloadedChapters();
-}
-
-/* ─── Downloaded-chapter highlights (sidebar) ───
- * A sidebar TOC item is marked "downloaded" once the server has cached audio
- * for every sentence of its spine page. Expected sentence counts are computed
- * lazily with the same extraction used by batch download and memoized, so
- * re-checks after cache mutations stay cheap. */
-let downloadedPages = new Set();
-let pageExpectedSentences = {};
-
-/* A spine page counts as downloaded once the server holds audio for
- * (essentially) every sentence. Extraction can diverge slightly across runs
- * and a few chunks may fail synthesis server-side, so allow a small deficit
- * instead of demanding an exact match. */
-const DL_COMPLETE_RATIO = 0.95;
-const isPageDownloaded = (cachedCount, expected) =>
-    expected > 0 && cachedCount / expected >= DL_COMPLETE_RATIO;
-
-/* Compute how many TTS sentences a spine page should contain. */
-async function pageSentenceCount(p) {
-    if (!documentHandler || !(documentHandler instanceof EPUBHandler)) return 0;
-    const item = documentHandler.spineItems[p - 1];
-    if (!item) return 0;
-    const s = await extractEpubPageSentences(
-        documentHandler.book, item, topSkipLines, bottomSkipLines
-    );
-    return Array.isArray(s) ? s.length : 0;
-}
-
-/* Fetch per-page cache status for the whole book, determine which spine pages
- * are fully cached, and repaint the sidebar highlights. */
-async function refreshDownloadedChapters() {
-    if (!currentFileName || !(documentHandler instanceof EPUBHandler)) return;
-    const totalDocs = documentHandler.pageCount;
-    if (!totalDocs) return;
-    try {
-        const res = await fetch(
-            `/cache_status_bulk?book_name=${encodeURIComponent(currentFileName)}&page_from=1&page_to=${totalDocs}`
-        );
-        if (!res.ok) return;
-        const data = await res.json();
-        const pages = data.pages || {};
-        const jobs = [];
-        for (let p = 1; p <= totalDocs; p++) {
-            const cached = pages[String(p)] || [];
-            if (cached.length) jobs.push({ p, cached });
-        }
-        const fullyCached = [];
-        let next = 0;
-        // 4-work pool: same concurrency as batch download's extractors.
-        const worker = async () => {
-            while (next < jobs.length) {
-                const job = jobs[next++];
-                try {
-                    let expected = pageExpectedSentences[job.p];
-                    if (expected === undefined) {
-                        expected = await pageSentenceCount(job.p);
-                        pageExpectedSentences[job.p] = expected;
-                    }
-                    if (isPageDownloaded(job.cached.length, expected)) fullyCached.push(job.p);
-                } catch (e) { console.warn('[DL-HL] page', job.p, 'count failed:', e); }
-            }
-        };
-        await Promise.all(Array.from({ length: Math.min(4, Math.max(1, jobs.length)) }, worker));
-        downloadedPages = new Set(fullyCached);
-        applyDownloadedHighlights();
-    } catch (e) {
-        console.warn('[DL-HL] refresh failed:', e);
-    }
-}
-
-/* Toggle the downloaded style and checkmark badge on every sidebar TOC item. */
-function applyDownloadedHighlights() {
-    tocList.querySelectorAll('.toc-item').forEach(el => {
-        const page = parseInt(el.dataset.page, 10);
-        const isDl = page > 0 && downloadedPages.has(page);
-        el.classList.toggle('downloaded', isDl);
-        let badge = el.querySelector('.toc-dl-badge');
-        if (isDl && !badge) {
-            badge = document.createElement('span');
-            badge.className = 'toc-dl-badge';
-            badge.title = 'Audio downloaded';
-            badge.textContent = '✓';
-            el.appendChild(badge);
-        } else if (!isDl && badge) {
-            badge.remove();
-        }
-    });
-}
-
-/* Live cache mutation on a single page: recompute just that page's highlight
- * using the memoized expected count (computing it once if unknown). */
-async function handlePageCacheChange(p, cachedLines) {
-    if (!currentFileName || !(documentHandler instanceof EPUBHandler)) return;
-    if (p < 1 || p > documentHandler.pageCount) return;
-    let expected = pageExpectedSentences[p];
-    if (expected === undefined) {
-        try {
-            expected = await pageSentenceCount(p);
-            pageExpectedSentences[p] = expected;
-        } catch (e) { return; }
-    }
-    const count = Array.isArray(cachedLines) ? cachedLines.length : 0;
-    if (isPageDownloaded(count, expected)) downloadedPages.add(p);
-    else downloadedPages.delete(p);
-    applyDownloadedHighlights();
 }
 
 /* Full reset of reading state: stop playback, revoke cached audio, clear
@@ -5525,17 +5532,11 @@ function openCacheSocket(bookName) {
                     cacheStatusTimeout = null;
                 }
             }
-            if (documentHandler instanceof EPUBHandler && msg.page) {
-                handlePageCacheChange(msg.page, msg.cached_lines);
-            }
         }
         if (msg.type === 'cache_cleared') {
             if (msg.page === pageNum) {
                 cacheBadge.classList.remove('visible');
                 delete pageDurationCache[msg.page];
-            }
-            if (documentHandler instanceof EPUBHandler) {
-                refreshDownloadedChapters();
             }
         }
     }, () => {
@@ -6030,7 +6031,6 @@ function finishDownload(pageCount, customMsg) {
         isDownloadingRange = false;
         downloadRangeBtn.disabled = false;
         updateCacheBadge();
-        refreshDownloadedChapters();
         Object.keys(pageDurationCache).forEach(k => delete pageDurationCache[k]);
         Object.keys(chapterDurationCache).forEach(k => delete chapterDurationCache[k]);
         refreshTimeEstimates();
