@@ -59,6 +59,7 @@ let searchMatches = [];          // {page, index} hits for the active query, ord
 let searchCurrentMatch = -1;     // position in searchMatches currently highlighted (-1 = none)
 let searchAllPageTexts = {};     // pageNum -> cached plain text, built lazily so PDF search can scan pages
 let currentFile = null;          // File/Blob handle of the uploaded document (for name + re-reads)
+let currentFileUrl = null;       // object URL for currentFile; revoked on switch/close (see resetUI)
 let currentFileName = '';        // display name shown in the topbar / used as server cache key
 let pageRemaining = 0;           // estimated seconds of audio left on the current page
 let chapterRemaining = 0;        // estimated seconds of audio left in the current chapter/range
@@ -100,11 +101,17 @@ const WS = {
         this.close(key);
         const ws = new WebSocket(this._base() + path);
         ws.onmessage = e => {
+            // A replaced socket's late frames must never reach the new
+            // session (e.g. an old book's settings_sync landing on the new one).
+            if (this._sockets[key] !== ws) return;
             try { onmessage(JSON.parse(e.data), e); } catch (_) { onmessage(null, e); }
         };
         ws.onopen = onopen || null;
-        ws.onerror = () => {};   // errors are surfaced via onclose; keep console clean
-        ws.onclose = () => { delete this._sockets[key]; };
+        ws.onerror = () => { try { console.warn('[WS] socket error on', key); } catch (_) {} };
+        // Identity check: close(key) deletes the entry synchronously, but the
+        // OLD socket's onclose fires later — without this it would delete the
+        // NEW socket stored under the same key, leaking it untracked.
+        ws.onclose = () => { if (this._sockets[key] === ws) delete this._sockets[key]; };
         this._sockets[key] = ws;
         return ws;
     },
@@ -115,20 +122,25 @@ const WS = {
         const ws = new WebSocket(this._base() + path);
         ws.binaryType = 'arraybuffer';
         ws.onmessage = e => {
+            // Drop frames from a superseded socket: after a session restart
+            // the old connection's late audio must not merge into the new
+            // session's clips.
+            if (this._sockets[key] !== ws) return;
             if (e.data instanceof ArrayBuffer) { onbinary(e.data); }
             else { try { onjson(JSON.parse(e.data)); } catch (_) {} }
         };
-        ws.onerror = () => {};
-        ws.onclose = () => { delete this._sockets[key]; };
+        ws.onerror = () => { try { console.warn('[WS] socket error on', key); } catch (_) {} };
+        ws.onclose = () => { if (this._sockets[key] === ws) delete this._sockets[key]; };
         this._sockets[key] = ws;
         return ws;
     },
-    /* Send a JSON payload; silently drops when the socket isn't open yet.
-     * Callers treat TTS as request/response so a dropped send simply stalls
-     * that sentence until the user retries. */
+    /* Send a JSON payload. Returns false when the socket isn't open yet so
+     * callers can retry instead of stalling (TTS treats send as
+     * request/response). */
     send(key, data) {
         const ws = this._sockets[key];
-        if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(data));
+        if (ws && ws.readyState === WebSocket.OPEN) { ws.send(JSON.stringify(data)); return true; }
+        return false;
     },
     close(key) {
         const ws = this._sockets[key];
@@ -440,7 +452,30 @@ function addPdfToList(doc, listEl) {
         ${iconSvg}
         <span class="server-pdf-item-name">${escapeHtmlWelcome(doc.name)}</span>
         <span class="server-pdf-item-size">${sizeMB} MB</span>
+        <button class="server-pdf-item-delete" title="Delete from server" aria-label="Delete ${escapeHtmlWelcome(doc.name)}">×</button>
     `;
+    item.querySelector('.server-pdf-item-delete').addEventListener('click', async (e) => {
+        // Don't open the book: this click is delete-only.
+        e.stopPropagation();
+        if (!confirm(`Delete "${doc.name}" from the server?\n\nThis also removes its cached audio. This cannot be undone.`)) return;
+        const btn = e.currentTarget;
+        btn.disabled = true;
+        try {
+            const res = await fetch(`/documents/${encodeURIComponent(doc.name)}`, { method: 'DELETE' });
+            if (!res.ok) {
+                let detail = `HTTP ${res.status}`;
+                try { detail = (await res.json()).detail || detail; } catch (_) {}
+                throw new Error(detail);
+            }
+            // The server also broadcasts 'removed' over the library socket;
+            // removePdfFromList is idempotent so a double-apply is harmless.
+            removePdfFromList(doc.name);
+        } catch (err) {
+            console.error(`[SERVER-DOC] Failed to delete ${doc.name}:`, err);
+            alert(`Could not delete "${doc.name}":\n${err && err.message ? err.message : err}`);
+            btn.disabled = false;
+        }
+    });
     item.addEventListener('click', async () => {
         // Dim + lock the row while downloading so double-clicks can't open twice.
         item.style.opacity = '0.5';
@@ -452,10 +487,12 @@ function addPdfToList(doc, listEl) {
             const blob = await res.blob();
             const mimeType = isEpub ? 'application/epub+zip' : 'application/pdf';
             const file = new File([blob], doc.name, { type: mimeType });
-            loadDocument(file, 1);
+            await loadDocument(file, 1);
         } catch (err) {
             console.error(`[SERVER-DOC] Failed to load ${doc.name} (url=${url}):`, err);
             alert(`Could not load "${doc.name}" from server.\nURL: ${url}\nError: ${err && err.message ? err.message : err}`);
+        } finally {
+            // Always unlock: success leaves via loadDocument, failure stays usable.
             item.style.opacity = '';
             item.style.pointerEvents = '';
         }
@@ -535,13 +572,14 @@ function applyHighlightSettings() {
     // Outline uses a boosted alpha so a faint fill still gets a visible border.
     const outlineVal = hlOutline ? `0 0 0 1px rgba(${hlBaseColor},${Math.min(1, hlOpacity * 2.5)})` : 'none';
     document.documentElement.style.setProperty('--hl-outline', outlineVal);
-    
-    if (documentHandler instanceof EPUBHandler) {
-        documentHandler._injectHighlightStyle && documentHandler._injectHighlightStyle();
-    }
-    
+
     if (highlightUpdateFrame) cancelAnimationFrame(highlightUpdateFrame);
     highlightUpdateFrame = requestAnimationFrame(() => {
+        // Coalesced: iframe injection + active redraw ride one frame per
+        // slider tick instead of running synchronously on every input event.
+        if (documentHandler instanceof EPUBHandler) {
+            documentHandler._injectHighlightStyle && documentHandler._injectHighlightStyle();
+        }
         // Re-apply the active highlight so live color/opacity changes are visible instantly.
         if (sentences && sentences.length && currentIndex >= 0) {
             highlightActiveSentence(currentIndex, sentences);
@@ -579,7 +617,7 @@ function cycleHighlightColor() {
     saveHighlightSettings();
     saveSettingsThrottled(pageNum, scale, currentIndex);
 }
-document.getElementById('hl-opacity-slider').addEventListener('input', e => {
+document.getElementById('hl-opacity-slider')?.addEventListener('input', e => {
     hlOpacity = parseInt(e.target.value, 10) / 100;
     document.getElementById('hl-opacity-val').textContent = e.target.value + '%';
     applyHighlightSettings();
@@ -588,7 +626,7 @@ document.getElementById('hl-opacity-slider').addEventListener('input', e => {
     saveHighlightSettings();
     saveSettingsThrottled(pageNum, scale, currentIndex);
 });
-document.getElementById('hl-radius-slider').addEventListener('input', e => {
+document.getElementById('hl-radius-slider')?.addEventListener('input', e => {
     hlRadius = parseInt(e.target.value, 10);
     document.getElementById('hl-radius-val').textContent = e.target.value + 'px';
     applyHighlightSettings();
@@ -597,7 +635,7 @@ document.getElementById('hl-radius-slider').addEventListener('input', e => {
     saveHighlightSettings();
     saveSettingsThrottled(pageNum, scale, currentIndex);
 });
-document.getElementById('hl-padding-slider').addEventListener('input', e => {
+document.getElementById('hl-padding-slider')?.addEventListener('input', e => {
     hlPadding = parseInt(e.target.value, 10);
     document.getElementById('hl-padding-val').textContent = e.target.value + 'px';
     applyHighlightSettings();
@@ -607,7 +645,7 @@ document.getElementById('hl-padding-slider').addEventListener('input', e => {
     saveSettingsThrottled(pageNum, scale, currentIndex);
 });
 
-document.getElementById('hl-hover-opacity-slider').addEventListener('input', e => {
+document.getElementById('hl-hover-opacity-slider')?.addEventListener('input', e => {
     hlHoverOpacity = parseInt(e.target.value, 10) / 100;
     document.getElementById('hl-hover-opacity-val').textContent = e.target.value + '%';
     applyHighlightSettings();
@@ -616,7 +654,7 @@ document.getElementById('hl-hover-opacity-slider').addEventListener('input', e =
     saveHighlightSettings();
     saveSettingsThrottled(pageNum, scale, currentIndex);
 });
-document.getElementById('hl-outline-toggle').addEventListener('change', e => {
+document.getElementById('hl-outline-toggle')?.addEventListener('change', e => {
     hlOutline = e.target.checked;
     applyHighlightSettings();
     // Persist to IDB (global) and server (per-book) so a later book open
@@ -737,20 +775,15 @@ function closeMobileSidebar() {
 }
 
 // Toggle buttons (desktop, mobile topbar, floating action button) + backdrop.
+// All route through toggleSidebar() so mobile/desktop can't disagree.
 sidebarToggleBtn.addEventListener('click', toggleSidebar);
-mobileToggleBtn.addEventListener('click', () => {
-    const isOpen = sidebar.classList.contains('open');
-    if (isOpen) { closeMobileSidebar(); } else { openMobileSidebar(); sidebarOpen = true; }
-});
+mobileToggleBtn.addEventListener('click', toggleSidebar);
 sidebarOverlay.addEventListener('click', closeMobileSidebar);
 sidebarToggleBtn.classList.add('active');
 
 const fabSidebarToggle = document.getElementById('fab-sidebar-toggle');
 if (fabSidebarToggle) {
-    fabSidebarToggle.addEventListener('click', () => {
-        const isOpen = sidebar.classList.contains('open');
-        if (isOpen) { closeMobileSidebar(); } else { openMobileSidebar(); sidebarOpen = true; }
-    });
+    fabSidebarToggle.addEventListener('click', toggleSidebar);
 }
 
 /* ─── Mobile Page Info ─── */
@@ -777,7 +810,12 @@ function jumpToPage() {
     const total = getPageCount();
     if (!total) return;
     const n = parseInt(pageJumpInput.value, 10);
-    if (!n || n < 1 || n > total) return;
+    if (!n || n < 1 || n > total) {
+        // Transient hint instead of silent failure.
+        pageJumpInput.style.borderColor = 'var(--danger)';
+        setTimeout(() => { pageJumpInput.style.borderColor = ''; }, 1500);
+        return;
+    }
     if (documentHandler instanceof EPUBHandler) {
         epubGoToPage(n);
     } else {
@@ -869,9 +907,11 @@ function setZoom(v, rerender = true) {
     scale = v;
     zoomSlider.value = scale;
     zoomVal.textContent = Math.round(scale * 100) + '%';
+    // Only persist on local changes: remote echoes (rerender=false) must not
+    // re-save, or two clients ping-pong settings_sync forever.
     if (documentHandler instanceof EPUBHandler) {
         documentHandler.setZoom(scale);
-        saveSettingsThrottled(pageNum, scale, currentIndex);
+        if (rerender) saveSettingsThrottled(pageNum, scale, currentIndex);
     } else if (pdfDoc && rerender) {
         queueRenderPage(pageNum);
         saveSettingsThrottled(pageNum, scale, currentIndex);
@@ -889,7 +929,6 @@ zoomResetBtn.addEventListener('click', () => setZoom(1.0));
  * ('settings_sync'). Saves are debounced and sent over the socket, falling
  * back to an HTTP POST when the socket isn't open. */
 let saveTimeout = null;            // handle for the 800ms save debounce
-let _pendingSettingsResolve = null; // resolves load-time init handshake if needed
 let isSessionSocketOpen = false;
 
 /* Open (or re-open) the per-book session channel. The 'init' message carries
@@ -902,18 +941,19 @@ function openSessionSocket(bookName) {
         if (!msg) return;
         if (msg.type === 'init') {
             isSessionSocketOpen = true;
-            if (_pendingSettingsResolve) {
-                _pendingSettingsResolve(msg);
-                _pendingSettingsResolve = null;
-            }
         }
         if (msg.type === 'settings_sync' || msg.type === 'settings') {
             // Server broadcasts saves as type "settings"; keep accepting both
             // for backward compatibility. Echoes of our own writes are harmless
             // (same values; setZoom is a no-op when unchanged).
-            if (msg.page && msg.page !== pageNum && !isPlaying) {
-                pageNum = msg.page;
-                queueRenderPage(pageNum);
+            if (Number.isInteger(msg.page) && msg.page >= 1 && msg.page <= getPageCount() &&
+                msg.page !== pageNum && !isPlaying) {
+                if (documentHandler instanceof EPUBHandler) {
+                    epubGoToPage(msg.page);
+                } else if (pdfDoc) {
+                    pageNum = msg.page;
+                    queueRenderPage(pageNum);
+                }
             }
             if (msg.scale) setZoom(msg.scale, false);
         }
@@ -921,10 +961,14 @@ function openSessionSocket(bookName) {
 }
 
 /* Debounced variant of saveSettings — coalesces bursts of page turns /
- * zoom tweaks into a single server write. */
+ * zoom tweaks into a single server write. Captures the book name so a
+ * pending save for book A never lands on book B after a quick switch. */
 function saveSettingsThrottled(page, scl, sentenceIndex) {
+    const book = currentFileName;
     clearTimeout(saveTimeout);
-    saveTimeout = setTimeout(() => saveSettings(page, scl, sentenceIndex), 800);
+    saveTimeout = setTimeout(() => {
+        if (book && book === currentFileName) saveSettings(page, scl, sentenceIndex);
+    }, 800);
 }
 
 /* Persist full reader state for this book. Prefers the open session socket;
@@ -1372,6 +1416,7 @@ class EPUBHandler {
         this._lastAppliedScale = null; // dedupes setZoom so settings_sync echoes don't cancel restores
         this._reflowActive = false;  // a _reflowPreservingPosition run is still settling
         this._reflowQueued = null;   // latest coalesced {mutate, opts} while active
+        this._lastActiveFrags = [];  // cached active-sentence fragments (see _syncActiveSentenceClass)
     }
 
     /* Open an EPUB file and bootstrap the rendition.
@@ -1383,7 +1428,8 @@ class EPUBHandler {
         this._destroyed = false;
         const arrayBuffer = await file.arrayBuffer();
         // epub.js is loaded globally by the script tag; resolve whichever name it exposed.
-        const EpubJS = window.ePub || window.epub || (window.ePub = ePub);
+        const EpubJS = window.ePub || window.epub || (typeof ePub !== 'undefined' ? ePub : null);
+        if (!EpubJS) throw new Error('epub.js failed to load (CDN script missing)');
         this.book = EpubJS(arrayBuffer);
         await this.book.ready;
 
@@ -1413,15 +1459,27 @@ class EPUBHandler {
         this.rendition.hooks.content.register((contents) => {
             const doc = contents.document;
             const win = contents.window;
+            // epub.js may re-run the hook on an already-instrumented window
+            // (re-display); without this, listeners stack and fire N times.
+            if (win._drHooked) return;
+            win._drHooked = true;
 
             // Relay nav keys out of the sandboxed iframe to the top-level
             // document's keyboard handler (iframes swallow key events).
+            // Skipped inside form controls so typing/space still work there.
             win.addEventListener('keydown', (e) => {
+                try {
+                    const t = e.target;
+                    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' ||
+                              t.tagName === 'SELECT' || t.tagName === 'BUTTON' ||
+                              t.isContentEditable)) return;
+                } catch (err) {}
                 const navKeys = ['j','k','J','K','ArrowDown','ArrowUp','ArrowLeft','ArrowRight','h','l','H','L',' '];
                 if (navKeys.includes(e.key)) e.preventDefault();
                 document.dispatchEvent(new KeyboardEvent('keydown', {
                     key: e.key,
                     code: e.code,
+                    repeat: !!e.repeat,
                     shiftKey: e.shiftKey,
                     ctrlKey: e.ctrlKey,
                     altKey: e.altKey,
@@ -1449,6 +1507,7 @@ class EPUBHandler {
             // start/middle/end markers so CSS can round only outer corners.
             // A floating badge shows the 1-based line number next to the cursor.
             let _epubHoverIdx = -1;
+            let _epubHoverFrags = [];
             const _epubHoverBadge = (clientX, clientY, sentIdx) => {
                 try { this._showLineBadge(doc, clientX, clientY, sentIdx); } catch(e) {}
             };
@@ -1456,6 +1515,17 @@ class EPUBHandler {
                 try { this._hideLineBadge(doc); } catch(e) {}
             };
             win.addEventListener('mousemove', (e) => {
+                // Coalesce to one DOM pass per frame: raw mousemove fires per
+                // pixel and each pass queries the whole chapter otherwise.
+                if (win._drHoverRaf) return;
+                win._drHoverRaf = 1;
+                const raf = (win.requestAnimationFrame || requestAnimationFrame).bind(win);
+                raf(() => {
+                    win._drHoverRaf = 0;
+                    handleEpubHover(e);
+                });
+            });
+            const handleEpubHover = (e) => {
                 const span = e.target.closest && e.target.closest('.dr-sent');
                 if (!span) { _clearEpubHover(); return; }
                 const bestSentIdx = Number(span.getAttribute('data-sent-idx'));
@@ -1467,31 +1537,34 @@ class EPUBHandler {
                 }
                 _clearEpubHover();
                 _epubHoverIdx = bestSentIdx;
-                const fragments = doc.querySelectorAll(`.dr-sent[data-sent-idx="${bestSentIdx}"]`);
-                fragments.forEach((el, i) => {
+                _epubHoverFrags = Array.from(doc.querySelectorAll(`.dr-sent[data-sent-idx="${bestSentIdx}"]`));
+                _epubHoverFrags.forEach((el, i) => {
                     el.classList.add('dr-sentence-hover');
-                    if (fragments.length > 1) {
+                    if (_epubHoverFrags.length > 1) {
                         if (i === 0) el.classList.add('dr-fragment-start');
-                        else if (i === fragments.length - 1) el.classList.add('dr-fragment-end');
+                        else if (i === _epubHoverFrags.length - 1) el.classList.add('dr-fragment-end');
                         else el.classList.add('dr-fragment-middle');
                     }
                 });
                 _epubHoverBadge(e.clientX, e.clientY, bestSentIdx);
-            });
+            };
 
             /* Remove hover styling from all fragments of the last hovered
-             * sentence, preserving 'active' fragment markers if playing. */
+             * sentence, preserving 'active' fragment markers if playing.
+             * Uses the cached fragment list (no document-wide query). */
             function _clearEpubHover() {
                 _epubHideBadge();
-                if (_epubHoverIdx === -1) return;
-                doc.querySelectorAll('.dr-sent.dr-sentence-hover')
-                   .forEach(el => {
+                if (_epubHoverIdx === -1) { _epubHoverFrags = []; return; }
+                const frags = _epubHoverFrags.length ? _epubHoverFrags :
+                    Array.from(doc.querySelectorAll('.dr-sent.dr-sentence-hover'));
+                frags.forEach(el => {
                         el.classList.remove('dr-sentence-hover');
                         if (!el.classList.contains('dr-sentence-active')) {
                             el.classList.remove('dr-fragment-start', 'dr-fragment-middle', 'dr-fragment-end');
                         }
                     });
                 _epubHoverIdx = -1;
+                _epubHoverFrags = [];
             }
 
             win.addEventListener('mouseleave', () => { _clearEpubHover(); _epubHideBadge(); });
@@ -1814,11 +1887,20 @@ class EPUBHandler {
 
     /* Apply a font-size scale to the chapter content. Recording
      * _lastAppliedScale lets setZoom() short-circuit same-scale calls, so a
-     * settings_sync echo can't cancel an in-flight load-time scroll restore. */
+     * settings_sync echo can't cancel an in-flight load-time scroll restore.
+     * Written directly into live documents AND via themes.fontSize (the
+     * latter is async/racy in scrolled-doc, so direct injection wins). */
     _applyScale(scale) {
         this._lastAppliedScale = scale;
         const pct = Math.round(scale * 100);
         try { this.rendition.themes.fontSize(pct + '%'); } catch (e) {}
+        try {
+            const contents = this.rendition && this.rendition.getContents();
+            const doc = contents && contents[0] && contents[0].document;
+            if (doc && doc.documentElement) {
+                doc.documentElement.style.setProperty('font-size', pct + '%', 'important');
+            }
+        } catch (e) {}
     }
 
     /* Extract visible chapter text and map each TTS sentence back into the DOM.
@@ -1829,8 +1911,10 @@ class EPUBHandler {
      *      ancestors insert '\n' separators into the flattened text.
      *   3. nodeRanges records each text node's [start,end) span within fullText,
      *      letting us translate sentence offsets -> DOM ranges later.
-     *   4. splitIntoTTSChunks carves the text into sentences; each is located in
-     *      fullText and translated to wrap operations (no CFI — it was never read).
+     *   4. Shared buildStructuredText/trimSkipLines produce the sentence list
+     *      (top/bottom skips applied, so ordinals match download cache keys);
+     *      each sentence is located via the structured->fullText index map and
+     *      translated to wrap operations (no CFI — it was never read).
      *   5. Wrap ops are grouped per node and applied right-to-left so earlier
      *      offsets stay valid while surrounding with <span class="dr-sent">.
      * Returns { text: normalized chapter text, sentenceCfiMap: si -> CFI }. */
@@ -1856,8 +1940,9 @@ class EPUBHandler {
                     if (n.nodeType === Node.ELEMENT_NODE) {
                         const tag = n.tagName.toLowerCase();
                         if (['script','style','nav','aside'].includes(tag)) return NodeFilter.FILTER_REJECT;
-                        // Code-block toolbar (language label + HL toggle) is chrome,
-                        // not reading content — never feed it to the TTS extractor.
+                        // Line-number badge + code-block toolbar are chrome,
+                        // not reading content — never feed them to the TTS extractor.
+                        if (n.id === 'dr-line-badge') return NodeFilter.FILTER_REJECT;
                         if (n.classList &&
                             (n.classList.contains('docreader-code-toolbar') ||
                              n.classList.contains('docreader-code-toolbar-actions') ||
@@ -1932,26 +2017,37 @@ class EPUBHandler {
                 fullText += t;
             }
 
-            const structuredText = fullText.replace(/\n{3,}/g, '\n\n').replace(/[ \t]+\n/g, '\n').trim();
-            const sentencesArr = splitIntoTTSChunks(structuredText, 250);
+            // Structured text via the shared builder (identical output for the
+            // batch extractor), then top/bottom line skips — playback ordinals
+            // match download cache keys by construction.
+            const built = buildStructuredText(fullText);
+            const structuredText = built.text;
+            const stMap = built.map;
+            const skipped = trimSkipLines(structuredText, topSkipLines, bottomSkipLines);
+            const sentencesArr = splitIntoTTSChunks(skipped.text, 250);
 
-            // Map sentences back onto the DOM. `cursor` exploits the fact that
-            // sentences are produced in order, so indexOf can resume forward.
+            // Map sentences back onto the DOM. Sentences advance in order
+            // through the kept text; offsets translate from structured space
+            // to fullText space via stMap (transforms only delete characters).
             // sentenceCfiMap is kept (empty) for API compat (it was computed
             // per sentence via cfiFromRange but never read anywhere).
             const sentenceCfiMap = {};
             const wrapOperations = [];
-            let cursor = 0;
 
             // Sentences and nodeRanges both advance forward through fullText,
             // so a single linear sweep replaces find()+filter() per sentence
             // (was O(sentences x text-nodes)).
             let ri = 0;
+            let searchFrom = 0;
             sentencesArr.forEach((sent, si) => {
-                const idx = fullText.indexOf(sent, cursor);
-                if (idx === -1) return;
-                const sentEnd = idx + sent.length;
-                cursor = sentEnd;
+                const sRel = skipped.text.indexOf(sent, searchFrom);
+                if (sRel === -1) return;
+                searchFrom = sRel + sent.length;
+                const sAbs = skipped.start + sRel;
+                const idx = stMap[sAbs];
+                const lastCh = stMap[sAbs + sent.length - 1];
+                if (idx === undefined || lastCh === undefined) return;
+                const sentEnd = lastCh + 1;
 
                 while (ri < nodeRanges.length && nodeRanges[ri].end <= idx) ri++;
 
@@ -2018,7 +2114,18 @@ class EPUBHandler {
                 _wrapped = true;
             } catch (e) { _wrapped = false; }
             if (!_wrapped) {
-                try { doWrap(); } catch (e) {}
+                // Fallback path: the fragment walk above threw midway and may
+                // have left partial wraps behind — strip them first so the
+                // re-run can't nest .dr-sent inside .dr-sent.
+                try {
+                    doc.querySelectorAll('.dr-sent').forEach(el => {
+                        const p = el.parentNode;
+                        while (el.firstChild) p.insertBefore(el.firstChild, el);
+                        p.removeChild(el);
+                    });
+                    doc.body.normalize();
+                    doWrap();
+                } catch (e) {}
             }
 
             return { text: structuredText, sentenceCfiMap };
@@ -2036,13 +2143,16 @@ class EPUBHandler {
         const spineItems = this.spineItems;
 
         const hrefToChapter = (href) => {
-            if (!href) return 1;
+            if (!href) return null;
             const clean = href.split('#')[0];
-            const idx = spineItems.findIndex(item =>
-                item.href === href || item.href === clean ||
-                (item.href || '').endsWith(clean) || clean.endsWith(item.href || '')
-            );
-            return idx >= 0 ? idx + 1 : 1;
+            if (!clean) return null; // pure fragment: no spine file to match
+            const idx = spineItems.findIndex(item => {
+                const ih = item.href || '';
+                if (!ih) return false;
+                return ih === href || ih === clean ||
+                    ih.endsWith(clean) || clean.endsWith(ih);
+            });
+            return idx >= 0 ? idx + 1 : null;
         };
 
         const convert = (items) => items.map(item => ({
@@ -2063,6 +2173,7 @@ class EPUBHandler {
      * Returns [{page, context, query, index}]. */
     async search(query) {
         if (!this.book) return [];
+        if (!query || !query.trim()) return [];
         const lowerQuery = query.toLowerCase();
         const items = this.spineItems;
         const perPage = new Array(items.length);
@@ -2081,9 +2192,26 @@ class EPUBHandler {
             } catch(e) { perPage[i] = []; return; }
             if (!doc || !doc.body) { perPage[i] = []; return; }
 
+            // Visible text only: skip script/style/nav/aside subtrees, like the
+            // live rendition extractor does (never mutate — the doc may be shared).
             let text = '';
             try {
-                text = doc.body.textContent.replace(/\s+/g, ' ');
+                const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT, {
+                    acceptNode: (n) => {
+                        const p = n.parentElement;
+                        if (p) {
+                            const t = p.tagName.toLowerCase();
+                            if (t === 'script' || t === 'style' || t === 'nav' || t === 'aside') {
+                                return NodeFilter.FILTER_REJECT;
+                            }
+                        }
+                        return n.textContent.length ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
+                    }
+                });
+                const parts = [];
+                let nn;
+                while ((nn = walker.nextNode())) parts.push(nn.textContent);
+                text = parts.join(' ').replace(/\s+/g, ' ');
             } catch(e) { perPage[i] = []; return; }
             if (!text) { perPage[i] = []; return; }
 
@@ -2099,7 +2227,9 @@ class EPUBHandler {
                     query,
                     index: idx
                 });
-                pos = idx + 1;
+                // Non-overlapping stepping — matches occurrence counting in
+                // scrollToSearchMatch and the PDF highlighter.
+                pos = idx + query.length;
             }
             perPage[i] = matches;
         };
@@ -2119,12 +2249,14 @@ class EPUBHandler {
 
     /* Scroll the currently rendered chapter so the Nth occurrence of `query`
      * is visible, and select it inside the iframe.
-     * Walks text nodes, finds occurrence #`occurrence` (0-based) of the query
-     * in concatenated text, then maps back to a DOM Range to select+scroll.
-     * Returns true on success, false if the chapter isn't rendered or the
-     * match can't be located (caller falls back to plain page navigation). */
+     * Concatenates text nodes with an offset table so matches spanning inline
+     * markup are found, then maps the range back across nodes. Non-overlapping
+     * occurrence counting matches search(). Returns true on success, false if
+     * the chapter isn't rendered or the match can't be located (caller falls
+     * back to plain page navigation). */
     async scrollToSearchMatch(query, occurrence = 0) {
         try {
+            if (!query || !query.trim()) return false;
             const contents = this.rendition.getContents();
             if (!contents || !contents[0] || !contents[0].document) return false;
             const win = contents[0].window;
@@ -2144,33 +2276,37 @@ class EPUBHandler {
             const nodes = [];
             let node;
             while ((node = walker.nextNode())) nodes.push(node);
+            if (!nodes.length) return false;
 
+            let full = '';
+            const starts = nodes.map(n => { const s = full.length; full += n.textContent; return s; });
             const lq = query.toLowerCase();
-            let count = 0;
-            for (let i = 0; i < nodes.length; i++) {
-                const lo = nodes[i].textContent.toLowerCase();
-                let pos = 0;
-                while (true) {
-                    const idx = lo.indexOf(lq, pos);
-                    if (idx === -1) break;
-                    if (count === occurrence) {
-                        const range = doc.createRange();
-                        range.setStart(nodes[i], idx);
-                        range.setEnd(nodes[i], idx + query.length);
-                        const el = range.startContainer.parentElement;
-                        if (el && el.scrollIntoView) el.scrollIntoView({ block: 'center', behavior: 'smooth' });
-                        try {
-                            const sel = win.getSelection();
-                            sel.removeAllRanges();
-                            sel.addRange(range);
-                        } catch(e) {}
-                        return true;
-                    }
-                    count++;
-                    pos = idx + 1;
-                }
+            const lfull = full.toLowerCase();
+            const step = Math.max(1, lq.length);
+            let count = -1, pos = 0, mIdx = -1;
+            while (true) {
+                mIdx = lfull.indexOf(lq, pos);
+                if (mIdx === -1) return false;
+                count++;
+                if (count === occurrence) break;
+                pos = mIdx + step;
             }
-            return false;
+            const mEnd = mIdx + query.length;
+            let si = 0;
+            while (si + 1 < nodes.length && starts[si + 1] <= mIdx) si++;
+            let ei = si;
+            while (ei + 1 < nodes.length && starts[ei + 1] < mEnd) ei++;
+            const range = doc.createRange();
+            range.setStart(nodes[si], Math.min(Math.max(0, mIdx - starts[si]), nodes[si].textContent.length));
+            range.setEnd(nodes[ei], Math.min(Math.max(0, mEnd - starts[ei]), nodes[ei].textContent.length));
+            const el = range.startContainer.parentElement;
+            if (el) this._scrollEpubElIntoView(el, true);
+            try {
+                const sel = win.getSelection();
+                sel.removeAllRanges();
+                sel.addRange(range);
+            } catch(e) {}
+            return true;
         } catch(e) { return false; }
     }
 
@@ -2218,7 +2354,15 @@ class EPUBHandler {
                 this._syncActiveSentenceClass(idx);
                 return 'inview';
             }
-            target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            // scrollIntoView targets the iframe viewport, not the outer
+            // scroller — center through the outer scroller when it owns scroll.
+            if (hasOuterScroller) {
+                const top = Math.max(0, scroller.scrollTop + (elTop + r.height / 2) - (vTop + vh / 2));
+                try { scroller.scrollTo({ top, behavior: 'smooth' }); }
+                catch (e) { target.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+            } else {
+                target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            }
             this._syncActiveSentenceClass(idx);
             return 'scrolled';
         } catch(e) { return 'missing'; }
@@ -2235,11 +2379,11 @@ class EPUBHandler {
             if (fragment) {
                 const el = doc.getElementById(fragment) || doc.querySelector(`[name="${fragment}"]`);
                 if (el) {
-                    el.scrollIntoView({ block: 'start', behavior: 'smooth' });
+                    this._scrollEpubElIntoView(el, true);
                     return true;
                 }
             }
-            contents[0].window.scrollTo(0, 0);
+            this._scrollEpubToTop(false);
             return false;
         } catch(e) { return false; }
     }
@@ -2266,12 +2410,32 @@ class EPUBHandler {
                 return;
             }
 
-            const epubContainer = document.getElementById('epub-container');
-            const viewportHeight = (epubContainer ? epubContainer.clientHeight : 0) || win.innerHeight || 600;
+            // Translate iframe-viewport rects into outer-scroller coordinates
+            // (the iframe window itself never scrolls under scrolled-doc).
+            const frameEl = contents[0].window.frameElement;
+            const scroller =
+                document.querySelector('#epub-viewer .epub-container') ||
+                document.getElementById('epub-viewer') ||
+                document.getElementById('epub-container');
+            const hasOuter = !!(scroller && frameEl && scroller.scrollHeight - scroller.clientHeight > 10);
+            let top = rect.top, bottom = rect.bottom, vh = win.innerHeight || 600;
+            if (hasOuter) {
+                const fTop = frameEl.getBoundingClientRect().top;
+                const sTop = scroller.getBoundingClientRect().top;
+                vh = scroller.clientHeight || vh;
+                top = fTop + rect.top - sTop;
+                bottom = fTop + rect.bottom - sTop;
+            }
 
-            const inBand = rect.top > viewportHeight * 0.2 && rect.bottom < viewportHeight * 0.8;
+            const inBand = top > vh * 0.2 && bottom < vh * 0.8;
             if (!inBand) {
-                firstSpan.scrollIntoView({ block: 'center', behavior: 'smooth' });
+                if (hasOuter) {
+                    const target = Math.max(0, scroller.scrollTop + (top + bottom) / 2 - vh / 2);
+                    try { scroller.scrollTo({ top: target, behavior: 'smooth' }); }
+                    catch (e) { firstSpan.scrollIntoView({ block: 'center', behavior: 'smooth' }); }
+                } else {
+                    firstSpan.scrollIntoView({ block: 'center', behavior: 'smooth' });
+                }
             }
         } catch(e) {
             console.warn('[EPUB] Sentence scroll failed:', e);
@@ -2280,21 +2444,31 @@ class EPUBHandler {
 
     /* Swap the 'dr-sentence-active' class from the old sentence to `idx`,
      * tagging every fragment of multi-line sentences with start/middle/end
-     * markers (CSS rounds corners only on the outer fragments). */
+     * markers (CSS rounds corners only on the outer fragments). Only the
+     * previously-active fragments are touched (cached), not the whole chapter. */
     _syncActiveSentenceClass(idx) {
         try {
             const contents = this.rendition.getContents();
             if (!contents || !contents[0] || !contents[0].document) return;
             const doc = contents[0].document;
-            
-            doc.querySelectorAll('.dr-sent.dr-sentence-active')
-               .forEach(el => {
-                   el.classList.remove('dr-sentence-active');
-                   if (!el.classList.contains('dr-sentence-hover')) {
-                       el.classList.remove('dr-fragment-start', 'dr-fragment-middle', 'dr-fragment-end');
-                   }
-               });
-               
+
+            const clearOne = (el) => {
+                try {
+                    if (!el.isConnected) return;
+                    el.classList.remove('dr-sentence-active');
+                    if (!el.classList.contains('dr-sentence-hover')) {
+                        el.classList.remove('dr-fragment-start', 'dr-fragment-middle', 'dr-fragment-end');
+                    }
+                } catch (e) {}
+            };
+            const prev = this._lastActiveFrags || [];
+            if (prev.length) {
+                prev.forEach(clearOne);
+            } else {
+                doc.querySelectorAll('.dr-sent.dr-sentence-active').forEach(clearOne);
+            }
+            this._lastActiveFrags = [];
+
             const fragments = doc.querySelectorAll(`.dr-sent[data-sent-idx="${idx}"]`);
             fragments.forEach((el, i) => {
                 el.classList.add('dr-sentence-active');
@@ -2304,6 +2478,7 @@ class EPUBHandler {
                     else el.classList.add('dr-fragment-middle');
                 }
             });
+            this._lastActiveFrags = Array.from(fragments);
         } catch(e) {}
     }
 
@@ -2340,6 +2515,26 @@ class EPUBHandler {
         return this._renderChain;
     }
 
+    /* Wait for the displayed chapter iframe to finish loading, with a ~3s
+     * deadline so a stuck document can't wedge the serialized _renderChain
+     * forever (unbounded polling here used to block all future renders). */
+    _awaitChapterReady() {
+        return new Promise(r => {
+            let n = 0;
+            const check = () => {
+                if (this._destroyed || !this.rendition) return r();
+                try {
+                    const contents = this.rendition.getContents();
+                    const doc = contents && contents[0] && contents[0].document;
+                    if (doc && doc.readyState === 'complete') return r();
+                } catch(e) {}
+                if (++n >= 150) return r(); // ~3s: continue best-effort
+                setTimeout(check, 20);
+            };
+            setTimeout(check, 20);
+        });
+    }
+
     /* Actual chapter render (always invoked serialized via _renderChain).
      * Displays the spine item (or explicit href), waits for the iframe doc to
      * reach readyState 'complete' by polling (bails immediately if destroyed),
@@ -2359,36 +2554,14 @@ class EPUBHandler {
             try {
                 await this.rendition.display(hrefToRender);
                 // display() resolves before the iframe finishes loading; poll
-                // for readyState==='complete' (with a destroy escape hatch)
-                // so text extraction doesn't race the DOM.
-                await new Promise(r => {
-                    const check = () => {
-                        if (this._destroyed || !this.rendition) return r();
-                        try {
-                            const contents = this.rendition.getContents();
-                            const doc = contents && contents[0] && contents[0].document;
-                            if (doc && doc.readyState === 'complete') return r();
-                        } catch(e) {}
-                        setTimeout(check, 20);
-                    };
-                    setTimeout(check, 20);
-                });
+                // for readyState==='complete' (bounded, with a destroy escape
+                // hatch) so text extraction doesn't race the DOM.
+                await this._awaitChapterReady();
             } catch(e) {
                 console.warn('Custom href display failed, falling back to canonical spine href:', e);
                 // Same readiness poll for the fallback path.
                 await this.rendition.display(item.href);
-                await new Promise(r => {
-                    const check = () => {
-                        if (this._destroyed || !this.rendition) return r();
-                        try {
-                            const contents = this.rendition.getContents();
-                            const doc = contents && contents[0] && contents[0].document;
-                            if (doc && doc.readyState === 'complete') return r();
-                        } catch(e) {}
-                        setTimeout(check, 20);
-                    };
-                    setTimeout(check, 20);
-                });
+                await this._awaitChapterReady();
             }
 
             if (fragment) {
@@ -2397,25 +2570,28 @@ class EPUBHandler {
                     if (contents && contents[0] && contents[0].document) {
                         const doc = contents[0].document;
                         const el = doc.getElementById(fragment) || doc.querySelector(`[name="${fragment}"]`);
-                        if (el) {
-                            el.scrollIntoView({ behavior: 'smooth', block: 'start' });
-                        }
+                        if (el) this._scrollEpubElIntoView(el, true);
                     }
                 } catch(e) {}
             } else {
-                try {
-                    const contents = this.rendition.getContents();
-                    if (contents && contents[0] && contents[0].window) {
-                        contents[0].window.scrollTo(0, 0);
-                    }
-                } catch(e) {}
+                this._scrollEpubToTop(false);
             }
 
             // Re-assert per-document styling that epub.js may have reset on
-            // the fresh iframe.
+            // the fresh iframe (same set + order as the content hook, so a
+            // fresh document never loses highlight/syntax CSS).
             this.currentPage = safePageNum;
             this._ensureCurrentTheme();
             this._injectReadingStyle();
+            this._injectHighlightStyle();
+            try {
+                const contents = this.rendition.getContents();
+                const hdoc = contents && contents[0] && contents[0].document;
+                if (hdoc) {
+                    this._injectSyntaxHighlightCss(hdoc);
+                    this._ensureLineBadge(hdoc);
+                }
+            } catch(e) {}
             this._injectFocusModeStyle();
             if (this._focusMode) {
                 try {
@@ -2431,6 +2607,7 @@ class EPUBHandler {
             this.currentText = text;
             this.currentSentences = splitIntoTTSChunks(text, 250);
             this.sentenceCfiMap = sentenceCfiMap;
+            this._lastActiveFrags = []; // chapter DOM was rebuilt
             
             return { text, sentences: this.currentSentences };
         } catch (err) {
@@ -2445,7 +2622,7 @@ class EPUBHandler {
      * _buildThemeCss excludes it. */
     _injectReadingStyle(targetDoc) {
         if (!this.rendition) {
-            console.warn('[EPUB] Skipping highlight injection – rendition not ready');
+            _dlog('[EPUB] Skipping reading-style injection – rendition not ready');
             return;
         }
         try {
@@ -2566,7 +2743,7 @@ class EPUBHandler {
      * look like one continuous pill rather than stacked rounded boxes. */
     _injectHighlightStyle(targetDoc) {
         if (!this.rendition) {
-            console.warn('[EPUB] Skipping highlight injection – rendition not ready');
+            _dlog('[EPUB] Skipping highlight injection – rendition not ready');
             return;
         }
         try {
@@ -2876,7 +3053,9 @@ class EPUBHandler {
         // Ignore no-op zoom calls (e.g. settings_sync echoes of our own saves) —
         // running the reflow-preserve machinery for them would fight the
         // load-time scroll restore and dim the reader during playback.
-        if (this._lastAppliedScale === scale) return;
+        // Epsilon compare: slider floats (1.5 vs 1.5000001) must not rebuild.
+        if (this._lastAppliedScale !== null && this._lastAppliedScale !== undefined &&
+            Math.abs(this._lastAppliedScale - scale) < 1e-4) return;
         this._reflowPreservingPosition(() => this._applyScale(scale));
     }
     /* Theme switch entry point. 50ms debounce coalesces rapid toggling; if
@@ -2940,8 +3119,55 @@ class EPUBHandler {
         return targets;
     }
 
-    /* Anchor = the topmost visible sentence span. Ordinals are stable because
-       .dr-sent wrapping is derived from text, independent of viewport width. */
+    /* The real viewport scroller under flow:'scrolled-doc' (the outer
+     * .epub-container div — the iframe window itself never scrolls). */
+    _outerEpubScroller() {
+        try {
+            const cands = [
+                document.querySelector('#epub-viewer .epub-container'),
+                document.getElementById('epub-viewer'),
+                document.getElementById('epub-container')
+            ];
+            for (const el of cands) {
+                if (el && el.scrollHeight - el.clientHeight > 10) return el;
+            }
+        } catch(e) {}
+        return null;
+    }
+
+    /* Scroll an in-chapter element into view through the outer scroller
+     * (el.scrollIntoView targets the wrong viewport under scrolled-doc). */
+    _scrollEpubElIntoView(el, smooth = true) {
+        try {
+            const s = this._outerEpubScroller();
+            if (s) {
+                const sr = s.getBoundingClientRect();
+                const r = el.getBoundingClientRect();
+                const top = Math.max(0, s.scrollTop + (r.top - sr.top) - 8);
+                try { s.scrollTo({ top, behavior: smooth ? 'smooth' : 'auto' }); return true; }
+                catch (e) { s.scrollTop = top; return true; }
+            }
+        } catch(e) {}
+        try { el.scrollIntoView({ behavior: smooth ? 'smooth' : 'auto', block: 'start' }); return true; }
+        catch (e) {}
+        return false;
+    }
+
+    _scrollEpubToTop(smooth = true) {
+        try {
+            const s = this._outerEpubScroller();
+            if (s) {
+                try { s.scrollTo({ top: 0, behavior: smooth ? 'smooth' : 'auto' }); return true; }
+                catch (e) { s.scrollTop = 0; return true; }
+            }
+        } catch(e) {}
+        return false;
+    }
+
+    /* Anchor = the topmost visible sentence. Stored as the sentence index
+       (data-sent-idx), NOT the raw span-list position: one sentence produces
+       N .dr-sent fragments (one per text node), so a flat ordinal can point
+       at the wrong sentence after re-fragmentation. */
     _captureTopAnchor() {
         try {
             const contents = this.rendition.getContents();
@@ -2966,27 +3192,29 @@ class EPUBHandler {
                 if (topInPage < bestTop) { bestTop = topInPage; bestIdx = i; }
             }
             if (bestIdx === -1) return null;
-            return { ordinal: bestIdx, delta: Math.max(0, bestTop - sTop), total: spans.length };
+            const sentIdx = Number(spans[bestIdx].getAttribute('data-sent-idx'));
+            if (!Number.isInteger(sentIdx)) return null;
+            return { sentIdx, delta: Math.max(0, bestTop - sTop), total: spans.length };
         } catch(e) { return null; }
     }
 
-    /* Scroll so the anchored span sits at its pre-resize viewport offset.
+    /* Scroll so the anchored sentence sits at its pre-resize viewport offset.
        Returns false while the chapter is still being re-displayed/re-injected. */
     _applyTopAnchor(anchor) {
-        if (!anchor) return false;
+        if (!anchor || !Number.isInteger(anchor.sentIdx)) return false;
         try {
             const contents = this.rendition.getContents();
             if (!contents || !contents[0] || !contents[0].document) return false;
             const c = contents[0];
             const frameEl = c.window.frameElement;
-            const spans = c.document.querySelectorAll('.dr-sent');
-            if (!frameEl || spans.length <= anchor.ordinal) return false;
+            const frags = c.document.querySelectorAll(`.dr-sent[data-sent-idx="${anchor.sentIdx}"]`);
+            if (!frameEl || !frags.length) return false;
             const scroller =
                 document.querySelector('#epub-viewer .epub-container') ||
                 document.getElementById('epub-viewer') ||
                 document.getElementById('epub-container');
             if (!scroller || scroller.scrollHeight - scroller.clientHeight <= 10) return false;
-            const sp = spans[anchor.ordinal];
+            const sp = frags[0];
             const r = sp.getBoundingClientRect();
             if (r.height < 1) return false;
             const iframeTop = frameEl.getBoundingClientRect().top;
@@ -2994,7 +3222,7 @@ class EPUBHandler {
             const diff = ((iframeTop + r.top) - sTop) - anchor.delta;
             if (Math.abs(diff) > 2) {
                 scroller.scrollTop = Math.max(0, scroller.scrollTop + diff);
-                _dlog('anchor applied: span#', anchor.ordinal, 'shift', Math.round(diff));
+                _dlog('anchor applied: sent#', anchor.sentIdx, 'shift', Math.round(diff));
             }
             return true;
         } catch(e) { return false; }
@@ -3044,7 +3272,7 @@ class EPUBHandler {
         const anchor = this._captureTopAnchor();
         const pixelFallback = this._epubScrollTargets().map(t => ({ name: t.name, prevY: t.getY() }));
         _dlog('reflow preserving position:',
-            anchor ? `anchor=span#${anchor.ordinal}/${anchor.total} delta=${Math.round(anchor.delta)}`
+            anchor ? `anchor=sent#${anchor.sentIdx}/${anchor.total} delta=${Math.round(anchor.delta)}`
                    : 'anchor=none (pixel fallback)',
             'offsets:', pixelFallback.map(s => s.name + '=' + Math.round(s.prevY)).join(', ') || 'none');
 
@@ -3119,7 +3347,8 @@ class EPUBHandler {
                         // Clobber guard: a mid-rebuild chapter yields empty or
                         // partial text — wait for more instead of corrupting
                         // `sentences` (which would kill highlighting).
-                        if (text && (prevLen < 100 || text.length >= prevLen * 0.5)) {
+                        if (text && text.length >= 20 &&
+                            (prevLen < 100 || text.length >= prevLen * 0.5)) {
                             this.currentText = text;
                             this.currentSentences = splitIntoTTSChunks(text, 250);
                             this.sentenceCfiMap = {};
@@ -3149,9 +3378,11 @@ class EPUBHandler {
 
         try { mutate(); } catch(e) {}
 
-        // Kick immediately and again shortly after, in case no event fires
+        // Kick immediately and again shortly after, in case no event fires.
+        // The second kick is skipped if the first already armed a retry, so
+        // two attempt loops can't run in parallel with orphaned timers.
         attempt(0);
-        pendingTimer = setTimeout(() => attempt(0), 120);
+        if (!pendingTimer) pendingTimer = setTimeout(() => attempt(0), 120);
     }
 
     /* Public wrapper: resize the rendition while preserving reading position.
@@ -3171,6 +3402,8 @@ class EPUBHandler {
         if (!this.book || !this.book.spine) return;
         const items = this.spineItems;
         for (let i = 0; i < items.length; i++) {
+            // Abort on close/switch: don't compete with the new book's display().
+            if (this._destroyed || !this.book) return;
             try {
                 const content = await this.book.load(items[i].href);
                 let len = 0;
@@ -3206,6 +3439,21 @@ class EPUBHandler {
     destroy() {
         this._destroyed = true;
         clearTimeout(this._themeApplyTimer);
+        // The resize observer + debounce timers live on window (see loadEPUB);
+        // clear them here too so they can't fire into a dead handler.
+        if (window._epubResizeObserver) { try { window._epubResizeObserver.disconnect(); } catch(e) {} }
+        if (window._epubRoResizeTimer) { clearTimeout(window._epubRoResizeTimer); window._epubRoResizeTimer = null; }
+        if (window._epubResizeDebounce) { clearTimeout(window._epubResizeDebounce); window._epubResizeDebounce = null; }
+        // Unstick the reflow serializer + any dimmed scroller.
+        this._reflowActive = false;
+        this._reflowQueued = null;
+        try {
+            ['#epub-viewer .epub-container', '#epub-viewer', '#epub-container'].forEach(sel => {
+                document.querySelectorAll(sel).forEach(el => { el.style.opacity = ''; });
+            });
+        } catch(e) {}
+        this._renderChain = null;
+        this._lastActiveFrags = [];
         if (this._epubResizeObserver) { try { this._epubResizeObserver.disconnect(); } catch(e) {} }
         if (this.rendition) { try { this.rendition.destroy(); } catch(e) {} this.rendition = null; }
         if (this.book)      { try { this.book.destroy();      } catch(e) {} this.book = null; }
@@ -3232,11 +3480,21 @@ if (themeSelector) {
 async function loadPDF(file, startPage = 1) {
     const gen = ++docGeneration;
     currentSearchId++; // invalidate in-flight searches from the previous document
+    pageIsRendering = false; // stale renders bail via gen guard; drop queued turns
+    pageNumPending = null;
     console.log(`[PDF] Loading: "${file.name}" (${(file.size / 1024 / 1024).toFixed(2)} MB), startPage=${startPage}`);
     showLoading('Loading document…');
+    // Stop the old book's playback/fetch state before replacing anything.
+    stopPipeline();
+    clearPageAudioCache();
+    // Tear down the previous PDF document and its blob URL (no leaks across books).
+    try { if (pdfDoc && pdfDoc.destroy) await pdfDoc.destroy(); } catch (e) {}
+    pdfDoc = null;
+    if (currentFileUrl) { try { URL.revokeObjectURL(currentFileUrl); } catch (e) {} currentFileUrl = null; }
     currentFile = file;
     currentFileName = file.name || 'Document';
     const fileUrl = URL.createObjectURL(file);
+    currentFileUrl = fileUrl;
 
     welcomeScreen.classList.remove('active');
     readerScreen.classList.add('active');
@@ -3255,6 +3513,7 @@ async function loadPDF(file, startPage = 1) {
         if (gen !== docGeneration) return;
         pdfDoc = doc;
         searchAllPageTexts = {};
+        Object.keys(pageStats).forEach(k => delete pageStats[k]);
         // Background indexer: 4 workers pull page numbers from a shared
         // cursor, extract plain text, and store it for search. Every await
         // re-checks the generation token so a superseded document stops early.
@@ -3267,7 +3526,9 @@ async function loadPDF(file, startPage = 1) {
                         if (gen !== docGeneration) return;
                         const p = ++nextIdx;
                         const page = await doc.getPage(p);
+                        if (gen !== docGeneration) return;
                         const tc = await page.getTextContent();
+                        if (gen !== docGeneration) return;
                         texts[p - 1] = tc.items.map(i => i.str).join(' ');
                     }
                 };
@@ -3284,6 +3545,9 @@ async function loadPDF(file, startPage = 1) {
         tocList.innerHTML = '';
         tocEmpty.style.display = 'block';
         Object.keys(chapterDurationCache).forEach(k => delete chapterDurationCache[k]);
+        Object.keys(pageDurationCache).forEach(k => delete pageDurationCache[k]);
+        Object.keys(pendingChapterDurations).forEach(k => delete pendingChapterDurations[k]);
+        Object.keys(pendingPageDurations).forEach(k => delete pendingPageDurations[k]);
 
         topbarFilename.textContent = currentFileName;
         document.title = `DocReader Pro — ${currentFileName}`;
@@ -3294,7 +3558,8 @@ async function loadPDF(file, startPage = 1) {
         const settings = await loadSettings(currentFileName);
         if (gen !== docGeneration) return;
         if (settings) {
-            pageNum = settings.page || 1;
+            const savedPage = Number.isInteger(settings.page) && settings.page >= 1 ? settings.page : 1;
+            pageNum = Math.max(1, Math.min(savedPage, pdfDoc.numPages));
             scale = settings.scale || 1.5;
             currentIndex = settings.sentenceIndex || 0;
             playbackSpeed = settings.speed || 1.0;
@@ -3396,6 +3661,11 @@ async function loadPDF(file, startPage = 1) {
                 zoomVal.textContent = Math.round(scale * 100) + '%';
             }
         }
+        // An explicit startPage (e.g. reopen request) wins over saved position.
+        if (Number.isInteger(startPage) && startPage > 1) {
+            pageNum = Math.max(1, Math.min(startPage, pdfDoc.numPages));
+        }
+        if (gen !== docGeneration) return;
 
         openCacheSocket(currentFileName);
         openSessionSocket(currentFileName);
@@ -3454,9 +3724,14 @@ async function loadLastDocument() {
         const data = await res.json();
         const filename = data.filename;
         if (!filename) return;
+        // The library socket may not have delivered its init yet at startup;
+        // give it one grace window before giving up on auto-reopen.
         if (!serverDocNames.has(filename)) {
-            console.warn(`Last document "${filename}" not in server library, skipping.`);
-            return;
+            await new Promise(r => setTimeout(r, 2000));
+            if (!serverDocNames.has(filename)) {
+                console.warn(`Last document "${filename}" not in server library, skipping.`);
+                return;
+            }
         }
         const docRes = await fetch(`/documents/${encodeURIComponent(filename)}`);
         if (!docRes.ok) {
@@ -3467,7 +3742,7 @@ async function loadLastDocument() {
         const isEpub = filename.toLowerCase().endsWith('.epub');
         const mimeType = isEpub ? 'application/epub+zip' : 'application/pdf';
         const file = new File([blob], filename, { type: mimeType });
-        loadDocument(file, 1);
+        await loadDocument(file, 1);
     } catch (e) {
         console.warn('Failed to load last document:', e);
     }
@@ -3480,8 +3755,13 @@ async function loadLastDocument() {
 async function loadEPUB(file, startPage = 1) {
     const gen = ++docGeneration;
     currentSearchId++; // invalidate in-flight searches from the previous document
+    pageIsRendering = false; // stale renders bail via gen guard; drop queued turns
+    pageNumPending = null;
     console.log(`[EPUB] Loading: "${file.name}" (${(file.size / 1024 / 1024).toFixed(2)} MB), startPage=${startPage}`);
     showLoading('Loading EPUB…');
+    // Stop the old book's playback/fetch state before replacing anything.
+    stopPipeline();
+    clearPageAudioCache();
     currentFile = file;
     currentFileName = file.name || 'Document';
 
@@ -3499,7 +3779,11 @@ async function loadEPUB(file, startPage = 1) {
     // Reset per-book UI + duration caches.
     tocList.innerHTML = '';
     tocEmpty.style.display = 'block';
+    Object.keys(pageStats).forEach(k => delete pageStats[k]);
     Object.keys(chapterDurationCache).forEach(k => delete chapterDurationCache[k]);
+    Object.keys(pageDurationCache).forEach(k => delete pageDurationCache[k]);
+    Object.keys(pendingChapterDurations).forEach(k => delete pendingChapterDurations[k]);
+    Object.keys(pendingPageDurations).forEach(k => delete pendingPageDurations[k]);
     topbarFilename.textContent = currentFileName;
     document.title = `DocReader Pro — ${currentFileName}`;
 
@@ -3622,9 +3906,11 @@ async function loadEPUB(file, startPage = 1) {
         nextPageBtn.disabled = pageNum >= totalPages;
         updateMobilePageInfo();
 
+        // Check staleness BEFORE opening sockets: a superseded load must not
+        // replace the new book's session/cache channels.
+        if (gen !== docGeneration) return;
         openCacheSocket(currentFileName);
         openSessionSocket(currentFileName);
-        if (gen !== docGeneration) return;
         try {
             await fetch('/last_document', {
                 method: 'POST',
@@ -3772,7 +4058,7 @@ function loadEpubOutline() {
             const el = document.createElement('div');
             el.className = `toc-item level-${level}`;
             el.dataset.level = level;
-            el.dataset.page = item.page || 1;
+            if (item.page) el.dataset.page = item.page;
             el._isChapter = isChapter;
             el._chapterNumber = isChapter ? chapterCounter : null;
 
@@ -3815,11 +4101,12 @@ function loadEpubOutline() {
             el.addEventListener('click', async (e) => {
                 e.stopPropagation();
                 stopPipeline();
-                const targetPage = parseInt(item.page, 10) || 1;
-                if (item.href && item.href.includes('#')) {
+                const parsed = parseInt(item.page, 10);
+                const targetPage = Number.isInteger(parsed) && parsed >= 1 ? parsed : null;
+                if (item.href && (item.href.includes('#') || targetPage === null)) {
                     await epubGoToHref(item.href, targetPage);
-                } else if (item.page) {
-                    await epubGoToPage(item.page);
+                } else if (targetPage !== null) {
+                    await epubGoToPage(targetPage);
                 }
                 if (isMobileSidebar()) closeMobileSidebar();
             });
@@ -3853,12 +4140,7 @@ async function epubGoToPage(target) {
     if (!documentHandler || !(documentHandler instanceof EPUBHandler)) return;
     const targetPage = Math.max(1, Math.min(target, documentHandler.pageCount));
     if (targetPage === pageNum) {
-        try {
-            const contents = documentHandler.rendition.getContents();
-            if (contents && contents[0] && contents[0].window) {
-                contents[0].window.scrollTo({ top: 0, behavior: 'smooth' });
-            }
-        } catch(e) {}
+        documentHandler._scrollEpubToTop(true);
         if (isMobileSidebar()) closeMobileSidebar();
         return;
     }
@@ -3887,17 +4169,28 @@ async function epubGoToPage(target) {
 async function epubGoToHref(href, targetPageNumber) {
     if (!documentHandler || !(documentHandler instanceof EPUBHandler)) return;
     const cleanHref = href.split('#')[0];
+    const fuzzyMatch = () => documentHandler.spineItems.findIndex(item => {
+        const itemHref = item.href || '';
+        if (!itemHref || !cleanHref) return false;
+        return itemHref === href || itemHref === cleanHref ||
+               itemHref.endsWith(cleanHref) || cleanHref.endsWith(itemHref) ||
+               itemHref.split('/').pop() === cleanHref.split('/').pop();
+    });
     let spineIdx = -1;
-    if (targetPageNumber && targetPageNumber > 0 && targetPageNumber <= documentHandler.spineItems.length) {
-        spineIdx = targetPageNumber - 1;
+    // An explicit page number wins only if the href actually lives there;
+    // otherwise fall through to fuzzy matching (never blindly trust it).
+    if (Number.isInteger(targetPageNumber) && targetPageNumber > 0 &&
+        targetPageNumber <= documentHandler.spineItems.length && cleanHref) {
+        const candHref = documentHandler.spineItems[targetPageNumber - 1].href || '';
+        if (candHref === href || candHref === cleanHref ||
+            (candHref && cleanHref && (candHref.endsWith(cleanHref) || cleanHref.endsWith(candHref)))) {
+            spineIdx = targetPageNumber - 1;
+        } else {
+            spineIdx = fuzzyMatch();
+        }
     } else {
         // Improved matching: try exact, then endsWith, then basename
-        spineIdx = documentHandler.spineItems.findIndex(item => {
-            const itemHref = item.href || '';
-            return itemHref === href || itemHref === cleanHref ||
-                   itemHref.endsWith(cleanHref) || cleanHref.endsWith(itemHref) ||
-                   itemHref.split('/').pop() === cleanHref.split('/').pop();
-        });
+        spineIdx = fuzzyMatch();
     }
 
     const targetPage = spineIdx >= 0 ? spineIdx + 1 : pageNum;
@@ -3944,12 +4237,21 @@ function goToPage(delta, isAutoTurn = false) {
     if (documentHandler instanceof EPUBHandler) {
         if (!isAutoTurn) { isAutoContinuing = false; }
         hardResetReadingState();
-        epubGoToPage(target);
+        // hardReset->stopPipeline clears the flag; restore it for auto turns
+        // so the new chapter resumes playback on arrival.
+        if (isAutoTurn) { isAutoContinuing = true; }
+        epubGoToPage(target).then(() => {
+            if (isAutoTurn && isAutoContinuing && sentences && sentences.length) {
+                isAutoContinuing = false;
+                startReadingPage(0);
+            }
+        }).catch(() => {});
         return;
     }
     if (!pdfDoc) return;
     if (!isAutoTurn) { isAutoContinuing = false; }
     hardResetReadingState();
+    if (isAutoTurn) { isAutoContinuing = true; }
     pageNum = target;
     queueRenderPage(pageNum);
     saveSettingsThrottled(pageNum, scale, currentIndex);
@@ -3966,7 +4268,10 @@ function goToAbsolutePage(target, callback = null) {
     if (!pdfDoc || target < 1 || target > pdfDoc.numPages) return;
     hardResetReadingState();
     pageNum = target;
-    if (callback) afterRenderCallback = callback;
+    // Always assign (null clears): a stale callback from an earlier
+    // navigation must not fire on this page. The target tag guards against
+    // a superseded render invoking it late.
+    afterRenderCallback = callback ? { cb: callback, target } : null;
     queueRenderPage(pageNum);
     saveSettingsThrottled(pageNum, scale, currentIndex);
     viewerArea.scrollTo({ top: 0, behavior: 'smooth' });
@@ -4183,11 +4488,21 @@ async function updateActiveTocItem() {
     }
     activeEl.classList.add('active');
 
+    // Collapse only unrelated branches: ancestors of the active item and its
+    // own children stay as they are, so user expand-state elsewhere survives.
+    const ownKids = activeEl.nextElementSibling;
     document.querySelectorAll('.toc-children').forEach(childContainer => {
-        childContainer.style.display = 'none';
+        if (childContainer !== ownKids && !childContainer.contains(activeEl)) {
+            childContainer.style.display = 'none';
+        }
     });
+    // Sync each toggle chevron to its container's actual state.
     document.querySelectorAll('.toc-toggle-svg').forEach(svg => {
-        svg.style.transform = 'rotate(-90deg)';
+        const item = svg.closest('.toc-item');
+        const kids = item && item.nextElementSibling;
+        const expanded = !!(kids && kids.classList && kids.classList.contains('toc-children') &&
+            kids.style.display !== 'none');
+        svg.style.transform = expanded ? 'rotate(0deg)' : 'rotate(-90deg)';
     });
 
     let curr = activeEl.parentElement; 
@@ -4222,9 +4537,11 @@ async function updateActiveTocItem() {
  * a second caller with the same key awaits the same promise instead of
  * issuing a duplicate fetch. */
 const pageDurationCache = {};
-/* Seconds of audio the server has cached for one page; null if unknown. */
+/* Seconds of audio the server has cached for one page; null if unknown.
+ * Keyed by book+page so two books never share durations. null is cached
+ * distinctly from 0 (unknown vs genuinely empty). */
 async function fetchPageDuration(bookName, page) {
-    const key = page;
+    const key = `${bookName}::${page}`;
     if (pageDurationCache[key] !== undefined) return pageDurationCache[key];
     if (pendingPageDurations[key]) return pendingPageDurations[key];
     const promise = (async () => {
@@ -4232,7 +4549,7 @@ async function fetchPageDuration(bookName, page) {
             const res = await fetch(`/page_duration?book_name=${encodeURIComponent(bookName)}&page=${page}`);
             if (!res.ok) return null;
             const data = await res.json();
-            const dur = data.duration || 0;
+            const dur = (data && data.duration != null) ? data.duration : null;
             pageDurationCache[key] = dur;
             delete pendingPageDurations[key];
             return dur;
@@ -4252,7 +4569,7 @@ async function fetchChapterDuration(bookName, startPage, endPage) {
     if (startPage === 1 && endPage === pdfDoc?.numPages && !document.querySelector('.toc-item.level-0.active')) {
         return 0;
     }
-    const key = `${startPage}-${endPage}`;
+    const key = `${bookName}::${startPage}-${endPage}`;
     if (chapterDurationCache[key] !== undefined) return chapterDurationCache[key];
     if (pendingChapterDurations[key]) return pendingChapterDurations[key];
     const promise = (async () => {
@@ -4260,7 +4577,7 @@ async function fetchChapterDuration(bookName, startPage, endPage) {
             const res = await fetch(`/chapter_duration?book_name=${encodeURIComponent(bookName)}&start_page=${startPage}&end_page=${endPage}`);
             if (!res.ok) return null;
             const data = await res.json();
-            const dur = data.duration || 0;
+            const dur = (data && data.duration != null) ? data.duration : null;
             chapterDurationCache[key] = dur;
             delete pendingChapterDurations[key];
             return dur;
@@ -4290,16 +4607,6 @@ function updatePageStats(page, sentences) {
  * fetching on demand as fallback). EPUB search delegates to EPUBHandler's
  * spine scan. Input is debounced 320ms; currentSearchId invalidates results
  * of superseded queries (e.g. after a document switch mid-search). */
-async function getPageText(pageIndex) {
-    if (searchAllPageTexts[pageIndex] !== undefined) return searchAllPageTexts[pageIndex];
-    try {
-        const page = await pdfDoc.getPage(pageIndex);
-        const tc = await page.getTextContent();
-        const text = tc.items.map(i => i.str).join(' ');
-        searchAllPageTexts[pageIndex] = text;
-        return text;
-    } catch (e) { return ''; }
-}
 let searchDebounceTimer = null;
 // Debounce typing so we don't search per keystroke; 320ms feels instant
 // while avoiding a full-document scan on every character.
@@ -4318,8 +4625,8 @@ searchClearBtn.addEventListener('click', clearSearch);
 let currentSearchId = 0; // monotonic id; stale async searches bail when it moves on
 
 /* Run a search for the query box's current value. Every await re-checks
- * searchId so an older search never overwrites a newer one's results.
- * Results are ordered current-page-first before rendering the list. */
+ * searchId/generation so an older search never overwrites a newer one's
+ * results. Results stay in document order so Next/Prev walk sequentially. */
 async function performSearch() {
     const searchId = ++currentSearchId;
     const query = searchInput.value.trim();
@@ -4335,33 +4642,47 @@ async function performSearch() {
     searchResultsPanel.classList.add('visible');
     searchResultsList.innerHTML = '<div style="padding:14px 16px;color:var(--text-tertiary);font-size:13px">Searching…</div>';
     searchMatches = [];
+    // Capture document identity: a mid-search switch must neither scan the
+    // new document with the old query nor paint into its UI.
+    const searchDoc = pdfDoc;
+    const searchGen = docGeneration;
+    const stale = () => searchId !== currentSearchId || searchGen !== docGeneration ||
+        (isPdf && pdfDoc !== searchDoc);
 
     try {
         if (isPdf) {
             const lowerQuery = query.toLowerCase();
             showLoading('Searching PDF…');
-            for (let p = 1; p <= pdfDoc.numPages; p++) {
-                if (searchId !== currentSearchId) return;
-                let text = searchAllPageTexts[p];
-                if (text === undefined) {
-                    const page = await pdfDoc.getPage(p);
-                    const tc = await page.getTextContent();
-                    text = tc.items.map(i => i.str).join(' ');
-                    searchAllPageTexts[p] = text;
+            try {
+                const total = searchDoc.numPages;
+                for (let p = 1; p <= total; p++) {
+                    if (stale()) return;
+                    let text = searchAllPageTexts[p];
+                    if (text === undefined) {
+                        const page = await searchDoc.getPage(p);
+                        if (stale()) return;
+                        const tc = await page.getTextContent();
+                        if (stale()) return;
+                        text = tc.items.map(i => i.str).join(' ');
+                        searchAllPageTexts[p] = text;
+                    }
+                    const lowerText = text.toLowerCase();
+                    let pos = 0;
+                    while (true) {
+                        const idx = lowerText.indexOf(lowerQuery, pos);
+                        if (idx === -1) break;
+                        const context = text.slice(Math.max(0, idx - 40), idx + query.length + 60);
+                        searchMatches.push({ page: p, index: idx, context, query });
+                        // Non-overlapping stepping — matches the highlighter.
+                        pos = idx + query.length;
+                    }
                 }
-                const lowerText = text.toLowerCase();
-                let pos = 0;
-                while (true) {
-                    const idx = lowerText.indexOf(lowerQuery, pos);
-                    if (idx === -1) break;
-                    const context = text.slice(Math.max(0, idx - 40), idx + query.length + 60);
-                    searchMatches.push({ page: p, index: idx, context, query });
-                    pos = idx + 1;
-                }
+            } finally {
+                hideLoading();
             }
-            hideLoading();
         } else if (isEpub) {
             const results = await documentHandler.search(query);
+            if (stale()) return;
             if (results && results.length) {
                 searchMatches = results.map(r => ({
                     page: r.page,
@@ -4374,7 +4695,7 @@ async function performSearch() {
             }
         }
 
-        if (searchId !== currentSearchId) return;
+        if (stale()) return;
 
         if (searchMatches.length === 0) {
             searchCount.textContent = '0';
@@ -4385,12 +4706,7 @@ async function performSearch() {
             return;
         }
 
-        // Prioritize matches on the current page
-        const curPage = pageNum;
-        searchMatches = [
-            ...searchMatches.filter(m => m.page === curPage),
-            ...searchMatches.filter(m => m.page !== curPage)
-        ];
+        // Document order is kept so Next/Prev walk pages sequentially.
 
         searchCount.textContent = searchMatches.length;
         resultsHeaderText.textContent = `${searchMatches.length} result${searchMatches.length !== 1 ? 's' : ''}`;
@@ -4437,10 +4753,12 @@ async function performSearch() {
 
 /* Navigate to a search hit: highlight it in the results list, jump to its
  * page, and (EPUB) select the exact occurrence inside the iframe —
- * occOnPage is how many earlier hits share this page. PDF gets a delayed
- * <mark> overlay once the right page has rendered. */
+ * occOnPage is how many earlier hits share this page. PDF highlights the
+ * same occurrence with .current once the right page has rendered. */
+let _searchNavToken = 0; // bumped by clearSearch; stale highlight pollers bail
 async function goToSearchMatch(idx) {
     if (idx < 0 || idx >= searchMatches.length) return;
+    const myNav = ++_searchNavToken;
     searchCurrentMatch = idx;
     const match = searchMatches[idx];
     searchCount.textContent = `${idx + 1}/${searchMatches.length}`;
@@ -4450,12 +4768,13 @@ async function goToSearchMatch(idx) {
     document.querySelectorAll('.search-result-item')[idx]?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 
     const targetPage = match.page;
+    const occOnPage = searchMatches.slice(0, idx).filter(m => m.page === targetPage).length;
     if (targetPage && targetPage > 0) {
         const isEpub = documentHandler instanceof EPUBHandler;
         if (isEpub) {
             await epubGoToPage(targetPage);
-            const occOnPage = searchMatches.slice(0, idx).filter(m => m.page === targetPage).length;
             setTimeout(() => {
+                if (myNav !== _searchNavToken) return;
                 if (documentHandler && documentHandler.scrollToSearchMatch) {
                     documentHandler.scrollToSearchMatch(match.query, occOnPage);
                 }
@@ -4466,10 +4785,13 @@ async function goToSearchMatch(idx) {
     }
 
     if (pdfDoc && match.query) {
+        const navDoc = pdfDoc;
+        let attempts = 0;
         const highlight = () => {
+            if (myNav !== _searchNavToken || pdfDoc !== navDoc) return;
             if (pageNum === targetPage) {
-                highlightSearchOnPage(match.query);
-            } else {
+                highlightSearchOnPage(match.query, occOnPage);
+            } else if (++attempts < 15) {
                 setTimeout(highlight, 200);
             }
         };
@@ -4484,6 +4806,9 @@ function prevSearchMatch() {
     goToSearchMatch(searchCurrentMatch - 1 >= 0 ? searchCurrentMatch - 1 : searchMatches.length - 1);
 }
 function clearSearch() {
+    currentSearchId++; // invalidate in-flight searches so stale results can't resurrect
+    _searchNavToken++; // cancel pending highlight pollers
+    hideLoading(); // dismiss a stuck "Searching…" overlay
     searchInput.value = '';
     searchCount.textContent = '';
     searchMatches = [];
@@ -4496,8 +4821,9 @@ function clearSearch() {
 }
 /* Wrap query matches inside the PDF text layer with <mark> elements.
  * Original span text is stashed in data-originalText so clearSearchHighlights
- * can restore it without a re-render. */
-function highlightSearchOnPage(query) {
+ * can restore it without a re-render. The occ-th mark on the page gets the
+ * .current class and is scrolled into view. */
+function highlightSearchOnPage(query, occ = 0) {
     clearSearchHighlights();
     if (!query) return;
     const spans = document.querySelectorAll('.textLayer span');
@@ -4517,9 +4843,12 @@ function highlightSearchOnPage(query) {
             span.innerHTML = result;
         }
     });
-    const first = document.querySelector('.search-highlight');
-    if (first) {
-        const rect = first.getBoundingClientRect();
+    const marks = document.querySelectorAll('.search-highlight');
+    const target = marks[Math.min(Math.max(0, occ), marks.length - 1)];
+    marks.forEach(m => m.classList.remove('current'));
+    if (target) {
+        target.classList.add('current');
+        const rect = target.getBoundingClientRect();
         const va = viewerArea.getBoundingClientRect();
         if (rect.top < va.top || rect.bottom > va.bottom) {
             viewerArea.scrollBy({ top: rect.top - va.top - va.height / 3, behavior: 'smooth' });
@@ -4531,8 +4860,10 @@ function clearSearchHighlights() {
     document.querySelectorAll('.textLayer span').forEach(span => {
         if (span.dataset.originalText !== undefined) {
             span.textContent = span.dataset.originalText;
+            delete span.dataset.originalText;
         }
     });
+    _invalidatePdfSpanCache();
 }
 /* HTML-escape for search context snippets. */
 function escapeHtml(s) {
@@ -4566,10 +4897,20 @@ let afterRenderCallback = null; // one-shot callback run after goToAbsolutePage'
  *     list continuations are appended without breaking sentences.
  */
 async function renderPage(num) {
+    // Capture identity: a superseded render (book switch / close) must not
+    // paint into the new document's canvas, layers, or sentence state.
+    const gen = docGeneration;
+    const renderDoc = pdfDoc;
+    const staleRender = () => gen !== docGeneration || pdfDoc !== renderDoc;
     pageIsRendering = true;
     clearHighlightCanvas();
+    // A pending retry-scroll from a previous page must not fire into this one.
+    if (typeof _autoScrollRetryTimer !== 'undefined' && _autoScrollRetryTimer) {
+        clearTimeout(_autoScrollRetryTimer); _autoScrollRetryTimer = null;
+    }
     try {
         const page = await pdfDoc.getPage(num);
+        if (staleRender()) { pageIsRendering = false; return; }
         const viewport = page.getViewport({ scale });
 
         const canvas = document.getElementById('pdf-canvas');
@@ -4585,6 +4926,7 @@ async function renderPage(num) {
 
         const transform = dpr !== 1 ? [dpr, 0, 0, dpr, 0, 0] : null;
         await page.render({ canvasContext: ctx, viewport, transform }).promise;
+        if (staleRender()) { pageIsRendering = false; return; }
 
         const textLayerDiv = document.getElementById('text-layer');
         textLayerDiv.innerHTML = '';
@@ -4595,17 +4937,20 @@ async function renderPage(num) {
         textLayerDiv.style.setProperty('--scale-factor', viewport.scale);
 
         const textContent = await page.getTextContent();
+        if (staleRender()) { pageIsRendering = false; return; }
 
         // Median font size across the page = baseline for header detection.
         const fontSizes = textContent.items.map(i => Math.abs(i.transform[3])).filter(s => s > 0).sort((a, b) => a - b);
         const baseFontSize = fontSizes.length ? fontSizes[Math.floor(fontSizes.length / 2)] : 12;
 
-        // Group text items into visual lines: same baseline (±5px), reading
-        // order top→bottom then left→right.
+        // Group text items into visual lines: same baseline row first
+        // (Y quantized into buckets so the order is transitive even on
+        // slightly skewed pages), then left-to-right within a row.
         const Y_TOL = 5;
         const sorted = [...textContent.items].sort((a, b) => {
-            const dy = a.transform[5] - b.transform[5];
-            if (Math.abs(dy) > Y_TOL) return b.transform[5] - a.transform[5];
+            const ba = Math.round(a.transform[5] / Y_TOL);
+            const bb = Math.round(b.transform[5] / Y_TOL);
+            if (ba !== bb) return bb - ba;
             return a.transform[4] - b.transform[4];
         });
 
@@ -4624,9 +4969,10 @@ async function renderPage(num) {
         if (curLine.items.length) lines.push(curLine);
 
         // Apply user-configured line skipping (headers/footers the reader
-        // wants excluded from TTS).
-        const skipTop = Math.min(topSkipLines || 0, lines.length);
-        const skipBottom = Math.min(bottomSkipLines || 0, lines.length);
+        // wants excluded from TTS). Bottom is clamped against what's left
+        // after the top skip so the slice can't underflow to empty.
+        const skipTop = Math.max(0, Math.min(topSkipLines || 0, lines.length));
+        const skipBottom = Math.max(0, Math.min(bottomSkipLines || 0, lines.length - skipTop));
         const effectiveLines = lines.slice(skipTop, lines.length - skipBottom);
 
         let structuredText = '';
@@ -4655,7 +5001,8 @@ async function renderPage(num) {
 
             if (isHeader) {
                 inListItem = false;
-                structuredText += `\n${lineText}.\n`;
+                // Don't double-punctuate headers that already end a sentence.
+                structuredText += `\n${lineText}${/[.!?…]$/.test(lineText) ? '' : '.'}\n`;
             } else if (startsNewListItem) {
                 if (inListItem) {
                     if (!structuredText.trim().match(/[.!?]$/)) {
@@ -4689,6 +5036,7 @@ async function renderPage(num) {
         currentPageText = structuredText;
         sentences = splitIntoTTSChunks(currentPageText, 250);
         updatePageStats(num, sentences);
+        if (staleRender()) { pageIsRendering = false; return; }
 
         await pdfjsLib.renderTextLayer({
             textContentSource: textContent,
@@ -4697,8 +5045,10 @@ async function renderPage(num) {
             textDivs: [],
             enhanceTextSelection: true
         }).promise;
+        if (staleRender()) { pageIsRendering = false; return; }
 
         await renderAnnotations(page, viewport, cssW, cssH);
+        if (staleRender()) { pageIsRendering = false; return; }
 
         _rebuildPdfSentenceOffsets();
         _clearHoverCanvas();
@@ -4720,6 +5070,7 @@ async function renderPage(num) {
         }
 
         pageIsRendering = false;
+        if (staleRender()) return;
 
         // If the user turned pages while we rendered, replay the newest
         // request now instead of rendering every intermediate page.
@@ -4732,7 +5083,9 @@ async function renderPage(num) {
 
         if (isPlaying && currentIndex < sentences.length) {
             highlightActiveSentence(currentIndex, sentences);
-        } else {
+        } else if (viewerArea.scrollTop > 2) {
+            // The page-turn path already scrolled; only re-scroll when needed
+            // so two smooth animations can't fight each other.
             viewerArea.scrollTo({ top: 0, behavior: 'smooth' });
         }
 
@@ -4757,9 +5110,13 @@ async function renderPage(num) {
         if (q) highlightSearchOnPage(q);
 
         if (afterRenderCallback) {
-            const cb = afterRenderCallback;
+            const entry = afterRenderCallback;
             afterRenderCallback = null;
-            cb();
+            if (typeof entry === 'function') {
+                entry();
+            } else if (entry && entry.target === pageNum) {
+                entry.cb();
+            }
         }
 
     } catch (err) {
@@ -4802,9 +5159,12 @@ function updateChapterBoundaries() {
         let end = getPageCount() || (pdfDoc ? pdfDoc.numPages : 1);
         const allChapters = document.querySelectorAll('.toc-item.level-0');
         for (let i = 0; i < allChapters.length; i++) {
-            if (allChapters[i] === activeChapter && i + 1 < allChapters.length) {
-                const nextPage = parseInt(allChapters[i + 1].dataset.page, 10);
-                if (nextPage) end = nextPage - 1;
+            if (allChapters[i] === activeChapter) {
+                // Skip unresolved chapters ('…') to the next numeric page.
+                for (let k = i + 1; k < allChapters.length; k++) {
+                    const nextPage = parseInt(allChapters[k].dataset.page, 10);
+                    if (nextPage) { end = nextPage - 1; break; }
+                }
                 break;
             }
         }
@@ -4972,14 +5332,23 @@ document.getElementById('close-file').addEventListener('click', resetUI);
  * sockets, caches and blob URLs. */
 function resetUI() {
     docGeneration++; // invalidate all in-flight async pipelines for the old document
+    hideLoading(); // never leave the overlay stuck (e.g. load error paths)
+    currentSearchId++; // kill in-flight searches before clearSearch()
     _invalidatePdfSpanCache();
-    if (window._epubResizeObserver) { window._epubResizeObserver.disconnect(); }
+    if (window._epubResizeObserver) { window._epubResizeObserver.disconnect(); window._epubResizeObserver = null; }
     if (window._epubResizeDebounce) { clearTimeout(window._epubResizeDebounce); window._epubResizeDebounce = null; }
+    if (window._epubRoResizeTimer) { clearTimeout(window._epubRoResizeTimer); window._epubRoResizeTimer = null; }
+    if (typeof saveTimeout !== 'undefined' && saveTimeout) { clearTimeout(saveTimeout); saveTimeout = null; }
+    if (typeof cacheStatusTimeout !== 'undefined' && cacheStatusTimeout) { clearTimeout(cacheStatusTimeout); cacheStatusTimeout = null; }
+    if (typeof searchDebounceTimer !== 'undefined' && searchDebounceTimer) { clearTimeout(searchDebounceTimer); searchDebounceTimer = null; }
     stopPipeline();
     clearPageAudioCache();
     WS.close('session');
     WS.close('cache');
     WS.close('tts');
+    // Batch-download preload sockets outlive the book otherwise (10-min self-close).
+    Object.keys(WS._sockets).forEach(k => { if (k.indexOf('preload:') === 0) WS.close(k); });
+    Object.keys(activePreloadJobs).forEach(k => delete activePreloadJobs[k]);
     Object.keys(pageDurationCache).forEach(key => delete pageDurationCache[key]);
     Object.keys(chapterDurationCache).forEach(key => delete chapterDurationCache[key]);
     Object.keys(pendingChapterDurations).forEach(k => delete pendingChapterDurations[k]);
@@ -4989,7 +5358,17 @@ function resetUI() {
         documentHandler.destroy();
         documentHandler = null;
     }
+    // Tear down the PDF document and its blob URL (no leaks across books).
+    try { if (pdfDoc && pdfDoc.destroy) pdfDoc.destroy(); } catch (e) {}
     pdfDoc = null;
+    if (currentFileUrl) { try { URL.revokeObjectURL(currentFileUrl); } catch (e) {} currentFileUrl = null; }
+    // Drop reading/render/search state so nothing fires into the next doc.
+    sentences = [];
+    currentIndex = 0;
+    currentPageText = '';
+    pageIsRendering = false;
+    pageNumPending = null;
+    afterRenderCallback = null;
     currentFile = null;
     currentFileName = '';
     fileInput.value = '';
@@ -5010,6 +5389,9 @@ function resetUI() {
     pdfOutline = null;
     cacheBadge.classList.remove('visible');
     syncMobilePlayBtn();
+    if (typeof _autoScrollRetryTimer !== 'undefined' && _autoScrollRetryTimer) {
+        clearTimeout(_autoScrollRetryTimer); _autoScrollRetryTimer = null;
+    }
     pageTimeEl.textContent = 'Page: —';
     chapterTimeEl.textContent = 'Chapter: —';
     Object.keys(pageStats).forEach(key => delete pageStats[key]);
@@ -5024,7 +5406,7 @@ function resetUI() {
  *  3. Oversized chunks are subdivided at clause punctuation, then finally
  *     at word boundaries, so the synthesizer never gets a monster string. */
 function splitIntoTTSChunks(text, maxLength = 120) {
-    const titleAbbrevs = /^(Mr|Mrs|Ms|Dr|Prof|Rev|Hon|Capt|Lt|Col|Maj|Gen)$/i;
+    const titleAbbrevs = /^(Mr|Mrs|Ms|Dr|Prof|Rev|Hon|Capt|Lt|Col|Maj|Gen|St|Sr|Jr|Sgt|Cpl|Rep|Sen|Gov|Pres|Fig|No|Vol|Ch|Sec|Eq|Ref)$/i;
     const rawChunks = text.split('\n').flatMap(c => c.split(/(?<=[.!?])\s+/)).map(s => s.trim()).filter(s => s.length > 0);
 
     const joined = [];
@@ -5032,7 +5414,11 @@ function splitIntoTTSChunks(text, maxLength = 120) {
     for (const chunk of rawChunks) {
         const combined = carry ? carry + ' ' + chunk : chunk;
         const lastWord = chunk.trimEnd().split(/\s+/).pop().replace(/\.$/, '');
-        if (titleAbbrevs.test(lastWord)) {
+        // Rejoin when the boundary is an abbreviation ("Mr."), a latin
+        // initialism ("e.g."/"i.e."), a decimal/version ("3.", "v2.") —
+        // otherwise "3.14" or "e.g. Smith" would split mid-token.
+        if (titleAbbrevs.test(lastWord) || /^(e\.g|i\.e)$/i.test(lastWord) ||
+            /^\d+$/.test(lastWord) || /^[vV]\d+$/.test(lastWord)) {
             carry = combined;
         } else {
             joined.push(combined);
@@ -5050,12 +5436,19 @@ function splitIntoTTSChunks(text, maxLength = 120) {
             if ((cur.length + sub.length) <= maxLength) {
                 cur += (cur ? ' ' : '') + sub;
             } else {
-                if (cur) final.push(cur.trim());
+                if (cur) { final.push(cur.trim()); cur = ''; }
                 if (sub.length > maxLength) {
                     let words = sub.split(/\s+/), ws = '';
                     words.forEach(w => {
-                        if ((ws.length + w.length) <= maxLength) ws += (ws ? ' ' : '') + w;
-                        else { if (ws) final.push(ws.trim()); ws = w; }
+                        if ((ws.length + w.length) <= maxLength) {
+                            ws += (ws ? ' ' : '') + w;
+                            return;
+                        }
+                        if (ws) { final.push(ws.trim()); ws = ''; }
+                        // A single token longer than maxLength: hard-split it
+                        // instead of emitting one oversized TTS request.
+                        while (w.length > maxLength) { final.push(w.slice(0, maxLength)); w = w.slice(maxLength); }
+                        ws = w;
                     });
                     cur = ws;
                 } else { cur = sub; }
@@ -5064,6 +5457,61 @@ function splitIntoTTSChunks(text, maxLength = 120) {
         if (cur) final.push(cur.trim());
     });
     return final;
+}
+
+/* EPUB text normalization shared by the live-rendition extractor and the
+ * detached-DOM batch extractor so both produce identical sentence lists
+ * (playback ordinals must match download cache keys).
+ * buildStructuredText replicates
+ *   fullText.replace(/\n{3,}/g,'\n\n').replace(/[ \t]+\n/g,'\n').trim()
+ * exactly, and records map[o] = the fullText index that structuredText[o]
+ * came from (the transforms only delete characters, so the map is monotonic).
+ * trimSkipLines cuts top/bottom newline-separated lines (counts clamped, sum
+ * clamped) and returns { text, start } with start = the offset in
+ * structuredText where the kept text begins. */
+function buildStructuredText(fullText) {
+    const out = [];
+    const map = [];
+    const n = fullText.length;
+    let i = 0;
+    while (i < n) {
+        const ch = fullText[i];
+        if (ch === '\n') {
+            let j = i + 1;
+            while (j < n && fullText[j] === '\n') j++;
+            const keep = (j - i) >= 3 ? 2 : (j - i);
+            for (let k = 0; k < keep; k++) { out.push('\n'); map.push(i + k); }
+            i = j;
+            continue;
+        }
+        if (ch === ' ' || ch === '\t') {
+            let j = i + 1;
+            while (j < n && (fullText[j] === ' ' || fullText[j] === '\t')) j++;
+            if (j < n && fullText[j] === '\n') { i = j; continue; } // [ \t]+\n -> \n
+            for (let k = i; k < j; k++) { out.push(fullText[k]); map.push(k); }
+            i = j;
+            continue;
+        }
+        out.push(ch);
+        map.push(i);
+        i++;
+    }
+    let s = 0, e = out.length;
+    while (s < e && /\s/.test(out[s])) s++;
+    while (e > s && /\s/.test(out[e - 1])) e--;
+    return { text: out.slice(s, e).join(''), map: map.slice(s, e) };
+}
+
+function trimSkipLines(structuredText, skipTop, skipBottom) {
+    const lines = structuredText.split('\n');
+    const t = Math.max(0, Math.min(Math.floor(skipTop) || 0, lines.length));
+    const b = Math.max(0, Math.min(Math.floor(skipBottom) || 0, lines.length - t));
+    let start = structuredText.length;
+    if (t < lines.length) {
+        start = 0;
+        for (let k = 0; k < t; k++) start += lines[k].length + 1; // +1 for '\n'
+    }
+    return { text: lines.slice(t, lines.length - b).join('\n'), start };
 }
 
 /* Refresh the progress bar + "Sentence N / M" readout from currentIndex. */
@@ -5077,31 +5525,140 @@ function updateTtsStatus() {
 /* TTS fetch queue state:
  *   _ttsQueue    — sentence indices awaiting synthesis, kept sorted
  *   _ttsBusy     — one request at a time (single-flight)
- *   _ttsPending  — { id, idx } of the live request; the server echoes
+ *   _ttsPending  — { id, idx, gen, startedAt } of the live request; the server echoes
  *                  request_id in done/error frames so stale responses are ignored
- *   _nextChunkTimer — timer chaining playback to the next sentence */
+ *   _ttsGen      — bumped by stopPipeline/clearPageAudioCache; completions
+ *                  from an older generation are ignored (stops background
+ *                  synthesis of stopped pages)
+ *   _nextChunkTimer — timer chaining playback to the next sentence
+ *   _ttsFetchTimer  — watchdog for one stuck synthesis request (single-flight) */
 let _ttsQueue = [];
 let _ttsBusy = false;
-let _ttsPending = null; // { id, idx } — the single in-flight TTS request
+let _ttsPending = null; // { id, idx, gen, startedAt } — the single in-flight TTS request
 let _ttsReqSeq = 0;
+let _ttsGen = 0;
 let _ttsReconnectAttempts = 0;
 let _nextChunkTimer = null;
+let _ttsFetchTimer = null;
+// Stall detector: while "Generating…" is showing (pre-start buffering), one
+// lost response must not wedge the single-flight slot forever. Fires every
+// few seconds and force-fails a pending request older than the fetch timeout,
+// or re-kicks the queue when it looks idle but non-empty.
+let _ttsStallTimer = null;
+let _ttsLastProgress = 0;
+const _TTS_FETCH_TIMEOUT_MS = 20000;
+const _TTS_STALL_CHECK_MS = 5000;
+const _ttsChunkOwner = {}; // idx -> reqId of the request currently owning _ttsChunks[idx]
+
+function _clearTtsStallTimer() {
+    if (_ttsStallTimer) { clearInterval(_ttsStallTimer); _ttsStallTimer = null; }
+}
+
+function _armTtsStallTimer() {
+    _clearTtsStallTimer();
+    _ttsLastProgress = Date.now();
+    _ttsStallTimer = setInterval(() => {
+        try {
+            if (!isPlaying || hasStartedPlaying) { _clearTtsStallTimer(); return; }
+            const now = Date.now();
+            const pend = _ttsPending;
+            if (pend && (now - (pend.startedAt || now)) > _TTS_FETCH_TIMEOUT_MS) {
+                console.warn(`[TTS] Stall detected: request ${pend.id} for sentence ${pend.idx} made no progress in ${_TTS_FETCH_TIMEOUT_MS}ms, skipping`);
+                const idx = pend.idx, gen = pend.gen;
+                _ttsPending = null;
+                delete _ttsChunkOwner[idx];
+                delete _ttsChunks[idx];
+                if (audioCache[idx] === 'fetching') audioCache[idx] = null;
+                _onTtsDone(idx, gen);
+                return;
+            }
+            // Queue looks idle but has work (e.g. a completion threw before
+            // re-kicking): nudge it instead of stalling silently.
+            if (!_ttsBusy && !pend && _ttsQueue.length > 0) {
+                console.warn('[TTS] Stall detected: queue non-empty but idle, re-kicking');
+                processTtsQueue();
+                return;
+            }
+            // Inconsistent state: marked busy with no pending record.
+            if (_ttsBusy && !pend) {
+                console.warn('[TTS] Stall detected: busy flag with no pending request, resetting');
+                _ttsBusy = false;
+                processTtsQueue();
+                return;
+            }
+            // Idle with an unfilled pre-start buffer and nothing outstanding:
+            // any 'fetching' markers left in the window are orphans of a
+            // superseded session (their responses were dropped as stale, so
+            // nothing will ever complete them). Reap them and re-kick so the
+            // missing clip is actually re-requested.
+            if (!_ttsBusy && !pend && _ttsQueue.length === 0) {
+                const need = Math.min(REQUIRED_START_BUFFER, Math.max(0, sentences.length - currentIndex));
+                let swept = 0;
+                for (let i = currentIndex; i < currentIndex + need; i++) {
+                    if (audioCache[i] === 'fetching') {
+                        delete audioCache[i];
+                        delete _ttsChunks[i];
+                        delete _ttsChunkOwner[i];
+                        swept++;
+                    }
+                }
+                if (swept > 0) {
+                    console.warn(`[TTS] Stall detected: reaped ${swept} orphaned request(s), re-kicking`);
+                    inFlight = 0;
+                    try { preloadQueue(); } catch (_) {}
+                    processTtsQueue();
+                }
+            }
+        } catch (e) {
+            console.warn('[TTS] Stall check failed:', e);
+        }
+    }, _TTS_STALL_CHECK_MS);
+}
+
+/* Snapshot of the TTS pipeline for console diagnosis, e.g.
+ * `__drDiag()` when "Generating…" won't clear. */
+window.__drDiag = () => {
+    try {
+        const total = (typeof sentences !== 'undefined' && sentences) ? sentences.length : 0;
+        const need = Math.min(REQUIRED_START_BUFFER, Math.max(0, total - currentIndex));
+        const win = [];
+        for (let i = currentIndex; i < currentIndex + need; i++) {
+            const v = audioCache[i];
+            win.push([i, v === undefined ? 'missing' : (v === 'fetching' ? 'fetching' : (v === null ? 'failed' : 'ready'))]);
+        }
+        return {
+            build: DR_BUILD, isPlaying, hasStartedPlaying, currentIndex,
+            busy: _ttsBusy, pending: _ttsPending ? { ..._ttsPending } : null,
+            queue: [..._ttsQueue], inFlight, window: win,
+        };
+    } catch (e) { return { error: String(e) }; }
+};
 
 /* Pop the next index off the queue and start its synthesis request.
  * Single-flight: returns immediately if a request is already active. */
 async function processTtsQueue() {
+    if (!isPlaying) return;
     if (_ttsBusy || _ttsQueue.length === 0) return;
     _ttsBusy = true;
     const idx = _ttsQueue.shift();
-    _ttsPending = { id: ++_ttsReqSeq, idx };
+    _ttsPending = { id: ++_ttsReqSeq, idx, gen: _ttsGen, startedAt: Date.now() };
     const reqId = _ttsPending.id;
+    const gen = _ttsPending.gen;
+    _ttsChunkOwner[idx] = reqId;
     _dlog(`[TTS] Processing queue: idx=${idx}, reqId=${reqId}, remaining=${_ttsQueue.length}`);
     try {
         await fetchSentenceAudio(idx, reqId);
+        // Superseded while sending (stop/page-turn/book-switch): the new
+        // generation owns the slot now — don't touch its state.
+        if (gen !== _ttsGen) {
+            if (!_ttsPending || _ttsPending.gen <= gen) { _ttsBusy = false; _ttsPending = null; }
+            return;
+        }
     } catch (e) {
         console.error(`TTS fetch error for ${idx}:`, e);
+        if (gen !== _ttsGen) return;
         if (audioCache[idx] === 'fetching') audioCache[idx] = null;
-        _onTtsDone(idx);
+        _onTtsDone(idx, gen);
     }
 }
 
@@ -5112,27 +5669,59 @@ async function processTtsQueue() {
  *  - after start: chain straight into the next clip when it was the one
  *    currently due.
  * Always re-kicks preload + queue processing. */
-function _onTtsDone(idx) {
+function _onTtsDone(idx, gen) {
+    // Stale completion from a stopped/superseded session: never touch the
+    // new session's busy/pending flags, queue, or playback.
+    if (gen !== undefined && gen !== _ttsGen) return;
+    if (_ttsFetchTimer) { clearTimeout(_ttsFetchTimer); _ttsFetchTimer = null; }
     _ttsBusy = false;
     _ttsPending = null;
+    _ttsAcceptingBinaryFor = null;
     inFlight = Math.max(0, inFlight - 1);
+    _ttsLastProgress = Date.now();
     _dlog(`[TTS] Done with idx=${idx}, inFlight=${inFlight}`);
 
-    if (isPlaying) {
-        if (!hasStartedPlaying) {
-            const required = Math.min(REQUIRED_START_BUFFER, sentences.length - currentIndex);
-            let cnt = 0;
-            for (let i = currentIndex; i < currentIndex + required; i++) {
-                if (audioCache[i] !== undefined && audioCache[i] !== 'fetching') cnt++;
+    try {
+        if (isPlaying) {
+            if (!hasStartedPlaying) {
+                const required = Math.min(REQUIRED_START_BUFFER, sentences.length - currentIndex);
+                let cnt = 0;
+                for (let i = currentIndex; i < currentIndex + required; i++) {
+                    if (audioCache[i] !== undefined && audioCache[i] !== 'fetching') cnt++;
+                }
+                ttsStatusText.textContent = `Generating… ${cnt}/${required}`;
+                if (cnt >= required) {
+                    hasStartedPlaying = true;
+                    _clearTtsStallTimer();
+                    playNextChunk();
+                }
+            } else {
+                if (idx === currentIndex && audioPlayer.paused) playNextChunk();
+                // Evict clips well behind the playhead so long chapters don't
+                // accumulate a blob URL per sentence (seek-back refetches).
+                for (const k of Object.keys(audioCache)) {
+                    const n = Number(k);
+                    if (Number.isInteger(n) && n < currentIndex - 5) {
+                        const v = audioCache[k];
+                        if (typeof v === 'string' && v.startsWith('blob:')) {
+                            try { URL.revokeObjectURL(v); } catch (e) {}
+                        }
+                        delete audioCache[k];
+                    }
+                }
             }
-            ttsStatusText.textContent = `Generating… ${cnt}/${required}`;
-            if (cnt >= required) { hasStartedPlaying = true; playNextChunk(); }
-        } else {
-            if (idx === currentIndex && audioPlayer.paused) playNextChunk();
         }
+    } catch (e) {
+        // Playback/highlight must never wedge the fetch queue: log and
+        // continue so the lines below still advance synthesis.
+        console.warn('[TTS] Playback step failed after done, continuing queue:', e);
+    } finally {
+        // Always advance: an exception above must not strand queued
+        // sentences with no one left to fetch them (the "Generating… 4/5
+        // forever with no server traffic" stall).
+        try { preloadQueue(); } catch (e) { console.warn('[TTS] preloadQueue failed:', e); }
+        try { processTtsQueue(); } catch (e) { console.warn('[TTS] processTtsQueue failed:', e); }
     }
-    preloadQueue();
-    processTtsQueue();
 }
 
 /* Request synthesis for a sentence unless it's already cached, in flight,
@@ -5228,38 +5817,70 @@ function normalizeTTSText(raw) {
 
 /* ─── TTS fetch via WebSocket ───
  * Binary audio arrives as multiple ArrayBuffer frames, buffered in
- * _ttsChunks[idx] and merged into a single WAV blob on the 'done' JSON. */
+ * _ttsChunks[idx] and merged into a single WAV blob on the 'done' JSON.
+ * Raw bytes carry no identity, so the server opens each stream with a
+ * 'begin' frame: only bytes received after the CURRENT request's begin
+ * (tracked in _ttsAcceptingBinaryFor) are buffered. Without this, a seek
+ * interleaves sessions and the old clip's late bytes merge into the new
+ * clip — highlight shows line N while line M's audio plays. */
 const _ttsChunks = {};
 let _ttsSocketClosed = false;
+let _ttsAcceptingBinaryFor = null; // reqId whose audio bytes we currently trust
 
 /* Open (or reuse) the 'tts' socket. Binary frames append to the pending
- * sentence's chunk buffer; JSON 'done'/'error' frames finalize it — but only
- * if request_id matches the current _ttsPending (stale-response guard).
+ * sentence's chunk buffer, but only between its 'begin' and 'done' frames;
+ * JSON 'done'/'error' frames finalize it — but only if request_id matches
+ * the current _ttsPending (stale-response guard).
  * On unexpected close: exponential backoff reconnect while playing
  * (giving up to stopPipeline after 5 tries), fail the outstanding request. */
 function _ensureTtsSocket() {
-    if (WS._sockets['tts'] && WS._sockets['tts'].readyState === WebSocket.OPEN) {
+    const cur = WS._sockets['tts'];
+    if (cur && cur.readyState === WebSocket.OPEN) {
         _ttsReconnectAttempts = 0;
         return;
     }
+    // Still connecting: keep it — the caller attaches its own 'open'
+    // listener. Tearing it down here would orphan that send.
+    if (cur && cur.readyState === WebSocket.CONNECTING) return;
     console.log('[TTS] Opening WebSocket...');
     const ws = WS.openBinary('tts', '/ws/tts',
         (ab) => {
             if (!_ttsPending) return;
-            const pending = _ttsPending.idx;
-            if (!_ttsChunks[pending]) _ttsChunks[pending] = [];
-            _ttsChunks[pending].push(ab);
+            const o = _ttsPending;
+            // Only bytes from the current request's own stream (after its
+            // 'begin'): a previous session's late bytes must not merge into
+            // this clip.
+            if (_ttsAcceptingBinaryFor !== o.id) return;
+            // Drop bytes from a superseded request sharing this idx (e.g.
+            // stop -> replay before the old socket drained).
+            if (_ttsChunkOwner[o.idx] !== o.id) return;
+            if (!_ttsChunks[o.idx]) _ttsChunks[o.idx] = [];
+            _ttsChunks[o.idx].push(ab);
         },
         (msg) => {
+            if (msg && msg.type === 'begin') {
+                // Stream opener: the bytes that follow belong to this
+                // request_id. A stale begin (previous session) is ignored so
+                // its late stream can't arm acceptance for the new request.
+                const p = _ttsPending;
+                if (!p || msg.request_id !== p.id) return;
+                if (_ttsChunkOwner[p.idx] !== p.id) return;
+                _ttsAcceptingBinaryFor = p.id;
+                _ttsChunks[p.idx] = [];
+                return;
+            }
             const pending = _ttsPending;
             // Ignore stale/late responses from a previous request or session
             if (!pending) return;
             if (msg.request_id !== undefined && msg.request_id !== pending.id) return;
+            if (_ttsChunkOwner[pending.idx] !== pending.id) return;
+            const gen = pending.gen;
             _ttsPending = null;
             const idx = pending.idx;
             if (msg.type === 'done') {
                 const parts = _ttsChunks[idx] || [];
                 delete _ttsChunks[idx];
+                delete _ttsChunkOwner[idx];
                 if (audioCache[idx] === 'fetching') {
                     const total = parts.reduce((s, b) => s + b.byteLength, 0);
                     const merged = new Uint8Array(total);
@@ -5268,17 +5889,20 @@ function _ensureTtsSocket() {
                     const blob = new Blob([merged], { type: 'audio/wav' });
                     audioCache[idx] = URL.createObjectURL(blob);
                 }
-                _onTtsDone(idx);
+                _onTtsDone(idx, gen);
             } else if (msg.type === 'error') {
+                delete _ttsChunkOwner[idx];
                 if (audioCache[idx] === 'fetching') {
                     audioCache[idx] = null;
                 }
-                _onTtsDone(idx);
+                _onTtsDone(idx, gen);
             }
         }
     );
-    // Error handling: on close, attempt reconnect if still playing
+    // Error handling: on close, attempt reconnect if still playing.
+    // A replaced socket's close must not touch the new session's state.
     ws.addEventListener('close', () => {
+        if (WS._sockets['tts'] !== ws) return;
         console.warn('[TTS] WebSocket closed unexpectedly');
         if (isPlaying) {
             _ttsReconnectAttempts++;
@@ -5295,13 +5919,15 @@ function _ensureTtsSocket() {
         }
         // Clean up pending chunks and fail only the genuinely outstanding request
         Object.keys(_ttsChunks).forEach(k => delete _ttsChunks[k]);
+        Object.keys(_ttsChunkOwner).forEach(k => delete _ttsChunkOwner[k]);
         if (_ttsPending) {
             const idx = _ttsPending.idx;
+            const gen = _ttsPending.gen;
             _ttsPending = null;
             if (audioCache[idx] === 'fetching') {
                 audioCache[idx] = null;
             }
-            _onTtsDone(idx);
+            _onTtsDone(idx, gen);
         }
     });
 }
@@ -5312,7 +5938,7 @@ function _ensureTtsSocket() {
 async function fetchSentenceAudio(idx, reqId) {
     if (!sentences || idx >= sentences.length || !sentences[idx]) {
         console.warn(`[TTS] Sentence ${idx} not available, skipping`);
-        _onTtsDone(idx);
+        _onTtsDone(idx, _ttsGen);
         return;
     }
 
@@ -5320,10 +5946,29 @@ async function fetchSentenceAudio(idx, reqId) {
         const raw = sentences[idx];
         const text = normalizeTTSText(/^\d{1,2}$/.test(raw.trim()) ? `Page ${raw.trim()}.` : raw);
         const voice = voiceSelector.value || 'af_sarah';
-        const originalLine = idx + (parseInt(topSkipLines, 10) || 0);
+        // Canonical post-skip ordinal: `sentences` is already skip-filtered,
+        // and batch downloads key the same way (`${page}_${si}`). Using
+        // idx + topSkip here collided with download keys whenever skip > 0
+        // (file p_k held two different texts), so playback could serve audio
+        // for a different line than the highlighted one.
 
         _ensureTtsSocket();
         const ws = WS._sockets['tts'];
+        // Watchdog: a dropped send or a response that never arrives must not
+        // hold the single-flight slot forever — fail the chunk instead.
+        const armWatchdog = () => {
+            if (_ttsFetchTimer) clearTimeout(_ttsFetchTimer);
+            _ttsFetchTimer = setTimeout(() => {
+                _ttsFetchTimer = null;
+                if (_ttsPending && _ttsPending.id === reqId && audioCache[idx] === 'fetching') {
+                    console.warn(`[TTS] Request ${reqId} timed out after ${_TTS_FETCH_TIMEOUT_MS}ms, skipping sentence ${idx}`);
+                    delete _ttsChunkOwner[idx];
+                    delete _ttsChunks[idx];
+                    audioCache[idx] = null;
+                    _onTtsDone(idx, _ttsPending.gen);
+                }
+            }, _TTS_FETCH_TIMEOUT_MS);
+        };
         const sendRequest = () => {
             const payload = {
                 request_id: reqId,
@@ -5332,24 +5977,32 @@ async function fetchSentenceAudio(idx, reqId) {
                 speed: 1.0,
                 book_name: currentFileName || '',
                 page: pageNum,
-                line: originalLine,
+                line: idx,
                 save: saveAudioEnabled || false,
                 force_regenerate: false,
             };
-            WS.send('tts', payload);
+            if (!WS.send('tts', payload)) throw new Error('TTS socket not open');
+            armWatchdog();
         };
 
         if (ws && ws.readyState === WebSocket.OPEN) {
             sendRequest();
         } else if (ws) {
-            ws.addEventListener('open', sendRequest, { once: true });
+            ws.addEventListener('open', () => {
+                // The session may have moved on while connecting — don't emit
+                // a stale request the server would synthesize for nothing
+                // (its response is dropped on arrival).
+                if (!_ttsPending || _ttsPending.id !== reqId || audioCache[idx] !== 'fetching') return;
+                try { sendRequest(); } catch (e) { if (audioCache[idx] === 'fetching') audioCache[idx] = null; _onTtsDone(idx, _ttsGen); }
+            }, { once: true });
+            armWatchdog();
         } else {
             throw new Error('WS not available');
         }
     } catch (e) {
         console.error(`[TTS] WS fetch FAILED for sentence ${idx}:`, e);
         if (audioCache[idx] === 'fetching') audioCache[idx] = null;
-        _onTtsDone(idx);
+        _onTtsDone(idx, _ttsGen);
     }
 }
 
@@ -5364,6 +6017,7 @@ async function fetchSentenceAudio(idx, reqId) {
  *  - Still fetching: do nothing; _onTtsDone will call back when ready. */
 function playNextChunk() {
     if (!isPlaying) return;
+    try {
     if (currentIndex >= sentences.length) {
         const total = getPageCount();
         if (document.getElementById('auto-read-next').checked && pageNum < total) {
@@ -5377,9 +6031,15 @@ function playNextChunk() {
     }
     const url = audioCache[currentIndex];
     console.log(`[TTS] playNextChunk: currentIndex=${currentIndex}, url=${url ? (typeof url === 'string' ? url.slice(0, 50) : url) : 'undefined'}`);
-    
+
     if (url && url !== 'fetching') {
-        highlightActiveSentence(currentIndex, sentences);
+        try {
+            highlightActiveSentence(currentIndex, sentences);
+        } catch (e) {
+            // A highlight miss (e.g. EPUB CFI not laid out yet) must never
+            // kill audible playback — log and keep playing.
+            console.warn('[TTS] Highlight failed, continuing playback:', e);
+        }
         updateTtsStatus();
         audioPlayer.src = url;
         audioPlayer.playbackRate = getPlaybackRate();
@@ -5414,8 +6074,36 @@ function playNextChunk() {
             }, rest);
         };
     } else if (url === null) {
-        currentIndex++;
+        // Skip failed chunks without recursing (long failure runs would
+        // otherwise nest hundreds deep); then re-evaluate end-of-page.
+        let skips = 0;
+        while (audioCache[currentIndex] === null && currentIndex < sentences.length && skips < 500) {
+            currentIndex++;
+            skips++;
+        }
         playNextChunk();
+    } else if (url === undefined) {
+        // Never enqueued and the queue is empty (e.g. after a skip run):
+        // enqueue it and retry shortly instead of stalling silently.
+        // ('fetching' needs no action — its completion resumes via _onTtsDone.)
+        enqueueTts(currentIndex);
+        clearTimeout(_nextChunkTimer);
+        _nextChunkTimer = setTimeout(() => { if (isPlaying) playNextChunk(); }, 500);
+    }
+    } catch (e) {
+        // Never let one bad clip wedge the whole page: skip it and continue.
+        console.warn(`[TTS] playNextChunk failed for chunk ${currentIndex}, skipping:`, e);
+        try {
+            if (audioCache[currentIndex] !== undefined && audioCache[currentIndex] !== 'fetching') {
+                const v = audioCache[currentIndex];
+                if (typeof v === 'string' && v.startsWith('blob:')) { try { URL.revokeObjectURL(v); } catch (_) {} }
+                delete audioCache[currentIndex];
+            }
+            currentIndex++;
+            preloadQueue();
+        } catch (_) {}
+        clearTimeout(_nextChunkTimer);
+        _nextChunkTimer = setTimeout(() => { if (isPlaying) playNextChunk(); }, 300);
     }
 }
 
@@ -5444,11 +6132,16 @@ document.getElementById('speed-slider').addEventListener('input', async () => {
 function stopPipeline() {
     isPlaying = false;
     isAutoContinuing = false; // reset auto-advance flag
+    _ttsGen++; // invalidate in-flight completions so the stopped page can't resume
+    _ttsBusy = false;
+    _ttsPending = null;
+    _ttsAcceptingBinaryFor = null;
+    _clearTtsStallTimer();
+    if (_ttsFetchTimer) { clearTimeout(_ttsFetchTimer); _ttsFetchTimer = null; }
     if (_nextChunkTimer) { clearTimeout(_nextChunkTimer); _nextChunkTimer = null; }
     audioPlayer.pause();
     audioPlayer.onerror = null;
     audioPlayer.onended = null;
-    audioPlayer.pause();
     audioPlayer.src = ''; // unload to avoid revoke issues
     playBtn.textContent = '▶ Play Page';
     ttsStatus.classList.remove('active');
@@ -5479,6 +6172,12 @@ function clearPageAudioCache() {
     _ttsQueue = [];
     _ttsBusy = false;
     _ttsPending = null;
+    _ttsGen++;
+    Object.keys(_ttsChunks).forEach(k => delete _ttsChunks[k]);
+    Object.keys(_ttsChunkOwner).forEach(k => delete _ttsChunkOwner[k]);
+    _ttsAcceptingBinaryFor = null;
+    _clearTtsStallTimer();
+    if (_ttsFetchTimer) { clearTimeout(_ttsFetchTimer); _ttsFetchTimer = null; }
     _ttsReconnectAttempts = 0;
     _ttsSocketClosed = false;
 }
@@ -5495,13 +6194,7 @@ function syncMobilePlayBtn() {
         mobilePlayBtn.querySelector('svg').innerHTML = '<polygon points="5 3 19 12 5 21 5 3"/>';
     }
 }
-mobilePlayBtn.addEventListener('click', () => {
-    if (isPlaying) { stopPipeline(); return; }
-    if (!currentPageText.trim()) return;
-    if (!pdfDoc && !(documentHandler instanceof EPUBHandler)) return;
-    let si = currentIndex >= sentences.length ? 0 : currentIndex;
-    startReadingPage(si);
-});
+mobilePlayBtn.addEventListener('click', () => togglePlayback({ silentEmpty: true }));
 
 /* ─── Cache badge (WebSocket‑only with fallback) ───
  * Shows how many sentences of the current page the server has cached.
@@ -5509,10 +6202,38 @@ mobilePlayBtn.addEventListener('click', () => {
  * we fall back to an HTTP status query. */
 let cacheStatusTimeout = null;
 
-/* Subscribe to per-book cache updates for `bookName`. */
-function openCacheSocket(bookName) {
-    WS.close('cache');
+/* Drop duration estimates affected by a cache change on one book page
+ * (composite keys: exact page entry plus any chapter range of that book). */
+function invalidateBookDurations(bookName, page) {
     if (!bookName) return;
+    const pkey = `${bookName}::${page}`;
+    delete pageDurationCache[pkey];
+    delete pendingPageDurations[pkey];
+    const cp = `${bookName}::`;
+    Object.keys(chapterDurationCache).forEach(k => { if (k.indexOf(cp) === 0) delete chapterDurationCache[k]; });
+    Object.keys(pendingChapterDurations).forEach(k => { if (k.indexOf(cp) === 0) delete pendingChapterDurations[k]; });
+}
+
+/* Subscribe to per-book cache updates for `bookName`. */
+let _cacheSocketBook = null;
+function openCacheSocket(bookName) {
+    if (!bookName) { _cacheSocketBook = null; WS.close('cache'); return; }
+    // Called on both book load and page render: don't tear down a healthy
+    // socket for the same book — the close+reopen race is what produced
+    // "WebSocket is closed before the connection is established".
+    const cur = WS._sockets['cache'];
+    if (_cacheSocketBook === bookName && cur) {
+        if (cur.readyState === WebSocket.OPEN) { requestCacheStatus(); return; }
+        if (cur.readyState === WebSocket.CONNECTING) {
+            // Ask on open instead of warning now and never asking at all.
+            // (WS.open assigns ws.onopen; addEventListener coexists with it.)
+            cur.addEventListener('open', () => { if (_cacheSocketBook === bookName) requestCacheStatus(); }, { once: true });
+            return;
+        }
+        // CLOSED/CLOSING: fall through to reopen below.
+    }
+    WS.close('cache');
+    _cacheSocketBook = bookName;
     console.log('[Cache] Opening cache socket for', bookName);
     const ws = WS.open('cache', `/ws/cache/${encodeURIComponent(bookName)}`, msg => {
         if (!msg) return;
@@ -5526,7 +6247,7 @@ function openCacheSocket(bookName) {
                 } else {
                     cacheBadge.classList.remove('visible');
                 }
-                delete pageDurationCache[msg.page];
+                invalidateBookDurations(bookName, msg.page);
                 if (cacheStatusTimeout) {
                     clearTimeout(cacheStatusTimeout);
                     cacheStatusTimeout = null;
@@ -5536,12 +6257,12 @@ function openCacheSocket(bookName) {
         if (msg.type === 'cache_cleared') {
             if (msg.page === pageNum) {
                 cacheBadge.classList.remove('visible');
-                delete pageDurationCache[msg.page];
+                invalidateBookDurations(bookName, msg.page);
             }
         }
     }, () => {
         console.log('[Cache] Socket opened for', bookName);
-        if (pdfDoc && currentFileName) {
+        if (currentFileName) {
             requestCacheStatus();
         }
     });
@@ -5567,7 +6288,7 @@ function requestCacheStatus() {
             const data = await res.json();
             const lines = data.cached_lines || [];
             if (lines.length > 0) {
-                cacheBadge.textContent = `${lines} cached`;
+                cacheBadge.textContent = `${lines.length} cached`;
                 cacheBadge.classList.add('visible');
             } else {
                 cacheBadge.classList.remove('visible');
@@ -5578,9 +6299,10 @@ function requestCacheStatus() {
     }, 2000);
 }
 
-/* Refresh the badge for the current page (called on page turns). */
+/* Refresh the badge for the current page (called on page turns). Works for
+ * PDF and EPUB: both use per-page server cache keys. */
 function updateCacheBadge() {
-    if (!currentFileName || !pdfDoc) {
+    if (!currentFileName || (!pdfDoc && !(documentHandler instanceof EPUBHandler))) {
         cacheBadge.classList.remove('visible');
         return;
     }
@@ -5603,13 +6325,15 @@ const PREFS_KEY = 'docreader-global-prefs';
 function loadGlobalPrefs() {
     try {
         const prefs = JSON.parse(localStorage.getItem(PREFS_KEY) || '{}');
-        if (prefs.voice && document.getElementById('voice-selector')) {
-            document.getElementById('voice-selector').value = prefs.voice;
+        const voiceSel = document.getElementById('voice-selector');
+        if (prefs.voice && voiceSel &&
+            voiceSel.querySelector(`option[value="${prefs.voice}"]`)) {
+            voiceSel.value = prefs.voice;
         }
-        if (prefs.autoReadNext !== undefined && document.getElementById('auto-read-next')) {
+        if (typeof prefs.autoReadNext === 'boolean' && document.getElementById('auto-read-next')) {
             document.getElementById('auto-read-next').checked = prefs.autoReadNext;
         }
-        if (prefs.saveAudio !== undefined && saveAudioToggle) {
+        if (typeof prefs.saveAudio === 'boolean' && saveAudioToggle) {
             saveAudioToggle.checked = prefs.saveAudio;
             saveAudioEnabled = prefs.saveAudio;
             saveRangeRow.style.display = saveAudioEnabled ? 'flex' : 'none';
@@ -5622,9 +6346,9 @@ function loadGlobalPrefs() {
 /* Persist the three global prefs (wired to change events below). */
 function saveGlobalPrefs() {
     const prefs = {
-        voice: document.getElementById('voice-selector')?.value || 'af_sarah',
-        autoReadNext: document.getElementById('auto-read-next')?.checked || false,
-        saveAudio: saveAudioToggle?.checked || false
+        voice: document.getElementById('voice-selector')?.value ?? 'af_sarah',
+        autoReadNext: document.getElementById('auto-read-next')?.checked ?? false,
+        saveAudio: saveAudioToggle?.checked ?? false
     };
     localStorage.setItem(PREFS_KEY, JSON.stringify(prefs));
 }
@@ -5688,12 +6412,9 @@ async function extractEpubPageSentences(book, spineItem, skipTop = 0, skipBottom
         fullText += t;
     }
 
-    const structuredText = fullText.replace(/\n{3,}/g, '\n\n').replace(/[ \t]+\n/g, '\n').trim();
-    // Apply skip lines: split by newline and skip top/bottom
-    const lines = structuredText.split('\n');
-    const skipTopClamped = Math.min(skipTop, lines.length);
-    const skipBottomClamped = Math.min(skipBottom, lines.length);
-    const trimmed = lines.slice(skipTopClamped, lines.length - skipBottomClamped).join('\n');
+    const built = buildStructuredText(fullText);
+    // Same skip semantics as the live extractor (shared helper).
+    const trimmed = trimSkipLines(built.text, skipTop, skipBottom).text;
     return splitIntoTTSChunks(trimmed, 250);
 }
 
@@ -5826,6 +6547,13 @@ downloadRangeBtn.addEventListener('click', async () => {
 
         dlStatusText.textContent = `Queuing ${newLineCount} chunks (lines ${lineFrom}-${lineTo})…`;
         dlProgressFill.style.width = '45%';
+        // Failsafe: server 'done' may never arrive on a dead socket. Stored
+        // so the real completion can cancel it (no double-finish).
+        let dlFailsafe = null;
+        const dlDone = (msg) => {
+            if (dlFailsafe) { clearTimeout(dlFailsafe); dlFailsafe = null; }
+            finishDownload(1, msg, dlBookName);
+        };
         try {
             const res = await fetch('/preload', {
                 method: 'POST',
@@ -5853,12 +6581,12 @@ downloadRangeBtn.addEventListener('click', async () => {
                     dlStatusText.textContent = `Server generating… ${done} / ${total} (lines ${lineFrom}-${lineTo})`;
                     if (msg.status === 'done') {
                         WS.close(`preload:${jobId}`);
-                        finishDownload(1, `Done! Lines ${lineFrom}-${lineTo} (chapter ${dlPage}) queued ✓`);
+                        dlDone(`Done! Lines ${lineFrom}-${lineTo} (chapter ${dlPage}) queued ✓`);
                     }
                 });
-                setTimeout(() => { WS.close(`preload:${jobId}`); finishDownload(1, `Done! Lines ${lineFrom}-${lineTo} (chapter ${dlPage}) queued ✓`); }, 600000);
+                dlFailsafe = setTimeout(() => { dlFailsafe = null; WS.close(`preload:${jobId}`); dlDone(`Done! Lines ${lineFrom}-${lineTo} (chapter ${dlPage}) queued ✓`); }, 600000);
             } else {
-                finishDownload(1, `Done! Lines ${lineFrom}-${lineTo} (chapter ${dlPage}) queued ✓`);
+                dlDone(`Done! Lines ${lineFrom}-${lineTo} (chapter ${dlPage}) queued ✓`);
             }
         } catch (e) {
             dlStatusText.textContent = `Error: ${e.message}`;
@@ -5995,8 +6723,14 @@ downloadRangeBtn.addEventListener('click', async () => {
         
         if (jobId) {
             dlProgressFill.style.width = '70%';
+            let pgFailsafe = null;
+            const pgDone = () => {
+                if (pgFailsafe) { clearTimeout(pgFailsafe); pgFailsafe = null; }
+                finishDownload(totalPages, undefined, dlBookName);
+            };
             WS.open(`preload:${jobId}`, `/ws/preload/${jobId}`, msg => {
                 if (!msg) return;
+                if (currentFileName !== dlBookName) { WS.close(`preload:${jobId}`); return; }
                 const done = msg.done || 0;
                 const total = msg.total || newSentenceCount;
                 const pct = Math.min(99, Math.round(70 + (done / Math.max(1, total)) * 29));
@@ -6004,12 +6738,12 @@ downloadRangeBtn.addEventListener('click', async () => {
                 dlStatusText.textContent = `Server generating… ${done} / ${total}`;
                 if (msg.status === 'done') {
                     WS.close(`preload:${jobId}`);
-                    finishDownload(totalPages);
+                    pgDone();
                 }
             });
-            setTimeout(() => { WS.close(`preload:${jobId}`); finishDownload(totalPages); }, 600000);
+            pgFailsafe = setTimeout(() => { pgFailsafe = null; WS.close(`preload:${jobId}`); pgDone(); }, 600000);
         } else {
-            finishDownload(totalPages);
+            finishDownload(totalPages, undefined, dlBookName);
         }
     } catch (e) {
         dlStatusText.textContent = `Error: ${e.message}`;
@@ -6021,11 +6755,15 @@ downloadRangeBtn.addEventListener('click', async () => {
     }
 });
 /* Shared completion path for the batch download: show success, restore the
- * button, invalidate duration caches so estimates pick up the new audio. */
-function finishDownload(pageCount, customMsg) {
+ * button, invalidate duration caches so estimates pick up the new audio.
+ * bookName guards against a mid-generation book switch painting the old
+ * job's completion onto the new book. */
+function finishDownload(pageCount, customMsg, bookName) {
+    if (bookName && bookName !== currentFileName) return;
     dlProgressFill.style.width = '100%';
     dlStatusText.textContent = customMsg || `Done! ${pageCount} page(s) queued for caching ✓`;
     setTimeout(() => {
+        if (bookName && bookName !== currentFileName) return;
         dlProgress.classList.remove('active');
         dlProgressFill.style.width = '0%';
         isDownloadingRange = false;
@@ -6047,9 +6785,12 @@ function extractSentencesFromTextContent(textContent, page, skipTop = 0, skipBot
     const fontSizes = textContent.items.map(i => Math.abs(i.transform[3])).filter(s => s > 0).sort((a, b) => a - b);
     const baseFontSize = fontSizes.length ? fontSizes[Math.floor(fontSizes.length / 2)] : 12;
     const Y_TOL = 5;
+    // Same quantized row sort as renderPage() — download keys must match
+    // playback sentences exactly.
     const sorted = [...textContent.items].sort((a, b) => {
-        const dy = a.transform[5] - b.transform[5];
-        if (Math.abs(dy) > Y_TOL) return b.transform[5] - a.transform[5];
+        const ba = Math.round(a.transform[5] / Y_TOL);
+        const bb = Math.round(b.transform[5] / Y_TOL);
+        if (ba !== bb) return bb - ba;
         return a.transform[4] - b.transform[4];
     });
     let lines = [];
@@ -6065,8 +6806,8 @@ function extractSentencesFromTextContent(textContent, page, skipTop = 0, skipBot
         }
     });
     if (curLine.items.length) lines.push(curLine);
-    const skipTopClamped = Math.min(skipTop, lines.length);
-    const skipBottomClamped = Math.min(skipBottom, lines.length);
+    const skipTopClamped = Math.max(0, Math.min(skipTop, lines.length));
+    const skipBottomClamped = Math.max(0, Math.min(skipBottom, lines.length - skipTopClamped));
     const effectiveLines = lines.slice(skipTopClamped, lines.length - skipBottomClamped);
     let structuredText = '';
     const unscaledH = viewport.viewBox ? viewport.viewBox[3] : 800;
@@ -6089,7 +6830,7 @@ function extractSentencesFromTextContent(textContent, page, skipTop = 0, skipBot
         prevY = line.y;
         if (isHeader) {
             inListItem = false;
-            structuredText += `\n${lineText}.\n`;
+            structuredText += `\n${lineText}${/[.!?…]$/.test(lineText) ? '' : '.'}\n`;
         } else if (startsNewListItem) {
             if (inListItem) {
                 structuredText = structuredText.trimEnd() +
@@ -6142,6 +6883,35 @@ function clearHighlightCanvas() {
  *     DOM Range and merge its client rects per visual row.
  * Finally all rows are painted as rounded rects (dimming everything else
  * first when focus mode is on). */
+/* Shared trailing-punctuation rule for sentence highlight extents (active
+ * highlight and hover use the same set so extents agree). */
+function _isHlPunct(ch) {
+    return /[.,!?;:'"’”\]\)]/.test(ch);
+}
+
+/* Merge per-row rect boxes, joining only boxes that overlap or nearly touch
+ * horizontally. Distant boxes on the same visual row (multi-column gutters,
+ * margin notes) stay separate instead of one wide band across the gap. */
+function _mergeRowBoxes(rows) {
+    const merged = [];
+    rows.forEach(boxes => {
+        boxes.sort((a, b) => a.left - b.left);
+        let cur = null;
+        for (const b of boxes) {
+            if (cur && b.left <= cur.right + 48) {
+                cur.left = Math.min(cur.left, b.left);
+                cur.right = Math.max(cur.right, b.right);
+                cur.top = Math.min(cur.top, b.top);
+                cur.bottom = Math.max(cur.bottom, b.bottom);
+            } else {
+                if (cur) merged.push(cur);
+                cur = { left: b.left, right: b.right, top: b.top, bottom: b.bottom };
+            }
+        }
+        if (cur) merged.push(cur);
+    });
+    return merged;
+}
 function highlightActiveSentence(sentenceIndex, allSentences) {
     if (documentHandler instanceof EPUBHandler) {
         documentHandler.highlightSentence(sentenceIndex);
@@ -6186,7 +6956,7 @@ function highlightActiveSentence(sentenceIndex, allSentences) {
                 if (alpha === oe) { re = i + 1; break; }
             }
         }
-        while (re < map.rawText.length && /[.,!?;:'"’”\]\)]/.test(map.rawText[re])) re++;
+        while (re < map.rawText.length && _isHlPunct(map.rawText[re])) re++;
 
         // Find text node(s) inside span – handle child nodes (e.g., <mark>)
         const textNodes = [];
@@ -6231,19 +7001,16 @@ function highlightActiveSentence(sentenceIndex, allSentences) {
                 
                 const rowKey = Math.round(top / 2) * 2;
                 if (!rows.has(rowKey)) {
-                    rows.set(rowKey, { left, right, top, bottom });
+                    rows.set(rowKey, [{ left, right, top, bottom }]);
                 } else {
-                    const row = rows.get(rowKey);
-                    row.left   = Math.min(row.left, left);
-                    row.right  = Math.max(row.right, right);
-                    row.top    = Math.min(row.top, top);
-                    row.bottom = Math.max(row.bottom, bottom);
+                    rows.get(rowKey).push({ left, right, top, bottom });
                 }
             });
         } catch(e) {}
     });
 
-    if (rows.size === 0) return;
+    const boxRows = _mergeRowBoxes(rows);
+    if (boxRows.length === 0) return;
 
     const cw = Math.round(cRect.width * dpr);
     const ch = Math.round(cRect.height * dpr);
@@ -6285,7 +7052,7 @@ function highlightActiveSentence(sentenceIndex, allSentences) {
         ctx.fillStyle = 'rgba(0,0,0,0.55)';
         ctx.fillRect(0, 0, cRect.width, cRect.height);
         ctx.globalCompositeOperation = 'destination-out';
-        rows.forEach(row => { traceRowPath(row); ctx.fill(); });
+        boxRows.forEach(row => { traceRowPath(row); ctx.fill(); });
         ctx.globalCompositeOperation = 'source-over';
     }
 
@@ -6295,7 +7062,7 @@ function highlightActiveSentence(sentenceIndex, allSentences) {
         ctx.lineWidth = 1; 
     }
 
-    rows.forEach(row => {
+    boxRows.forEach(row => {
         traceRowPath(row);
         ctx.fill();
         if (hlOutline) ctx.stroke();
@@ -6360,21 +7127,24 @@ function _spanRawText(span) {
  * text layer:
  *   normText  — all spans' normalized text concatenated
  *   spanNorms — per-span {span, rawText, normStart, normEnd}
- *   prefix    — per-span starting offset in normText (for point lookups) */
+ *   prefix    — per-span starting offset in normText (for point lookups)
+ *   spanIndex — span element -> index (O(1) hit-test lookup) */
 function _getPdfSpanData() {
     if (_pdfSpanCache) return _pdfSpanCache;
     const allSpans = Array.from(document.querySelectorAll('.textLayer span'));
     let fullNorm = '';
     const spanNorms = [];
     const prefix = new Array(allSpans.length);
+    const spanIndex = new Map();
     allSpans.forEach((span, i) => {
         prefix[i] = fullNorm.length;
+        spanIndex.set(span, i);
         const raw = _spanRawText(span);
         const n = _normPdfText(raw);
         spanNorms.push({ span, rawText: raw, normStart: fullNorm.length, normEnd: fullNorm.length + n.length });
         fullNorm += n;
     });
-    _pdfSpanCache = { spans: allSpans, normText: fullNorm, spanNorms, prefix };
+    _pdfSpanCache = { spans: allSpans, normText: fullNorm, spanNorms, prefix, spanIndex };
     return _pdfSpanCache;
 }
 
@@ -6394,7 +7164,9 @@ function _rebuildPdfSentenceOffsets() {
         if (mi === -1) mi = normText.indexOf(tn, 0);
         if (mi !== -1) {
             _pdfSentenceOffsets.set(i, { start: mi, end: mi + tn.length });
-            cursor = mi + tn.length;
+            // Never regress: a fallback hit behind the cursor would drag every
+            // later sentence onto early occurrences (repeated sentences).
+            cursor = Math.max(cursor, mi + tn.length);
         }
     });
 }
@@ -6470,7 +7242,7 @@ function _drawHoverHighlight(sentIdx) {
                 if (alpha === oe) { re = i + 1; break; }
             }
         }
-        while (re < map.rawText.length && /[^\w\s]/.test(map.rawText[re])) re++;
+        while (re < map.rawText.length && _isHlPunct(map.rawText[re])) re++;
 
         const textNodes = [];
         const walk = document.createTreeWalker(map.span, NodeFilter.SHOW_TEXT, null, false);
@@ -6513,19 +7285,16 @@ function _drawHoverHighlight(sentIdx) {
                 
                 const rowKey = Math.round(top / 2) * 2;
                 if (!rows.has(rowKey)) {
-                    rows.set(rowKey, { left, right, top, bottom });
+                    rows.set(rowKey, [{ left, right, top, bottom }]);
                 } else {
-                    const row = rows.get(rowKey);
-                    row.left   = Math.min(row.left, left);
-                    row.right  = Math.max(row.right, right);
-                    row.top    = Math.min(row.top, top);
-                    row.bottom = Math.max(row.bottom, bottom);
+                    rows.get(rowKey).push({ left, right, top, bottom });
                 }
             });
         } catch(e) {}
     });
 
-    if (rows.size === 0) return;
+    const boxRows = _mergeRowBoxes(rows);
+    if (boxRows.length === 0) return;
     ctx.scale(dpr, dpr);
     const pad = hlPadding;
     const r   = hlRadius;
@@ -6534,7 +7303,7 @@ function _drawHoverHighlight(sentIdx) {
     ctx.strokeStyle = `rgba(${hlBaseColor}, ${Math.min(1, hlOpacity)})`;
     ctx.lineWidth   = 1;
 
-    rows.forEach(row => {
+    boxRows.forEach(row => {
         const x  = row.left  - pad;
         const y  = row.top;
         const w  = (row.right - row.left) + pad * 2;
@@ -6572,8 +7341,8 @@ const _textLayerEl = document.getElementById('text-layer');
  * prefix table (span start offset -> containing sentence). */
 function _spanSentenceIndex(spanEl) {
     if (!sentences || !sentences.length) return -1;
-    const { spans, prefix } = _getPdfSpanData();
-    const si = spans.indexOf(spanEl);
+    const { prefix, spanIndex } = _getPdfSpanData();
+    const si = spanIndex !== undefined ? (spanIndex.get(spanEl) ?? -1) : -1;
     if (si === -1) return -1;
     return _pdfSentenceAtOffset(prefix[si]);
 }
@@ -6599,11 +7368,22 @@ function _sentenceIndexAtPoint(clientX, clientY) {
     } else {
         span = document.elementFromPoint(clientX, clientY);
         if (span && span.tagName && span.tagName.toLowerCase() === 'mark') span = span.parentElement;
-        if (span && span.textContent !== null) charOffset = span.textContent.length;
+        if (span && span.textContent !== null) {
+            // No caret API: estimate the offset from the pointer's horizontal
+            // position within the span instead of pinning to its end (which
+            // biases every lookup to the next sentence at span boundaries).
+            try {
+                const r = span.getBoundingClientRect();
+                const frac = r.width > 0 ? Math.max(0, Math.min(1, (clientX - r.left) / r.width)) : 1;
+                charOffset = Math.floor(frac * span.textContent.length);
+            } catch (e) {
+                charOffset = span.textContent.length;
+            }
+        }
     }
     if (!(span && span.matches && span.matches('.textLayer span'))) return -1;
 
-    const si = cache.spans.indexOf(span);
+    const si = cache.spanIndex !== undefined ? (cache.spanIndex.get(span) ?? -1) : cache.spans.indexOf(span);
     if (si === -1) return -1;
 
     const spanRaw = _spanRawText(span);
@@ -6741,8 +7521,9 @@ serverUploadInput.addEventListener('change', async (e) => {
 /* Seconds -> compact human string ("45s", "3m 12s"). */
 function formatDuration(seconds) {
     if (seconds < 60) return `${Math.round(seconds)}s`;
-    const mins = Math.floor(seconds / 60);
-    const secs = Math.round(seconds % 60);
+    const total = Math.round(seconds);
+    const mins = Math.floor(total / 60);
+    const secs = total % 60;
     return `${mins}m ${secs}s`;
 }
 
@@ -6756,6 +7537,25 @@ function onSkipChange() {
     topSkipLines = parseInt(skipTopInput.value, 10) || 0;
     bottomSkipLines = parseInt(skipBottomInput.value, 10) || 0;
     saveSettingsThrottled(pageNum, scale, currentIndex);
+    // EPUB: sentence ordinals now honor skips, so re-render the chapter to
+    // re-extract with the new counts (same reset discipline as the PDF path).
+    if (documentHandler instanceof EPUBHandler) {
+        clearTimeout(_skipChangeTimer);
+        _skipChangeTimer = setTimeout(() => {
+            stopPipeline();
+            clearPageAudioCache();
+            currentIndex = 0;
+            const h = documentHandler;
+            if (!(h instanceof EPUBHandler)) return;
+            h.renderPage(pageNum).then(result => {
+                if (!result || documentHandler !== h) return;
+                currentPageText = result.text;
+                sentences = result.sentences;
+                updatePageStats(pageNum, sentences);
+            }).catch(() => {});
+        }, 400);
+        return;
+    }
     if (!pdfDoc) return;
     clearTimeout(_skipChangeTimer);
     _skipChangeTimer = setTimeout(() => {
@@ -6801,10 +7601,28 @@ async function refreshTimeEstimates() {
 async function _runTimeEstimateRefresh() {
     if (refreshInFlight) return; // will re-run via finally when current pass finishes
     refreshInFlight = true;
+    const gen = docGeneration;
+    const staleEst = () => gen !== docGeneration;
     try {
+        // EPUB has no pdfDoc: use the local heuristic + chapter char map.
+        // (Previously this returned before painting, freezing the previous
+        // book's numbers on screen.)
+        if (documentHandler instanceof EPUBHandler) {
+            sentenceDurations = {};
+            const stats = pageStats[pageNum];
+            if (stats) {
+                const words = stats.totalChars / 5;
+                pageRemaining = (words / (150 * playbackSpeed)) * 60;
+            } else { pageRemaining = 0; }
+            try { chapterRemaining = documentHandler.getChapterTime(pageNum, playbackSpeed) || 0; }
+            catch (e) { chapterRemaining = 0; }
+            updateTimeDisplay();
+            return;
+        }
         if (!pdfDoc) return;
         updateChapterBoundaries();
         let pageDur = await fetchPageDuration(currentFileName, pageNum);
+        if (staleEst()) return;
         if (pageDur === null || pageDur <= 0) {
             const stats = pageStats[pageNum];
             if (stats) {
@@ -6813,8 +7631,9 @@ async function _runTimeEstimateRefresh() {
             } else { pageDur = 0; }
         }
         pageRemaining = pageDur;
-        if (chapterStartPage !== null && chapterEndPage !== null && chapterStartPage < chapterEndPage) {
+        if (chapterStartPage !== null && chapterEndPage !== null && chapterStartPage <= chapterEndPage) {
             const chapterDur = await fetchChapterDuration(currentFileName, chapterStartPage, chapterEndPage);
+            if (staleEst()) return;
             chapterRemaining = chapterDur || 0;
         } else {
             chapterRemaining = 0;
@@ -6844,23 +7663,40 @@ async function startReadingPage(startIndex = 0) {
         return;
     }
     if (!pdfDoc && !(documentHandler instanceof EPUBHandler)) return;
+    // Clamp: a stale index (e.g. restored from a longer chapter) must not
+    // produce an empty buffer that instantly "completes".
+    startIndex = Math.max(0, Math.min(startIndex, sentences.length - 1));
 
-    // Un-claim anything queued but not yet fetched so it can be re-requested.
+    // Un-claim queued-but-unfetched sentences so they can be re-requested.
+    // Ready blob URLs are kept (reusable); only 'fetching' placeholders and
+    // the in-flight counter for them are rolled back.
     _ttsQueue.forEach(idx => {
-        delete audioCache[idx];
-        inFlight = Math.max(0, inFlight - 1);
+        if (audioCache[idx] === 'fetching') {
+            delete audioCache[idx];
+            inFlight = Math.max(0, inFlight - 1);
+        }
     });
     _ttsQueue = [];
 
     if (isPlaying) stopPipeline();
-    
+
+    // Reap orphaned in-flight state from the superseded session: its
+    // response (if any) will be dropped as stale, so a lingering 'fetching'
+    // marker would block that sentence forever — the "Generating… 4/5 with
+    // no server traffic" deadlock. Finished blob URLs are kept.
+    Object.keys(audioCache).forEach(k => { if (audioCache[k] === 'fetching') delete audioCache[k]; });
+    Object.keys(_ttsChunks).forEach(k => delete _ttsChunks[k]);
+    Object.keys(_ttsChunkOwner).forEach(k => delete _ttsChunkOwner[k]);
+    _ttsAcceptingBinaryFor = null;
+    inFlight = _ttsQueue.length + (_ttsPending ? 1 : 0);
+
     currentIndex = startIndex;
     isPlaying = true;
     hasStartedPlaying = false;
     playBtn.textContent = '⏹ Stop';
     ttsStatus.classList.add('active');
     syncMobilePlayBtn();
-    
+
     await fetchSentenceDurationsForCurrentPage();
     // User hit Stop while we were fetching — bail without starting.
     if (!isPlaying) return;
@@ -6873,30 +7709,39 @@ async function startReadingPage(startIndex = 0) {
     }
     if (chapterEndPage && chapterEndPage > pageNum) {
         const remainingChapterDur = await fetchChapterDuration(currentFileName, pageNum + 1, chapterEndPage);
-        chapterRemaining = pageRemaining + (remainingChapterDur || 0);
+        // Server durations are 1x wall-clock — scale like the page sum above.
+        chapterRemaining = pageRemaining + (remainingChapterDur || 0) / playbackSpeed;
     } else {
         chapterRemaining = pageRemaining;
     }
     updateTimeDisplay();
-    
-    const required = Math.min(REQUIRED_START_BUFFER, sentences.length - currentIndex);
+
+    const required = Math.max(1, Math.min(REQUIRED_START_BUFFER, sentences.length - currentIndex));
     let readyCount = 0;
     for (let i = currentIndex; i < currentIndex + required; i++) {
         if (audioCache[i] !== undefined && audioCache[i] !== 'fetching') readyCount++;
     }
     if (readyCount >= required) {
         hasStartedPlaying = true;
+        _clearTtsStallTimer();
         playNextChunk();
     } else {
         ttsStatusText.textContent = `Generating… ${readyCount}/${required}`;
+        // Watchdog for the pre-start buffer: if the missing clip(s) never
+        // complete, fail them through instead of showing Generating… forever.
+        _armTtsStallTimer();
     }
     preloadQueue();
+    // Re-run the debounced estimator last so a stopPipeline-triggered refresh
+    // queued just above can't overwrite these per-currentIndex remainders.
+    refreshTimeEstimates();
 }
 
 /* Fetch per-sentence measured durations (from previously cached audio) for
- * the current page; falls back to estimates when unavailable. PDF-only. */
+ * the current page; falls back to estimates when unavailable. PDF-only —
+ * EPUB resets to estimates so stale PDF numbers can't leak across books. */
 async function fetchSentenceDurationsForCurrentPage() {
-    if (!currentFileName || !pdfDoc) return;
+    if (!currentFileName || !pdfDoc) { sentenceDurations = {}; return; }
     try {
         const res = await fetch(
             `/page_sentence_durations?book_name=${encodeURIComponent(currentFileName)}&page=${pageNum}`
@@ -6911,14 +7756,19 @@ async function fetchSentenceDurationsForCurrentPage() {
 }
 
 /* Main Play/Stop button: toggle playback, restarting from the top of the
- * page if we ran past the last sentence. */
-playBtn.addEventListener('click', () => {
+ * page if we ran past the last sentence. Mobile passes silentEmpty to keep
+ * its no-feedback behavior on empty pages. */
+function togglePlayback({ silentEmpty = false } = {}) {
     if (isPlaying) { stopPipeline(); return; }
-    if (!currentPageText.trim()) { alert('No text on this page.'); return; }
+    if (!currentPageText.trim()) {
+        if (!silentEmpty) alert('No text on this page.');
+        return;
+    }
     if (!pdfDoc && !(documentHandler instanceof EPUBHandler)) return;
-    let si = currentIndex >= sentences.length ? 0 : currentIndex;
+    const si = currentIndex >= sentences.length ? 0 : currentIndex;
     startReadingPage(si);
-});
+}
+playBtn.addEventListener('click', () => togglePlayback());
 
 /* 'is-scrolling' body class while the PDF viewer scrolls (hides scrollbars
  * / fades chrome via CSS), same pattern as the EPUB iframe hook. */
@@ -6936,4 +7786,5 @@ if (pdfViewerArea) {
     }, { passive: true });
 }
 
-console.log('DocReader Pro ready – all served from port 8000.');
+const DR_BUILD = '2026-09-26g'; // bump on every script.js change (see index.html ?v=)
+console.log(`DocReader Pro ready – build ${DR_BUILD}.`);

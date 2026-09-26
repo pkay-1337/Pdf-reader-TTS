@@ -4,11 +4,12 @@ import gc
 import asyncio
 import re
 import json
+import shutil
 import uuid
 import soundfile as sf
 from fastapi import FastAPI, HTTPException, Header, BackgroundTasks, UploadFile, File, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, FileResponse, JSONResponse, HTMLResponse
+from fastapi.responses import StreamingResponse, FileResponse, JSONResponse, HTMLResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Set
@@ -915,6 +916,10 @@ async def ws_tts(websocket: WebSocket):
                     cached = True
                     duration = get_duration_seconds(cache_file)
                     log_tts(book, page, line, voice, cache_text, cached=True, duration=duration, speed=speed, original_text=original_text if original_text != cache_text else None)
+                    # Stream opener: lets the client attribute the binary frames
+                    # that follow to this request_id (binary frames themselves
+                    # carry no identity). Must precede the first send_bytes.
+                    await websocket.send_json({"type": "begin", "cached": True, "request_id": request_id})
                     with open(cache_file, "rb") as f:
                         chunk = f.read(8192)
                         while chunk:
@@ -950,7 +955,8 @@ async def ws_tts(websocket: WebSocket):
                 log_tts(book or "unknown", page or 0, line or 0, voice, cache_text, cached=False, speed=speed, original_text=original_text if original_text != cache_text else None, elapsed_ms=elapsed_ms, audio_size=len(wav_bytes))
 
             chunk_size = 8192
-            
+
+            await websocket.send_json({"type": "begin", "cached": False, "request_id": request_id})
             for i in range(0, len(wav_bytes), chunk_size):
                 await websocket.send_bytes(wav_bytes[i:i + chunk_size])
             await websocket.send_json({"type": "done", "cached": False, "request_id": request_id})
@@ -1376,6 +1382,61 @@ async def upload_document(file: UploadFile = File(...)):
 @app.post("/upload_pdf")
 async def upload_pdf(file: UploadFile = File(...)):
     return await upload_document(file)
+
+@app.delete("/documents/{filename}")
+async def delete_document(filename: str):
+    safe_name = os.path.basename(filename)
+    fl = safe_name.lower()
+    if not (fl.endswith(".pdf") or fl.endswith(".epub")):
+        raise HTTPException(status_code=400, detail="Only PDF and EPUB files can be deleted.")
+    fpath = os.path.join(PDF_DIR, safe_name)
+    if not os.path.isfile(fpath):
+        raise HTTPException(status_code=404, detail="Document not found.")
+    try:
+        size = os.path.getsize(fpath)
+        os.remove(fpath)
+    except OSError as e:
+        log_error("delete_document", e, {"filename": safe_name})
+        raise HTTPException(status_code=500, detail="Could not delete file.")
+    # Also drop its TTS audio cache + settings so a re-upload starts clean.
+    try:
+        book_dir = os.path.join(AUDIO_CACHE_DIR, sanitize_filename(safe_name))
+        if os.path.isdir(book_dir):
+            shutil.rmtree(book_dir)
+    except OSError as e:
+        log_error("delete_document_cache", e, {"filename": safe_name})
+    doc_type = "epub" if fl.endswith(".epub") else "pdf"
+    log_request("/documents/{filename}", "DELETE", {"filename": safe_name, "size": size})
+    doc = {"name": safe_name, "size": size, "type": doc_type, "url": f"/documents/{safe_name}"}
+    await mgr.broadcast("library", {
+        "type": "removed",
+        "document": doc,
+        "pdf": doc,  # backward compat
+    })
+    console.print(f"[red]🗑️ Deleted document: {safe_name} ({size} bytes)[/red]")
+    return {"status": "deleted", "filename": safe_name}
+
+@app.get("/favicon.ico")
+async def favicon():
+    # Silence browser favicon probes (204 = no content, no error in console).
+    return Response(status_code=204)
+
+
+@app.get("/OEBPS/{path:path}")
+async def epub_asset_miss(path: str):
+    # Some EPUBs reference companion files (e.g. OEBPS/override_v1.css) with an
+    # absolute path that resolves against the server root instead of the book
+    # blob. The book still renders — this just silences the 404 noise. CSS
+    # misses get an empty stylesheet, everything else gets 204.
+    if path.lower().endswith(".css"):
+        return HTMLResponse("", media_type="text/css")
+    return Response(status_code=204)
+
+
+@app.get("/.well-known/{path:path}")
+async def wellknown_miss(path: str):
+    return Response(status_code=204)
+
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_index():

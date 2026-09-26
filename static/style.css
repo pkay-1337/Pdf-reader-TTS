@@ -1764,6 +1764,29 @@ body.topbar-hidden .sidebar-overlay {
     font-family: 'JetBrains Mono', monospace;
     flex-shrink: 0;
 }
+.server-pdf-item-delete {
+    flex-shrink: 0;
+    width: 22px;
+    height: 22px;
+    line-height: 1;
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--text-tertiary);
+    font-size: 15px;
+    cursor: pointer;
+    transition: background var(--transition), color var(--transition), border-color var(--transition);
+}
+.server-pdf-item-delete:hover:not(:disabled) {
+    background: var(--danger-soft);
+    color: var(--danger);
+    border-color: var(--danger);
+}
+.server-pdf-item-delete:disabled {
+    opacity: 0.4;
+    cursor: default;
+}
 
 /* Very short screens (landscape phone) — tighten controls */
 @media (max-height: 500px) and (max-width: 900px) {
