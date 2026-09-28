@@ -1921,9 +1921,9 @@ class EPUBHandler {
     _extractTextFromRendition() {
         try {
             const contents = this.rendition.getContents();
-            if (!contents || !contents.length) return { text: '', sentenceCfiMap: {} };
+            if (!contents || !contents.length) return { text: '', sentences: [], sentenceCfiMap: {} };
             const doc = contents[0].document;
-            if (!doc || !doc.body) return { text: '', sentenceCfiMap: {} };
+            if (!doc || !doc.body) return { text: '', sentences: [], sentenceCfiMap: {} };
 
             try {
                 doc.querySelectorAll('.dr-sent').forEach(el => {
@@ -2128,9 +2128,15 @@ class EPUBHandler {
                 } catch (e) {}
             }
 
-            return { text: structuredText, sentenceCfiMap };
+            // Return the SKIP-TRIMMED text + sentence list so the DOM
+            // (data-sent-idx), playback (`sentences`), click-to-read, the
+            // hover badge, and line-range downloads all share one ordinal.
+            // (Previously this returned the untrimmed structuredText and each
+            // caller re-split it, so any top/bottom skip shifted the badge
+            // by the skipped amount vs playback/cache keys.)
+            return { text: skipped.text, sentences: sentencesArr, sentenceCfiMap };
         } catch(e) {
-            return { text: '', sentenceCfiMap: {} };
+            return { text: '', sentences: [], sentenceCfiMap: {} };
         }
     }
 
@@ -2603,9 +2609,12 @@ class EPUBHandler {
             }
             this._lastHighlightNormIndex = 0; 
             
-            const { text, sentenceCfiMap } = this._extractTextFromRendition();
+            const { text, sentences: extSentences, sentenceCfiMap } = this._extractTextFromRendition();
             this.currentText = text;
-            this.currentSentences = splitIntoTTSChunks(text, 250);
+            // Prefer the extractor's skip-trimmed list (matches the DOM
+            // data-sent-idx ordinals); fall back to a re-split for safety.
+            this.currentSentences = (extSentences && extSentences.length !== undefined)
+                ? extSentences : splitIntoTTSChunks(text, 250);
             this.sentenceCfiMap = sentenceCfiMap;
             this._lastActiveFrags = []; // chapter DOM was rebuilt
             
@@ -3342,7 +3351,7 @@ class EPUBHandler {
                 const hadSentences = !!(this.currentSentences && this.currentSentences.length);
                 if ((!spans || spans.length === 0) && hadSentences) {
                     try {
-                        const { text } = this._extractTextFromRendition();
+                        const { text, sentences: extSentences } = this._extractTextFromRendition();
                         const prevLen = (this.currentText || '').length;
                         // Clobber guard: a mid-rebuild chapter yields empty or
                         // partial text — wait for more instead of corrupting
@@ -3350,7 +3359,8 @@ class EPUBHandler {
                         if (text && text.length >= 20 &&
                             (prevLen < 100 || text.length >= prevLen * 0.5)) {
                             this.currentText = text;
-                            this.currentSentences = splitIntoTTSChunks(text, 250);
+                            this.currentSentences = (extSentences && extSentences.length !== undefined)
+                                ? extSentences : splitIntoTTSChunks(text, 250);
                             this.sentenceCfiMap = {};
                             rewrapped = true;
                         } else {
@@ -7786,5 +7796,5 @@ if (pdfViewerArea) {
     }, { passive: true });
 }
 
-const DR_BUILD = '2026-09-26g'; // bump on every script.js change (see index.html ?v=)
+const DR_BUILD = '2026-09-26h'; // bump on every script.js change (see index.html ?v=)
 console.log(`DocReader Pro ready – build ${DR_BUILD}.`);
