@@ -61,8 +61,10 @@ let searchAllPageTexts = {};     // pageNum -> cached plain text, built lazily s
 let currentFile = null;          // File/Blob handle of the uploaded document (for name + re-reads)
 let currentFileUrl = null;       // object URL for currentFile; revoked on switch/close (see resetUI)
 let currentFileName = '';        // display name shown in the topbar / used as server cache key
-let pageRemaining = 0;           // estimated seconds of audio left on the current page
-let chapterRemaining = 0;        // estimated seconds of audio left in the current chapter/range
+let pageRemaining = 0;           // 1x seconds of audio left on the current page (speed applied at display)
+let chapterRemaining = 0;        // 1x seconds of audio left in the current chapter/range (speed applied at display)
+let pageExact = true;            // false when pageRemaining includes 150wpm guesses (shows ≈)
+let chapterExact = true;         // false when chapterRemaining includes guesses (shows ≈)
 let sentenceDurations = {};      // idx -> measured audio duration in seconds (filled as clips play)
 let chapterStartPage = null;     // inclusive start of the current chapter's page span (PDF mode)
 let chapterEndPage = null;       // inclusive end of the same span; bounds auto-advance & estimates
@@ -3497,6 +3499,8 @@ async function loadPDF(file, startPage = 1) {
     // Stop the old book's playback/fetch state before replacing anything.
     stopPipeline();
     clearPageAudioCache();
+    chapterStartPage = null;
+    chapterEndPage = null;
     // Tear down the previous PDF document and its blob URL (no leaks across books).
     try { if (pdfDoc && pdfDoc.destroy) await pdfDoc.destroy(); } catch (e) {}
     pdfDoc = null;
@@ -3772,6 +3776,8 @@ async function loadEPUB(file, startPage = 1) {
     // Stop the old book's playback/fetch state before replacing anything.
     stopPipeline();
     clearPageAudioCache();
+    chapterStartPage = null;
+    chapterEndPage = null;
     currentFile = file;
     currentFileName = file.name || 'Document';
 
@@ -4604,6 +4610,43 @@ async function fetchChapterDuration(bookName, startPage, endPage) {
 function estimateSentenceDuration(text) {
     const words = text.length / 5;
     return (words / 150) * 60;
+}
+/* Hybrid remaining time from sentence `fromIdx` to the end of the current
+ * page: measured server durations where cached, 150wpm guesses otherwise.
+ * Returns 1x seconds ({ total, exact }); playback speed is applied only at
+ * display time so the numbers stay valid when the speed changes. Shared by
+ * playback start and the estimate refresh so both show the same numbers. */
+function computeRemainingFrom(fromIdx) {
+    if (!sentences || !sentences.length) {
+        const stats = pageStats[pageNum];
+        if (!stats) return { total: 0, exact: true };
+        return { total: (stats.totalChars / 5 / 150) * 60, exact: false };
+    }
+    let total = 0, exact = true;
+    const start = Math.max(0, Math.min(fromIdx, sentences.length));
+    for (let i = start; i < sentences.length; i++) {
+        const d = sentenceDurations[i];
+        if (d != null && d > 0) total += d;
+        else { total += estimateSentenceDuration(sentences[i]); exact = false; }
+    }
+    return { total, exact };
+}
+/* Hybrid remainder for pages after the current one up to chapterEndPage:
+ * measured server audio plus the 150wpm heuristic for whatever the
+ * measurements don't cover yet (EPUB spine char map; unknown for PDF, which
+ * keeps its measured-only lower bound). 1x seconds; exact is true only when
+ * there are no later pages left to guess about. */
+async function computeChapterRest() {
+    if (!chapterEndPage || chapterEndPage <= pageNum) return { total: 0, exact: true };
+    const measured = await fetchChapterDuration(currentFileName, pageNum + 1, chapterEndPage) || 0;
+    let heuristic = 0;
+    if (documentHandler instanceof EPUBHandler) {
+        const items = documentHandler.spineItems || [];
+        for (let p = pageNum + 1; p <= chapterEndPage && p - 1 < items.length; p++) {
+            heuristic += (((documentHandler.chapterCharMap[p - 1] || 0) / 5) / 150) * 60;
+        }
+    }
+    return { total: measured + Math.max(0, heuristic - measured), exact: false };
 }
 /* Record per-page extraction stats (chars + sentence count) for estimates. */
 function updatePageStats(page, sentences) {
@@ -6070,10 +6113,12 @@ function playNextChunk() {
         };
 
         audioPlayer.onended = () => {
+            // Stored remainders are 1x seconds (speed is applied at display),
+            // so subtract the raw duration — stays correct even if the speed
+            // changed mid-page.
             const dur = sentenceDurations[currentIndex] || estimateSentenceDuration(sentences[currentIndex]);
-            const adjusted = dur / playbackSpeed;
-            pageRemaining = Math.max(0, pageRemaining - adjusted);
-            chapterRemaining = Math.max(0, chapterRemaining - adjusted);
+            pageRemaining = Math.max(0, pageRemaining - dur);
+            chapterRemaining = Math.max(0, chapterRemaining - dur);
             updateTimeDisplay();
             currentIndex++;
             saveSettingsThrottled(pageNum, scale, currentIndex);
@@ -6121,12 +6166,13 @@ function playNextChunk() {
 function getPlaybackRate() {
     return parseFloat(document.getElementById('speed-slider').value);
 }
-// Speed slider: update label + live playbackRate, refresh estimates (which
-// scale with speed) and persist.
+// Speed slider: update label + live playbackRate, repaint estimates
+// immediately at the new speed, then refresh data + persist.
 document.getElementById('speed-slider').addEventListener('input', async () => {
     const rate = getPlaybackRate();
     playbackSpeed = rate;
     speedVal.textContent = rate.toFixed(1) + '×';
+    updateTimeDisplay();
     if (isPlaying && !audioPlayer.paused) {
         audioPlayer.playbackRate = rate;
         await refreshTimeEstimates();
@@ -7528,13 +7574,14 @@ serverUploadInput.addEventListener('change', async (e) => {
     }
 });
 
-/* Seconds -> compact human string ("45s", "3m 12s"). */
+/* Seconds -> compact human string ("45s", "3m 12s", "6h 50m"). */
 function formatDuration(seconds) {
     if (seconds < 60) return `${Math.round(seconds)}s`;
     const total = Math.round(seconds);
     const mins = Math.floor(total / 60);
     const secs = total % 60;
-    return `${mins}m ${secs}s`;
+    if (mins < 60) return `${mins}m ${secs}s`;
+    return `${Math.floor(mins / 60)}h ${mins % 60}m`;
 }
 
 /* Top/bottom skip-line inputs. Debounced: changing these invalidates the
@@ -7582,11 +7629,15 @@ skipTopInput.addEventListener('input', onSkipChange);
 skipBottomInput.addEventListener('input', onSkipChange);
 
 /* ─── Time display ─── */
-/* Paint the cached page/chapter remaining estimates into the UI. */
+/* Paint the cached page/chapter remaining estimates into the UI. Stored
+ * values are 1x seconds; playback speed is applied here — the single place
+ * — so dragging the speed slider rescales the numbers instantly and they
+ * can never desync from the current speed. ≈ marks estimates that include
+ * guesses for uncached audio. */
 function updateTimeDisplay() {
-    const fmt = formatDuration;
-    pageTimeEl.textContent = `Page: ${fmt(pageRemaining)}`;
-    chapterTimeEl.textContent = `Chapter: ${fmt(chapterRemaining)}`;
+    const speed = playbackSpeed > 0 ? playbackSpeed : 1;
+    pageTimeEl.textContent = `Page: ${pageExact ? '' : '≈'}${formatDuration(pageRemaining / speed)}`;
+    chapterTimeEl.textContent = `Chapter: ${chapterExact ? '' : '≈'}${formatDuration(chapterRemaining / speed)}`;
 }
 
 /* Coalesced time-estimate refresh. Nav paths call this fire-and-forget;
@@ -7605,49 +7656,31 @@ async function refreshTimeEstimates() {
     });
 }
 
-/* The single estimate pass: page duration from server cache (or a local
- * words-per-minute heuristic), chapter duration from the TOC-derived page
- * span, then paint. If requests arrived while running, re-run shortly. */
+/* The single estimate pass: hybrid measured/guessed page remainder plus the
+ * TOC-chapter remainder, then paint. One path for PDF and EPUB (EPUB spine
+ * pages use the same server cache keys). If requests arrived while running,
+ * re-run shortly. */
 async function _runTimeEstimateRefresh() {
     if (refreshInFlight) return; // will re-run via finally when current pass finishes
     refreshInFlight = true;
     const gen = docGeneration;
     const staleEst = () => gen !== docGeneration;
     try {
-        // EPUB has no pdfDoc: use the local heuristic + chapter char map.
-        // (Previously this returned before painting, freezing the previous
-        // book's numbers on screen.)
-        if (documentHandler instanceof EPUBHandler) {
-            sentenceDurations = {};
-            const stats = pageStats[pageNum];
-            if (stats) {
-                const words = stats.totalChars / 5;
-                pageRemaining = (words / (150 * playbackSpeed)) * 60;
-            } else { pageRemaining = 0; }
-            try { chapterRemaining = documentHandler.getChapterTime(pageNum, playbackSpeed) || 0; }
-            catch (e) { chapterRemaining = 0; }
-            updateTimeDisplay();
-            return;
-        }
-        if (!pdfDoc) return;
-        updateChapterBoundaries();
-        let pageDur = await fetchPageDuration(currentFileName, pageNum);
+        const isEpub = documentHandler instanceof EPUBHandler;
+        if (!isEpub && !pdfDoc) return;
+        await fetchSentenceDurationsForCurrentPage();
         if (staleEst()) return;
-        if (pageDur === null || pageDur <= 0) {
-            const stats = pageStats[pageNum];
-            if (stats) {
-                const words = stats.totalChars / 5;
-                pageDur = (words / (150 * playbackSpeed)) * 60;
-            } else { pageDur = 0; }
-        }
-        pageRemaining = pageDur;
+        updateChapterBoundaries();
+        const rem = computeRemainingFrom(currentIndex);
+        pageRemaining = rem.total;
+        pageExact = rem.exact;
+        let rest = { total: 0, exact: true };
         if (chapterStartPage !== null && chapterEndPage !== null && chapterStartPage <= chapterEndPage) {
-            const chapterDur = await fetchChapterDuration(currentFileName, chapterStartPage, chapterEndPage);
+            rest = await computeChapterRest();
             if (staleEst()) return;
-            chapterRemaining = chapterDur || 0;
-        } else {
-            chapterRemaining = 0;
         }
+        chapterRemaining = pageRemaining + rest.total;
+        chapterExact = rem.exact && rest.exact;
         updateTimeDisplay();
     } finally {
         refreshInFlight = false;
@@ -7711,18 +7744,20 @@ async function startReadingPage(startIndex = 0) {
     // User hit Stop while we were fetching — bail without starting.
     if (!isPlaying) return;
 
-    // Precompute remaining time for this page (speed-adjusted)...
-    pageRemaining = 0;
-    for (let i = currentIndex; i < sentences.length; i++) {
-        const d = sentenceDurations[i] || estimateSentenceDuration(sentences[i]);
-        pageRemaining += d / playbackSpeed;
-    }
-    if (chapterEndPage && chapterEndPage > pageNum) {
-        const remainingChapterDur = await fetchChapterDuration(currentFileName, pageNum + 1, chapterEndPage);
-        // Server durations are 1x wall-clock — scale like the page sum above.
-        chapterRemaining = pageRemaining + (remainingChapterDur || 0) / playbackSpeed;
+    // Precompute remaining time (1x; speed is applied at display). Hybrid
+    // measured/guessed so fully cached pages show exact numbers.
+    updateChapterBoundaries();
+    const rem = computeRemainingFrom(currentIndex);
+    pageRemaining = rem.total;
+    pageExact = rem.exact;
+    if (chapterStartPage !== null && chapterEndPage !== null && chapterStartPage <= chapterEndPage) {
+        const rest = await computeChapterRest();
+        if (!isPlaying) return;
+        chapterRemaining = pageRemaining + rest.total;
+        chapterExact = rem.exact && rest.exact;
     } else {
         chapterRemaining = pageRemaining;
+        chapterExact = rem.exact;
     }
     updateTimeDisplay();
 
@@ -7751,7 +7786,10 @@ async function startReadingPage(startIndex = 0) {
  * the current page; falls back to estimates when unavailable. PDF-only —
  * EPUB resets to estimates so stale PDF numbers can't leak across books. */
 async function fetchSentenceDurationsForCurrentPage() {
-    if (!currentFileName || !pdfDoc) { sentenceDurations = {}; return; }
+    // Works for EPUB too: the server keys cache by spine-page number, the
+    // same ordinal scheme playback and batch downloads use.
+    if (!currentFileName) { sentenceDurations = {}; return; }
+    if (!pdfDoc && !(documentHandler instanceof EPUBHandler)) { sentenceDurations = {}; return; }
     try {
         const res = await fetch(
             `/page_sentence_durations?book_name=${encodeURIComponent(currentFileName)}&page=${pageNum}`
@@ -7796,5 +7834,5 @@ if (pdfViewerArea) {
     }, { passive: true });
 }
 
-const DR_BUILD = '2026-09-26h'; // bump on every script.js change (see index.html ?v=)
+const DR_BUILD = '2026-09-26i'; // bump on every script.js change (see index.html ?v=)
 console.log(`DocReader Pro ready – build ${DR_BUILD}.`);
